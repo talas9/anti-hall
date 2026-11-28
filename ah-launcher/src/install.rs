@@ -447,9 +447,22 @@ struct Run<'a> {
     c: &'a Cfg,
     log: PathBuf,
     verbose: bool,
+    /// An explicit install (not `--auto`) with `install.explicit_ignores_retry` on: a failure or a skip other than "already current" is
+    /// said on stderr (`msg.install_failed`) and ends with this exit code. `None`: silent, exit 0 (the automatic path).
+    strict: Option<(i32, String)>,
 }
 
 impl Run<'_> {
+    /// End an install that did not install: record it, and, when strict, say why on stderr and return the failure exit code.
+    fn failed(&self, why: &str) -> i32 {
+        let Some((code, tpl)) = &self.strict else {
+            return 0;
+        };
+        self.rec("explicit_fail", &[("why", why)]);
+        crate::util::say(&fill(tpl, &[("why", why)]));
+        *code
+    }
+
     fn rec(&self, event: &str, kv: &[(&str, &str)]) {
         rec::append(&self.log, self.c.log_max, self.c.log_keep, event, kv);
         if self.verbose {
@@ -500,7 +513,8 @@ fn parse(args: &[String]) -> Args {
     a
 }
 
-/// `ah-hook install ...`. Exit code 0 always.
+/// `ah-hook install ...`. Exit code 0 always, except an explicit install (not `--auto`, `install.explicit_ignores_retry` on): that says why on
+/// stderr and exits `install.explicit_fail_exit` when it did not install (anything but "already current").
 pub fn run(
     s: &Settings,
     state: &Path,
@@ -547,10 +561,17 @@ pub fn run(
     if state.as_os_str().is_empty() || fs::create_dir_all(state.join("bin")).is_err() {
         return 0;
     }
+    let strict = (!a.auto && s.num("install.explicit_ignores_retry") == 1).then(|| {
+        (
+            i32::try_from(s.num("install.explicit_fail_exit").max(1)).unwrap_or(1),
+            s.text("msg.install_failed"),
+        )
+    });
     let r = Run {
         c: &c,
         log: state.join(&c.file_log),
         verbose: a.verbose,
+        strict,
     };
     let lock_path = a
         .lock
@@ -609,7 +630,7 @@ pub fn run(
     let hook_free = !hook_bin.exists()
         || (mark(3).len() == 64 && sha256_file(&hook_bin).unwrap_or_default() == mark(3));
     if !engine_free && !hook_free {
-        return 0;
+        return r.failed("not_replaceable");
     }
     if engine_bin.exists() && format!("{} {}", mark(0), mark(1)) == want {
         return 0; // this archive is what is installed
@@ -617,7 +638,8 @@ pub fn run(
     let attempt = state.join(&c.file_attempt);
     let now = epoch_s();
     let att = first_fields(&attempt);
-    if att.len() >= 3
+    if r.strict.is_none()
+        && att.len() >= 3
         && att[1] == lock.version
         && att[2] == sha
         && att[0]
@@ -641,7 +663,7 @@ pub fn run(
             .and_then(|t| t.elapsed().ok())
             .is_some_and(|age| age.as_secs() > c.stale_lock_s);
         if !(old && fs::remove_dir(&lockdir).is_ok() && fs::create_dir(&lockdir).is_ok()) {
-            return 0;
+            return r.failed("another_install_running");
         }
     }
     let tmp = state.join(format!("{}{}", c.tmp_prefix, std::process::id()));
@@ -651,7 +673,7 @@ pub fn run(
     let fail = |why: &str, detail: &str| -> i32 {
         r.rec("fail", &[("why", why), ("detail", detail)]);
         let _ = fs::write(&attempt, format!("{now} {} {sha}\n", lock.version));
-        0
+        r.failed(why)
     };
     let _ = fs::remove_dir_all(&tmp);
     if fs::create_dir_all(&tmp).is_err() {
@@ -757,7 +779,7 @@ pub fn run(
     if let Some(i) = &integ {
         if !i.lock_take(&token, i.lock_wait) {
             r.rec("skip_install_lock_held", &[]);
-            return 0;
+            return r.failed("install_lock_held");
         }
         held = true;
     }
@@ -775,7 +797,7 @@ pub fn run(
             "skip_changed_meanwhile",
             &[("path", &engine_bin.display().to_string())],
         );
-        return 0;
+        return r.failed("changed_meanwhile");
     }
     let mut hook_sha = String::new();
     if engine_free {
@@ -796,6 +818,7 @@ pub fn run(
         }
     }
     let engine_sha = sha256_file(&engine_bin).unwrap_or_default();
+    let nothing_replaced = !engine_free && hook_sha.is_empty();
     let hook_field = if hook_sha.is_empty() {
         mark(3).to_string()
     } else {
@@ -818,6 +841,11 @@ pub fn run(
         i.record(); // under this install's hold: no check runs between the swap and the record
     }
     let _ = fs::remove_file(&attempt);
+    if nothing_replaced {
+        // the engine here is not one this installer put there (a hand-built binary): an explicit run says so and fails; the marker above
+        // keeps the automatic form from fetching the archive again at every session
+        return r.failed("not_replaceable");
+    }
     r.rec(
         "installed",
         &[
@@ -838,7 +866,7 @@ fn skip(r: &Run, why: &str, kv: &[(&str, &str)]) -> i32 {
     let mut all = vec![("why", why)];
     all.extend_from_slice(kv);
     r.rec("skip", &all);
-    0
+    r.failed(why)
 }
 
 fn keep_prev(bin: &Path, sfx: &str) {
@@ -878,25 +906,6 @@ impl Drop for Unlock<'_> {
         if let (Some(i), Some(t)) = (self.integ, &self.token) {
             i.lock_give(t);
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn arguments() {
-        let a = parse(&[
-            "--lock".into(),
-            "/x".into(),
-            "--auto".into(),
-            "-v".into(),
-            "--print-target".into(),
-        ]);
-        assert_eq!(a.lock.as_deref(), Some(Path::new("/x")));
-        assert!(a.auto && a.verbose && a.print_target);
-        assert!(parse(&[]).lock.is_none());
     }
 }
 
@@ -948,4 +957,23 @@ pub fn platform_triple(s: &Settings, test: bool) -> String {
         matches!(r, Ran::Done(_)).then_some(out).flatten()
     };
     detect(&c, &knob, &probe).map_or_else(|_| s.text("msg.install_unsupported"), |p| p.triple)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn arguments() {
+        let a = parse(&[
+            "--lock".into(),
+            "/x".into(),
+            "--auto".into(),
+            "-v".into(),
+            "--print-target".into(),
+        ]);
+        assert_eq!(a.lock.as_deref(), Some(Path::new("/x")));
+        assert!(a.auto && a.verbose && a.print_target);
+        assert!(parse(&[]).lock.is_none());
+    }
 }

@@ -114,7 +114,7 @@ jobs:
         id: claude1
         if: steps.cred.outputs.ok1 == 'true'
         continue-on-error: true
-        uses: anthropics/claude-code-action@e4a6faad497d33dbc7144135c75e41f82f0bf6c0 # v1
+        uses: anthropics/claude-code-action@eb56b6666facdbd501035f4a0269d8caee2e7a8b # v1
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           allowed_non_write_users: "*"
@@ -179,7 +179,7 @@ jobs:
         id: claude2
         if: always() && steps.cred.outputs.ok2 == 'true' && steps.claude1.outcome != 'success' && steps.why1.outputs.failover == 'true'
         continue-on-error: true
-        uses: anthropics/claude-code-action@e4a6faad497d33dbc7144135c75e41f82f0bf6c0 # v1
+        uses: anthropics/claude-code-action@eb56b6666facdbd501035f4a0269d8caee2e7a8b # v1
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           allowed_non_write_users: "*"
@@ -314,6 +314,13 @@ jobs:
           fetch-depth: 1
           sparse-checkout: ${{ inputs.tools == 'none' && '.github/copilot-cli' || '' }}
           sparse-checkout-cone-mode: false
+
+      - name: Node for the Copilot CLI install (npm cache keyed on its lockfile)
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.x
+          cache: npm
+          cache-dependency-path: .github/copilot-cli/package-lock.json
 
       - name: Install Copilot CLI
         run: |

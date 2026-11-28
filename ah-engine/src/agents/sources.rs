@@ -160,7 +160,11 @@ fn heartbeats(env: &Env, st: &mut State) {
 fn devswarm(env: &Env, st: &mut State) {
     let root = env.base().join(pth("devswarm"));
     let descs = read_dir(&root.join(pth("workspaces")));
+    // the rows whose workspace facts were judged this tick: any other row's `ws` is dropped below, never kept from an older tick (#972:
+    // a row bound once kept `armed: false` for days while the watcher's lock was live)
+    let mut bound: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     if descs.is_empty() {
+        unbind(st, &bound);
         return;
     }
     let f = defaults::raw("agent_tracker.devswarm_fields");
@@ -175,25 +179,38 @@ fn devswarm(env: &Env, st: &mut State) {
             a.name = super::cap(&title, lim("text_cap"));
         }
     }
-    for p in descs {
-        let Some(d) = json_of(&p) else { continue };
+    // a descriptor that names a tracked session binds it first; a row with no session (the app's own row for a checkout) only binds a
+    // session no descriptor names, by its directory, so the read order of the rows never decides which one a session gets (#972)
+    let mut rows: Vec<(PathBuf, Value, bool)> =
+        descs.into_iter().filter_map(|p| json_of(&p).map(|d| (p, d))).map(|(p, d)| (p, d.clone(), st.agents.contains_key(&g(&d, "session")))).collect();
+    rows.sort_by_key(|r| !r.2);
+    for (p, d, by_session) in rows {
         let (id, session, wt) = (g(&d, "id"), g(&d, "session"), g(&d, "worktree"));
         if id.is_empty() {
             continue;
         }
-        let key = if st.agents.contains_key(&session) {
+        let key = if by_session {
             Some(session)
         } else {
-            st.agents.iter().find(|(_, a)| a.kind == kind_name("main") && !wt.is_empty() && a.cwd == wt).map(|(k, _)| k.clone())
+            // a main session, or a session already a workspace (the kind sticks after the first binding, so matching only `main` froze
+            // the row at its first sight, #972)
+            st.agents
+                .iter()
+                .find(|(k, a)| {
+                    !bound.contains(*k) && !super::is_child(a) && (a.kind == kind_name("main") || a.kind == kind_name("workspace")) && !wt.is_empty() && a.cwd == wt
+                })
+                .map(|(k, _)| k.clone())
         };
-        let Some(a) = key.and_then(|k| st.agents.get_mut(&k)) else { continue };
+        let Some(key) = key.filter(|k| !bound.contains(k)) else { continue };
+        let Some(a) = st.agents.get_mut(&key) else { continue };
         let title = title_of(&id);
         if !title.is_empty() {
             a.name = super::cap(&title, lim("text_cap"));
         }
-        if root.join(pth("archived")).join(format!("{id}{}", pth("json_ext"))).exists() {
+        if archived_shadow(env, &root, &id, &p) {
             continue;
         }
+        bound.insert(key.clone());
         a.kind = kind_name("workspace").into();
         let (mut step, mut done) = (String::new(), 0u64);
         if let Some(plan) = plans.iter().find(|pl| g(pl, "worktree") == wt) {
@@ -211,16 +228,54 @@ fn devswarm(env: &Env, st: &mut State) {
         if !step.is_empty() {
             facts::set_step(a, &step);
         }
-        // The app may register the Primary checkout under a non-primary id. Judge its
-        // checkout, then use the watcher's live-child decision rather than its id spelling.
-        let primary = crate::meshw::ident::resolve_context(&wt, true)
+        // Not told to arm when the watcher itself declines (its own identity, #614), nor when this is the Primary's checkout judged by
+        // path (the app may register it under a non-primary id) with no live child (#672)
+        let (watcher_primary, declined) = crate::meshw::watcher::watcher_declines(&env.home, &id, &env.settings);
+        let by_path = crate::meshw::ident::resolve_context(&wt, true)
             .ok()
             .is_some_and(|c| crate::meshw::ident::is_primary_checkout(&wt, c.main_worktree.as_deref(), &env.home, &env.settings.env).unwrap_or(false));
-        let idle = primary && crate::meshw::watcher::idle_for_workspace(&env.home, &id, &env.settings);
+        let primary = watcher_primary || by_path;
+        let idle = (declined || (by_path && crate::meshw::watcher::idle_for_workspace(&env.home, &id, &env.settings)))
+            && env.switch("agent_tracker.rearm_idle_setting");
         let armed = Some(idle || watcher_armed(env, &id));
-        a.ws = Some(Ws { id: id.clone(), armed, step, done });
+        a.ws = Some(Ws { id: id.clone(), armed, step, done, primary });
         live_plan(env, &id, a, done);
     }
+    unbind(st, &bound);
+}
+
+/// Drop the workspace facts of every row no live descriptor bound this tick (its descriptor was archived or removed), and make such a
+/// session a main session again: stale facts would keep a re-arm order (or an exemption) alive for a watcher nobody judges any more.
+/// Counted per dropped row.
+fn unbind(st: &mut State, bound: &std::collections::BTreeSet<String>) {
+    for (k, a) in st.agents.iter_mut() {
+        if a.ws.is_some() && !bound.contains(k) {
+            a.ws = None;
+            // a session no descriptor names is a plain main session again: its own wake stamp decides its coverage, and the escalation's
+            // exempt kinds see it as the Primary it is
+            if !super::is_child(a) && a.kind == kind_name("workspace") {
+                a.kind = kind_name("main").into();
+            }
+            crate::metrics::bump("agent_ws_coverage", &[("how", "unbound")]);
+        }
+    }
+}
+
+/// An archived twin hides a descriptor only while the descriptor is not provably in use: a live wake-watch lock under its id, or a
+/// descriptor written after the archive, means the archive is the stale one (#972: an archive from August hid the live Primary's
+/// descriptor, so its session was bound to the app's sessionless row instead).
+fn archived_shadow(env: &Env, root: &Path, id: &str, desc: &Path) -> bool {
+    let arch = root.join(pth("archived")).join(format!("{id}{}", pth("json_ext")));
+    if !arch.exists() {
+        return false;
+    }
+    let newer = mtime_ms(desc).zip(mtime_ms(&arch)).is_some_and(|(d, a)| d > a);
+    let live = crate::meshw::watcher::lock_live(&env.home, id, env.now_ms as i64).unwrap_or(false);
+    if newer || live {
+        crate::metrics::bump("agent_ws_coverage", &[("how", "archive_ignored")]);
+        return false;
+    }
+    true
 }
 
 /// The live facts of a workspace's work (task-list completions, commits, pushes, merges and deploys, and when it last shipped), kept in
@@ -244,6 +299,8 @@ fn live_plan(env: &Env, id: &str, a: &Agent, plan_done: u64) {
 /// Whether a live wake-watch Monitor covers the workspace: the same check `inbox tick` makes (its own lock, or the live lock of another
 /// row on its checkout). A lock the check cannot read decides nothing, so it reads as not armed.
 fn watcher_armed(env: &Env, id: &str) -> bool {
+    // only a watcher on this workspace's own row or its checkout reads this inbox: a live lock that merely names the session, under
+    // another workspace, watches another inbox and covers nothing here (#972 round 2, Codex #838 P1.2)
     let found = crate::meshw::watcher::live_for_workspace(&env.home, id, env.now_ms as i64);
     if found.as_ref().is_ok_and(|f| f.by_checkout) {
         crate::metrics::bump("mesh_watcher_matched_by_checkout", &[]);
@@ -330,7 +387,8 @@ fn cli(env: &Env, st: &mut State, relist: bool) -> Listing {
 fn stopped_subagents(env: &Env, st: &mut State) {
     let opts = crate::checks::agent_scan::Opts { now_ms: env.now_ms as f64, ignore_unanswered_stops: true };
     let tail = defaults::num("agent_scan.tail_bytes");
-    let mut ended: std::collections::HashMap<String, std::collections::HashSet<String>> = std::collections::HashMap::new();
+    // per launching transcript: the ids it shows ended, and when (ms, when the transcript dated it)
+    let mut ended: std::collections::HashMap<String, std::collections::HashMap<String, Option<u64>>> = std::collections::HashMap::new();
     let live: Vec<(String, String)> = st.agents.values().filter(|a| super::is_child(a) && a.running).map(|a| (a.id.clone(), a.path.clone())).collect();
     for (id, path) in live {
         // <projects>/<dir>/<parent session>/subagents/agent-<id>.jsonl: the launching session's transcript is <dir>/<parent session>.jsonl
@@ -340,15 +398,67 @@ fn stopped_subagents(env: &Env, st: &mut State) {
             crate::checks::agent_scan::scan_transcript(&parent, tail, &opts)
                 .ok()
                 .flatten()
-                .map(|s| s.terminal.into_iter().chain(s.stopped_agents).collect())
+                .map(|s| {
+                    let ts = |id: &String| s.ended_ts.get(id).filter(|t| t.is_finite() && **t >= 0.0).map(|t| *t as u64);
+                    s.terminal.iter().chain(s.stopped_agents.iter()).map(|id| (id.clone(), ts(id))).collect()
+                })
                 .unwrap_or_default()
         });
-        if set.contains(&id)
-            && let Some(a) = st.agents.get_mut(&id)
-        {
-            a.running = false;
+        let Some(when) = set.get(&id).copied() else { continue };
+        let Some(a) = st.agents.get_mut(&id) else { continue };
+        // a stop the child has written past (by more than stop_resume_ms) is history: the child resumed, the old notice never re-latches
+        // it (#972 round 2, Codex #838 P1.1)
+        // (a subagent, which a message can resume; a stopped teammate's process is gone, its late lines are the tail of the killed turn)
+        if resumed_after(a, when) {
+            crate::metrics::bump("agent_stop_sticky", &[("how", "stale_notice")]);
+            continue;
+        }
+        a.running = false;
+        if a.stopped_at == 0 {
+            a.stopped_at = when.unwrap_or(env.now_ms);
+            crate::metrics::bump("agent_stop_sticky", &[("how", "recorded")]);
         }
     }
+}
+
+/// A child once seen stopped stays stopped (#972 class 1): the stop shows only while it is inside the launching transcript's tail window,
+/// and the discovery pass resets `finished` every tick, so a stopped child came back as idle or "claims running work" once the window
+/// moved on, and its rows and nags with it. It is resumed only by output written past `limits.stop_resume_ms` after the stop.
+/// Whether a child has resumed since a stop dated `when`: a teammate by a new turn (a message to it after the stop; its later lines
+/// without one are the tail of the killed turn), a subagent by a new turn or by output past `limits.stop_resume_ms` (#972 rounds 2-3).
+/// An undated stop is never history.
+fn resumed_after(a: &Agent, when: Option<u64>) -> bool {
+    when.is_some_and(|t| a.inbound_ms > t || (a.kind == kind_name("subagent") && a.last_output_ms > t.saturating_add(lim("stop_resume_ms"))))
+}
+
+fn sticky_stops(st: &mut State) {
+    for a in st.agents.values_mut().filter(|a| super::is_child(a) && a.stopped_at > 0) {
+        if resumed_after(a, Some(a.stopped_at)) {
+            a.stopped_at = 0;
+            crate::metrics::bump("agent_stop_sticky", &[("how", "resumed")]);
+            continue;
+        }
+        if !a.finished {
+            crate::metrics::bump("agent_stop_sticky", &[("how", "held")]);
+        }
+        a.finished = true;
+        a.running = false;
+    }
+}
+
+/// Whether the launching session of subagent `a` has issued a stop of it that no answer closed yet (the tracker's own pass ignores such a
+/// stop, since an unanswered call may never run). A nudge about the child waits a short while for the answer (GH #923).
+pub(super) fn stop_unanswered(a: &Agent) -> bool {
+    if !super::is_child(a) {
+        return false;
+    }
+    let Some(session_dir) = Path::new(&a.path).parent().and_then(Path::parent) else { return false };
+    let parent = format!("{}{}", session_dir.to_string_lossy(), pth("transcript_ext"));
+    let opts = crate::checks::agent_scan::Opts { now_ms: 0.0, ignore_unanswered_stops: false };
+    crate::checks::agent_scan::scan_transcript(&parent, defaults::num("agent_scan.tail_bytes"), &opts)
+        .ok()
+        .flatten()
+        .is_some_and(|s| s.terminal.contains(&a.id) || s.stopped_agents.contains(&a.id))
 }
 
 /// The stops a launching session answered for in-process teammates, as task description -> latest stop time (ms): the host answers a
@@ -412,8 +522,16 @@ fn stopped_teammates(st: &mut State) {
         let parent = format!("{}{}", dir.to_string_lossy(), pth("transcript_ext"));
         let stops = seen.entry(parent.clone()).or_insert_with(|| teammate_stops(&parent));
         let started = mtime_ms(Path::new(&meta_file)).map_or(0, |m| m as u64);
-        if stops.get(&desc).is_some_and(|t| *t >= started) {
+        if let Some(t) = stops.get(&desc).filter(|t| **t >= started) {
+            if resumed_after(a, (*t != u64::MAX).then_some(*t)) {
+                crate::metrics::bump("agent_stop_sticky", &[("how", "stale_notice")]);
+                continue;
+            }
             a.finished = true;
+            if a.stopped_at == 0 {
+                a.stopped_at = if *t == u64::MAX { a.last_output_ms } else { *t };
+                crate::metrics::bump("agent_stop_sticky", &[("how", "recorded")]);
+            }
         }
     }
 }
@@ -461,7 +579,7 @@ pub(super) fn proc_live(a: &Agent) -> bool {
 /// subagent or teammate has no process of its own: it is dead when its transcript or working directory is gone, or when it has been
 /// silent past `dead_idle_ms` while its launching session has no live process either (nobody is left to deliver to or to stop it). A
 /// session is dead on the same terms with its own process in place of the parent's, once the host calls it gone. Codex rows and heartbeats keep their own rules.
-fn mark_dead(env: &Env, st: &mut State) {
+pub(super) fn mark_dead(env: &Env, st: &mut State) {
     let limit = lim("dead_idle_ms");
     let live: std::collections::BTreeSet<String> = st.agents.values().filter(|a| proc_live(a)).map(|a| a.id.clone()).collect();
     let missing = |p: &str| !p.is_empty() && !Path::new(p).exists();
@@ -487,6 +605,14 @@ fn mark_dead(env: &Env, st: &mut State) {
             );
         }
     }
+}
+
+/// Reconcile retained child rows with host completion evidence without saving history.
+pub(super) fn reconcile_children(env: &Env, st: &mut State) {
+    stopped_subagents(env, st);
+    stopped_teammates(st);
+    off_roster(env, st);
+    sticky_stops(st);
 }
 
 /// Discover and ingest every source; drop agents that disappeared.
@@ -552,9 +678,7 @@ pub(crate) fn refresh(env: &Env, st: &mut State) -> Listing {
     for a in st.agents.values_mut().filter(|a| a.kind == kind_name("codex") && a.seen < now) {
         live::codex_state(env, a, a.last_output_ms);
     }
-    stopped_subagents(env, st);
-    stopped_teammates(st);
-    off_roster(env, st);
+    reconcile_children(env, st);
     heartbeats(env, st);
     devswarm(env, st);
     let again = relist(env, st, due);

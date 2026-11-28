@@ -97,6 +97,9 @@ pub(crate) fn judge_wide_line(buf: &[u8], names: &[&str], finders: &[memchr::mem
         Line::Unsure => return Some(Decisive::Unsure),
         Line::Skip => return None,
     };
+    if !super::is_conversation_row(&entry) {
+        return None;
+    }
     let mut uses = Vec::new();
     collect_tool_uses(&entry, &mut uses);
     uses.iter().any(|tu| get(tu, "name").and_then(Value::as_str).is_some_and(|n| names.contains(&n))).then_some(Decisive::Hit)
@@ -125,7 +128,14 @@ pub(crate) fn has_task_activity_in_file_uncached(path: &str, window: u64) -> Opt
     let names = defaults::list("tasklist_guard.task_tool_names");
     let finders = wide_finders(&names);
     let mut buf: Vec<u8> = Vec::new();
+    let every = defaults::num("taskstate.cut_check_lines").max(1);
+    let mut n = 0u64;
     loop {
+        // #763: the widened search (16 MB) stops at its call's cut and answers unsure
+        if n.is_multiple_of(every) && crate::deadline::cut_due() {
+            return Some(Err(Unsure));
+        }
+        n += 1;
         buf.clear();
         match rd.read_until(b'\n', &mut buf) {
             Ok(0) | Err(_) => return Some(Ok(false)),
@@ -188,8 +198,14 @@ fn scan_lines(lines: &[&str], truncated: bool, path: &str, window: u64, wide: u6
     let mut first_created = f64::INFINITY;
     let mut max_created = 0f64;
     let mut result_ids: Vec<(String, String)> = Vec::new();
+    let mut skipped = 0u64;
 
-    for line in lines {
+    let every = defaults::num("taskstate.cut_check_lines").max(1) as usize;
+    for (n, line) in lines.iter().enumerate() {
+        // #763: a cut call stops here and the pass is unsure (an error is never kept as the whole window's answer)
+        if n.is_multiple_of(every) && crate::deadline::cut_due() {
+            return Err(Unsure);
+        }
         let t = js_trim(line);
         if t.is_empty() {
             continue;
@@ -204,6 +220,10 @@ fn scan_lines(lines: &[&str], truncated: bool, path: &str, window: u64, wide: u6
         };
         if entry.is_null() {
             s.unsure = true;
+            continue;
+        }
+        if !super::is_conversation_row(&entry) {
+            skipped += 1;
             continue;
         }
         if get(&entry, "type").and_then(Value::as_str) == Some("user") {
@@ -366,7 +386,7 @@ fn scan_lines(lines: &[&str], truncated: bool, path: &str, window: u64, wide: u6
             }
         }
     }
-    let mut facts = Facts { tasks, window_reset, first_created, unsure: s.unsure };
+    let mut facts = Facts { tasks, window_reset, first_created, unsure: s.unsure, deleted: Vec::new(), created: Vec::new(), created_by: Vec::new() };
     if truncated && backfill(&mut facts, path, window).is_err() {
         s.unsure = true;
     }
@@ -409,6 +429,7 @@ fn scan_lines(lines: &[&str], truncated: bool, path: &str, window: u64, wide: u6
             Err(_) => s.unsure = true,
         }
     }
+    super::note_rows_skipped(skipped);
     Ok(Some(s))
 }
 
@@ -443,5 +464,6 @@ fn task(id: &str, content: String, status: Option<String>, priority: Option<Stri
         unknown,
         block_unknown: false,
         since: Default::default(),
+        blocked_on_at: Default::default(),
     }
 }

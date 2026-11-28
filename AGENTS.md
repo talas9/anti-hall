@@ -10,13 +10,13 @@ Treat Codex hooks as guardrails, not airtight gates.
 Budget: soft cap 30,000 B, hard Codex cap 32 KiB. Reference detail goes in `docs/GUIDE.md` (link it);
 only behavioural rules stay inline. The catalog at the end is generated (`node tools/gen-agents-catalog.js`).
 
-**Session hygiene (v0.108.0, hooks shared with Codex).** When `auto-handover.js` says
+**Session hygiene (v0.108.0, hooks shared with Codex).** When `auto-handover` says
 context crossed the threshold (default 85%; on Codex the real window comes from the
 rollout's `model_context_window`), write the handover yourself right away (the
 `anti-hall-handover` skill; never delegate it), tell the user and list the saved paths,
-then suggest starting a fresh session. When `version-alert.js` says a newer anti-hall is
+then suggest starting a fresh session. When `version-alert` says a newer anti-hall is
 available or already installed, tell the user (update via the `anti-hall-update` skill,
-then restart Codex). Repairs run by themselves after an update (`repair-on-reload.js`).
+then restart Codex). Repairs run by themselves after an update (`repair-on-reload`).
 Every setting lives in `~/.anti-hall/settings.json`; change it only through the
 `anti-hall-settings` skill / `ah-hook settings`, never by hand (Codex has no
 `/config` settings UI). Every feature has a settings key in ~/.anti-hall/settings.json, reachable through /anti-hall:settings and grouped by category. Claude Code's plugin options show only the headline switches and the safety guards.
@@ -141,7 +141,7 @@ reproduce/validate/lint steps and run them before claiming success.
   "Running" in an agent list is not progress: verify with process or output evidence
   before reporting status. Never wait forever — bound every brief's time/scope.
 - UPDATE THE PHASE STATUSLINE as phases progress: from the main coordinator (not from
-  inside subagents), call `statusline/phase.js set/advance/step/agents/clear` so the
+  inside subagents), run `ah-engine phase set|advance|step|agents|clear` so the
   terminal bar reflects the real run state. Subagents report back; the coordinator writes
   phase state to ~/.anti-hall/phase-state.json.
 - AFK MODE (only when the user has explicitly authorized full/autonomous "AFK" operation):
@@ -168,19 +168,19 @@ reproduce/validate/lint steps and run them before claiming success.
 
 The plugin enforces no-speculation discipline at three layers:
 
-**Tier 1 — Protocol (always-on, zero cost):** `verify-first-full.js` (SessionStart; a compact core pointing at the generated `PROTOCOL.md` by default, today's full text under `context.protocolLevel=full`),
-`verify-first-subagent.js` (SubagentStart — re-injects the Iron Law into every spawned
-subagent without the orchestration block, so workers don't recurse), and `verify-first.js` (per-turn) inject the Iron Law,
+**Tier 1 — Protocol (always-on, zero cost):** `verify-first-full` (SessionStart; a compact core pointing at the generated `PROTOCOL.md` by default, today's full text under `context.protocolLevel=full`),
+`verify-first-subagent` (SubagentStart — re-injects the Iron Law into every spawned
+subagent without the orchestration block, so workers don't recurse), and `verify-first` (per-turn) inject the Iron Law,
 banning both confident inference-as-fact and hedge-word speculation.
 
-**Tier 2 — Lexical guard (on by default, zero cost):** `speculation-guard.js` (Stop)
+**Tier 2 — Lexical guard (on by default, zero cost):** `speculation-guard` (Stop)
 scans the last assistant message for hedge-word markers and blocks once if none of the
 evidence/uncertainty acknowledgments are present.
 
-**Tier 3 — Semantic judge (OPT-IN, LLM cost):** `speculation-judge.js` (Stop) calls an LLM
+**Tier 3 — Semantic judge (OPT-IN, LLM cost):** `speculation-judge` (Stop) calls an LLM
 judge to catch confident inference-as-fact with no hedge word. Off by default; enabled by the `jev.semanticJudge` setting or `ANTIHALL_SEMANTIC_JUDGE=1`, and requires `ANTHROPIC_API_KEY`.
 
-**Tier 2.5 — Claim ledger (deterministic, LEDGER-ONLY):** `claim-ledger.js` (Stop) cross-checks
+**Tier 2.5 — Claim ledger (deterministic, LEDGER-ONLY):** `claim-ledger` (Stop) cross-checks
 checkable tokens in the last message (counts, SHAs, `task N of`, `N days ago`, no-tool "still
 running") against the session's evidence and records would-be flags to
 `~/.anti-hall/claim-ledger/<session>.jsonl` (`hard`/`soft`). It NEVER blocks; detail in `docs/GUIDE.md`.
@@ -298,9 +298,9 @@ Codex `anti-hall-<name>`: activate, context-conserve, deadly-loop, debt, defects
 
 **Settings** (`~/.anti-hall/settings.json`; env > file > plugin option > legacy > default; bare key = default true, else key=default; advanced keys after `|`, defaults via `settings.js show --all`):
 - autoHandover: enabled, pct=85, maxTokens=0, nag, nagStepPct=5, nagQuietMin=15, gateNewWork, gateBudgetPct=5, decisivePrompt | gateHousekeepingMarkers
-- guards: mergeGate=false, shipitGate=false, outputVerifyGuard, outputVerifyOncePerTurn, failureRootCauseNudge, failureNudgeFilter, repoSelfDrift, stashGuard=false, broadKill, handoverCommitGuard, gitignoreHint, emitDedupe, codexQuotaDetect, allowReadOnlyVerify, allowReadOnlyVerifyScripts, projectCommandAllow, projectEditAllow, allowPlainPush, allowGcloudReads, allowBackgroundScratchScripts, modelRouting=strict, updateInSession, modelRoutingDeployFloor=sonnet, apiGuard, speculationGuard, claimLedger, taskGuard, tasklistGuard, scanThrottle, silentAgentNudge, idleAgentSweep, compactAdviceGuard, compactAdviceRecentTurns=10, compactDeclarationGuard | gitAliasResolve, gitReusedMessageCheck, gitGuardHeredocData, allowAnthropicEnvKey, injectionRepeatEvery, editGuardAllow, allowSubagentMailbox, coordinatorWorkWindowMinutes, coordinatorWorkNudgeAt, coordinatorWorkBlockAt, coordinatorWorkMaxEntries, bashEditParity, shellWriteChecks, reaperMatch, reaperExclude, reaperCodexBroker, reaperCodexBrokerMinAgeS, tasklistWorkThreshold, pruneCompletedTasksAfter, progressFreshMs, apiGuardThirdparty, noBlockingQuestions, questionAgentsNote, sharedTreeAgentNote, mergeSidePickAdvisory, inferenceCheck, taskGuardOwnerBlockedMarker, dispatchDemand, idleNeglectMinPriority, maxParallelDispatch, idleNeglectProvenOnly, idleNeglectAgentMaxAgeMin, tasklistNoTaskTools, stopNagBudgetPerPrompt, silentAgentNudgeMin, staleAgentStopNote, idleAgentSweepCount, idleAgentSweepMin, compactAdviceMarginPct, stopHookVersionDowngrade, stopAck
+- guards: mergeGate=false, shipitGate=false, outputVerifyGuard, outputVerifyOncePerTurn, failureRootCauseNudge, failureNudgeFilter, failureNudgeHarmless, repoSelfDrift, stashGuard=false, broadKill, handoverCommitGuard, gitignoreHint, emitDedupe, codexQuotaDetect, allowReadOnlyVerify, allowReadOnlyVerifyScripts, projectCommandAllow, projectEditAllow, allowPlainPush, allowGcloudReads, allowBackgroundScratchScripts, modelRouting=strict, updateInSession, modelRoutingDeployFloor=sonnet, apiGuard, speculationGuard, claimLedger, taskGuard, tasklistGuard, scanThrottle, silentAgentNudge, idleAgentSweep, compactAdviceGuard, compactAdviceRecentTurns=10, compactDeclarationGuard | gitAliasResolve, gitReusedMessageCheck, gitGuardHeredocData, allowAnthropicEnvKey, injectionRepeatEvery, editGuardAllow, allowSubagentMailbox, coordinatorWorkWindowMinutes, coordinatorWorkNudgeAt, coordinatorWorkBlockAt, coordinatorWorkMaxEntries, bashEditParity, shellWriteChecks, reaperMatch, reaperExclude, reaperCodexBroker, reaperCodexBrokerMinAgeS, tasklistWorkThreshold, pruneCompletedTasksAfter, progressFreshMs, apiGuardThirdparty, noBlockingQuestions, denyChildQuestions, denyPrimaryQuestions, questionAgentsNote, sharedTreeAgentNote, mergeSidePickAdvisory, inferenceCheck, taskGuardOwnerBlockedMarker, dispatchDemand, idleNeglectMinPriority, maxParallelDispatch, idleNeglectProvenOnly, idleNeglectAgentMaxAgeMin, tasklistNoTaskTools, stopNagBudgetPerPrompt, silentAgentNudgeMin, staleAgentStopNote, idleAgentSweepCount, idleAgentSweepMin, compactAdviceMarginPct, stopHookVersionDowngrade, stopAck
 - safety: gitGuard, commandGuard, editGuard, swarmGuard
-- context: verifyFirstSession, verifyFirstOrchestration, protocolLevel=compact, codexOrchFullOn=session, orchFullOn=auto, verifyFirstTurn, verifyFirstSubagent, taskTracker, handoverResume, defectNudge, roleGuard, roleNote, injectGate, injectGateLimit, injectGateTask, injectGateComms, injectGateSwarm | dedupeWindowMin, injectGateLimitEvery, injectGateTaskEvery, injectGateCommsEvery, injectGateSwarmEvery
+- context: verifyFirstSession, verifyFirstOrchestration, protocolLevel=compact, codexOrchFullOn=session, orchFullOn=auto, verifyFirstTurn, verifyFirstSubagent, taskTracker, handoverResume, defectNudge, roleGuard, roleNote, injectGate, injectGateLimit, injectGateTask, injectGateComms, injectGateSwarm, shrinkInline, protocolOnce | inlineHookChars, inlineEventChars, dedupeWindowMin, injectGateLimitEvery, injectGateTaskEvery, injectGateCommsEvery, injectGateSwarmEvery
 - maintenance: repairOnReload, progressPrune, precompactSnapshot, taskLifecycleLog, sessionEndReaper
 - agents: tracker, reminders, wakeWatch, ownerNotify=false
 - versionAlerts: antiHall, claudeCli, devswarm
@@ -308,12 +308,12 @@ Codex `anti-hall-<name>`: activate, context-conserve, deadly-loop, debt, defects
 - limitConserve: mode=auto, threshold=85 | accountCheck
 - jev: enabled=false, transport=vercel, fallbackTransport=none, judgeModel=haiku, semanticJudge=false, budget.mode=unlimited, budget.usdPerDay=—, budget.usdPerWeek=—, weeklyNotice, budget.minCreditUsd=—, reviewAfterDays=7, reviewMinDecisions=30, reviewReminder, recommendNotice | judgeBackend, speculationBackend, triageBackend, cascade, cascadeShowJevAnswer, allowLegacyKeyRead, genericKeyVendor, keyFile, timeoutMs, confidenceThreshold, triage, triageUrgentThreshold, audit.snippets, logRotatedFiles, rollupRetentionDays, prices, priceUsdPerMInput, priceUsdPerMOutput, dispatchTierNoWorkspaceRepos, dispatchTierDetectNoWorkspaces, recommendNoticeHeadless
 - jevCascade:  | speculation, triage, newRequest, claimLedger, outputVerifyGuard, gitGuardSelfCredit, modelRouting, tasklistTrivial, codexNudgeSubstantial, mergeGateHedge, parentGateQuestion, supervisorBlockerLabel, findingDedup, postHandoverGate, speculationFramed, dispatchTier, devswarmOnBrief, devswarmExtraSanctioned, devswarmWaitKind, devswarmLoop, devswarmStepMap
-- jevIntegrations: on: speculation triage findingDedup dispatchTier devswarmOnBrief devswarmExtraSanctioned devswarmWaitKind devswarmLoop devswarmStepMap; shadow: newRequest claimLedger outputVerifyGuard gitGuardSelfCredit modelRouting tasklistTrivial codexNudgeSubstantial mergeGateHedge parentGateQuestion supervisorBlockerLabel speculationFramed; off: postHandoverGate
+- jevIntegrations: on: speculation triage findingDedup dispatchTier devswarmOnBrief devswarmExtraSanctioned devswarmWaitKind devswarmLoop devswarmStepMap; shadow: newRequest claimLedger outputVerifyGuard modelRouting tasklistTrivial codexNudgeSubstantial mergeGateHedge parentGateQuestion supervisorBlockerLabel speculationFramed; off: gitGuardSelfCredit postHandoverGate
 - devswarm: hivecontrol=—, supervisorMode=auto, requiredGates=done,merged,tests_passed, inboxCmd=—, autoArchive.mode=on, parentGate, childGate, parentInbox, childTurn, childRole, childDrain, parentReplyTracker, commsGuard, inboxReadGuard, wakeWatch, appSync, screenshotSync, spawnFromOrigin, planTracking, planRequired=false, archivedChildStop, maintainerNotice.post=false, maintainerNotice.show, startupSampling | heldPartitions, childGateStrict, parentGateCap, parentGateNeglectMinUnread, parentGateBusyFreshMin, parentGateBusyMaxAgeMin, parentGateNeglectGraceMin, activeFloorPct, archivedCacheMaxAgeMs, archivedGraceMs, cooldownSec, idleSec, dormantMs, drainTtlMs, graceSec, maxRecoveries, intervalSec, migrateMarkRead, monitorTimeoutSec, monitorNoOkFailMin, nudgeCooldownSec, nudgeMaxAttempts, nudgeWindowSec, postSpawnGraceSec, reapedRetentionDays, receiptWindowMs, archiveRequestRenagHours, reconcileSweep, reconcileSweepSec, sweepTailMode, rowStaleMs, sendReceiptRetentionDays, summaryRetentionDays, wakeCron, rearmOnTickOnly, cronMissingWarnMin, wakeWatchPollMs, wakeWatchIdleSkip, dispatchTierText, inlineWorkNudge, inlineWorkNudgeThreshold, tickRosterEvery, childGateRetentionDays, housekeepingSweep, housekeepingSweepSec, supervisorLogRotateBytes, inboxGraceSec, stableLauncher, supervisorSweepBudgetMs, supervisorBlockerLabelReaskSec, autoArchive.idleMin, autoArchive.maxPerSweep, autoArchive.ignorePings, retention.days, retention.maxStoreMB, retention.keepPerPartition, retention.archive, retention.archiveMaxMB, spawnStrictFlagValues, sendMultiRecipient, spawnFetchTtlSec, spawnCreateTimeoutMs, stepStallMin, strayWarnMax, burnTokensWarn, burnCacheReadPct, respawnGraceMin, respawnWipWaitSec, pausedProbeMax
-- statusline: base=—, noEmail=false
+- statusline: base=—, noEmail=false, usage=true, version=true
 - codexNudge: enabled | min
 - procwatch: enabled, devServerMode=report, testRunnerMode=report, stuckMinutes=20 | buildDaemonMode, mcpServerMode, shellTaskMode, otherMode
-- resourceWatch: enabled, cpuPercent=90, memoryMb=4096, renice=false | cpuWindowSeconds, swapMb, pressurePercent, macPressureLevel, cooldownSeconds
+- resourceWatch: enabled, cpuPercent=90, memoryMb=4096, renice=false | cpuWindowSeconds, swapMb, freeRamOkPercent, pressurePercent, macPressureLevel, cooldownSeconds
 - diskWatch: enabled, warnGb=20, criticalGb=5, blockAtCritical=false | warnPercent, criticalPercent, cooldownSeconds
 - engine: bootstrap, autoUpdate=off
 - defects: defaultProj=—

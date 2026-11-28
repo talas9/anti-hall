@@ -200,6 +200,10 @@ value = ", "
 doc = "Block headline; {versions} lists the interpreters' version lines."
 value = "this edit references APIs missing from the installed runtime."
 
+[api_guard_v1.msg_digest]
+doc = "The one-line digest of this rule (#462): what the rule is and what to do, shown to agents at session start and after compaction (guard_rules.digest_entry)."
+value = "Verify API names against the installed runtime before writing calls to them."
+
 [api_guard_v1.msg_why]
 doc = "Block message: why."
 value = "These attributes are absent from the real module/object; they look like fabrications."

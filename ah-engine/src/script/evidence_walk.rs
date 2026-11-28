@@ -259,7 +259,7 @@ mod tests {
     use serde_json::{Value, json};
 
     fn path(tag: &str) -> String {
-        std::env::temp_dir().join(format!("ah-evwalk-{tag}-{}", std::process::id())).to_string_lossy().into_owned()
+        crate::testtmp::path(format!("ah-evwalk-{tag}-{}", std::process::id())).to_string_lossy().into_owned()
     }
 
     fn user(text: &str) -> Value {

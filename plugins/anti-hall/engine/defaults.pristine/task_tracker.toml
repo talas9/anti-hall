@@ -8,7 +8,7 @@
 
 [task_tracker.summary]
 doc = "One-line description of the task-tracker check in the generated reference."
-value = "UserPromptSubmit task-list discipline: the full directive or the short reminder (window, transcript growth, keepalive and burst dedupe as Node keeps them), the open-tasks line, the per-turn DISPATCH NOW line with its Jev tier annotations (the running-agent cover and count proof, the cached verdict, the request for a task with none, the recorded recommendations and their outcomes), the newRequest Jev label of each prompt and the previous turn's demand score; a payload, state file or transcript timestamp in a shape only V8 reads exactly defers to Node."
+value = "UserPromptSubmit task-list discipline: the full directive (once per context epoch) or the short reminder (only on evidence: a substantive prompt while no task is open), the open-tasks line and the per-turn DISPATCH NOW line with its Jev tier annotations (both off unless context.taskTrackerLines) (the running-agent cover and count proof, the cached verdict, the request for a task with none, the recorded recommendations and their outcomes), the newRequest Jev label of each prompt and the previous turn's demand score; a payload, state file or transcript timestamp in a shape only V8 reads exactly defers to Node."
 
 [task_tracker.setting]
 doc = "Where the check's on/off switch is read from (context.taskTracker, default on)."
@@ -54,6 +54,10 @@ value = "as an item in your task/plan list "
 doc = "The protocol level at which the directive keeps the non-blocking clause (any other level drops it)."
 value = "full"
 
+[task_tracker.prune_line]
+doc = "The note injected (once per change of the done-count) when the list holds many completed tasks; `{n}` is how many and `{limit}` the limit (guards.pruneCompletedTasksAfter). Delivered on UserPromptSubmit because a Stop hook's exit-0 stderr never reaches the model. It leads the tracker's text on a line of its own and its first line stays under digest_line_chars, because the prompt digest shows only the first line of an advisory inline. It says plainly that these entries are not user data and names the ledger path (the relative form: the tracker has no cheap bounded way to render the absolute one) so a session that follows a never-delete rule still acts."
+value = "[task-guard] REQUIRED NOW, before other work: delete your {n} completed tasks (limit {limit}) with TaskUpdate status=deleted. Not optional.\nThey are not user data; log them first in .anti-hall/history/<date>/<session>.md. It is your owner's setting (guards.pruneCompletedTasksAfter): do not ignore it, and do not postpone it. Only this session's own task entries may be deleted; nothing else is exempt from the never-delete rule."
+
 [task_tracker.event]
 doc = "The hook event name in the output."
 value = "UserPromptSubmit"
@@ -89,22 +93,6 @@ value = "task-tracker"
 [task_tracker.session_hash_len]
 doc = "How many hexadecimal digits of the working directory's hash name a session that has no id."
 value = 16
-
-[task_tracker.window_ms]
-doc = "How long the full directive stays fresh before it is injected again."
-value = 21600000
-unit = "ms"
-
-[task_tracker.growth_bytes]
-doc = "How much the transcript may grow after a full directive before the next prompt injects it again (about 60 thousand tokens, where adherence to an instruction starts to decay)."
-value = 245760
-unit = "bytes"
-
-[task_tracker.growth_min_gap_ms]
-doc = "The least time since the last full directive before transcript growth alone injects it again. In a session whose transcript grows by the growth threshold every turn, growth alone re-sent the whole directive on every prompt; the window (window_ms) still re-sends it on expiry."
-value = 1800000
-unit = "ms"
-min = 0
 
 [task_tracker.future_tolerance_ms]
 doc = "How far ahead of now a stored timestamp may be (clock skew) before it counts as corrupt and the window is treated as expired."
@@ -419,3 +407,79 @@ value = { dispatched = "dispatched-", followed = "followed", overridden = "overr
 doc = "Agents dispatched for one workflow-tier task at which the dispatch counts as a fan-out."
 value = 3
 min = 1
+
+# ---- prompt-noise cut (#338): what the demand line leaves out, and when the short reminder speaks ----------------
+
+[task_tracker.held_setting]
+doc = "Skips held tasks in DISPATCH NOW. Where the switch is read from that keeps held tasks out of the DISPATCH NOW line (guards.dispatchSkipHeld, default on): a task with any metadata.blockedOn value, or a status that says it waits, is never named."
+value = { section = "guards", key = "dispatchSkipHeld", env = "ANTIHALL_DISPATCH_SKIP_HELD", aliases = [], option = "", default = true }
+
+[task_tracker.held_status_re]
+doc = "JavaScript regex source (case-insensitive) of a task status that means the task waits (on the owner or anything else) and is not dispatchable."
+value = 'blocked|waiting|on[-_ ]?hold|deferred|parked'
+
+[task_tracker.conflict_setting]
+doc = "Skips tasks whose file a running agent holds. Where the switch is read from that keeps a task out of the DISPATCH NOW line when a running agent already works on a file it names (guards.dispatchSkipFileConflict, default on)."
+value = { section = "guards", key = "dispatchSkipFileConflict", env = "ANTIHALL_DISPATCH_SKIP_FILE_CONFLICT", aliases = [], option = "", default = true }
+
+[task_tracker.file_token_re]
+doc = "JavaScript regex source (global) of the words of a task that name a file: a path with a directory, or a name with a known extension."
+value = '(?:[\w.-]+/)+[\w.-]+\.\w+|[\w-]+\.(?:rs|js|ts|tsx|toml|md|json|py|sh|yml|yaml|go|java|kt|swift|dart|css|html)\b'
+
+[task_tracker.stop_setting]
+doc = "Quiets DISPATCH NOW during the spawn stop. Where the switch is read from that silences the DISPATCH NOW line while the weekly-usage spawn stop is active (guards.dispatchQuietSpawnStop, default on)."
+value = { section = "guards", key = "dispatchQuietSpawnStop", env = "ANTIHALL_DISPATCH_QUIET_SPAWN_STOP", aliases = [], option = "", default = true }
+
+[task_tracker.change_setting]
+doc = "Short reminder speaks only on evidence. Where the switch is read from that makes the short reminder speak only when the prompt holds a request no task can cover: a substantive prompt (untracked_min_chars) while no task is open, repeated after untracked_prompts such prompts (context.taskTrackerChangeOnly, default on). Off restores the reminder on every prompt (rationed by the dedupe store). The full directive is sent once per context epoch either way."
+value = { section = "context", key = "taskTrackerChangeOnly", env = "ANTIHALL_TASK_TRACKER_CHANGE_ONLY", aliases = [], option = "", default = true }
+
+[task_tracker.lines_setting]
+doc = "Where the switch is read from that lets the tracker say the open-tasks line and the per-turn DISPATCH NOW line (context.taskTrackerLines, default off). Off, both stay silent: whether the list is kept and tasks are dispatched is judged on the engine tick from evidence, not announced on every list change."
+value = { section = "context", key = "taskTrackerLines", env = "ANTIHALL_TASK_TRACKER_LINES", aliases = [], option = "", default = false }
+
+[task_tracker.terse_setting]
+doc = "Where the switch is read from that gives the tracker its factual wording (context.taskTrackerTerse, default on): while it is on, a text key still holding its stock value (stock_texts) is worded as terse_texts says; a key the owner edited is used as written, switch on or off."
+value = { section = "context", key = "taskTrackerTerse", env = "ANTIHALL_TASK_TRACKER_TERSE", aliases = [], option = "", default = true }
+
+[task_tracker.stock_texts]
+doc = "The stock value of each text that context.taskTrackerTerse can reword, by key (the shipped value of that key). A key whose current value equals its entry here is unedited, so the switch may swap in terse_texts; any other value is the owner's own and stays."
+value = { what_full = "requests need tracking before work starts.", instead_head = "track each request as a priority-sorted task.", non_blocking = "keep the MAIN thread non-blocking by delegating heavy/long work to background subagents; ", what_short = "capture every request as a priority-sorted task; keep statuses current; delegate heavy work; drop nothing.", open_some = "open tasks: {n}{blocked}{tail} — update or close them.", subject_tail = " (oldest in_progress subject: {subject})" }
+
+[task_tracker.terse_texts]
+doc = "The factual wording used for an unedited text (see stock_texts) while context.taskTrackerTerse is on, by key. Same placeholders as the stock text of that key."
+value = { what_full = "each user request is tracked as a priority-sorted task before work starts, so none is lost.", instead_head = "create the task before the work and keep its status current.", non_blocking = " delegate heavy or long work to background subagents, so the main thread stays free.", what_short = "this prompt may hold a request that is not in the task list yet; add it as a task, so none is dropped.", open_some = "open tasks: {n}{blocked}{tail}; close the finished ones, so the list stays accurate.", subject_tail = " (oldest in progress: {subject})" }
+
+[task_tracker.event_full]
+doc = "Counter event: the full directive was sent."
+value = "full_emitted"
+
+[task_tracker.event_short]
+doc = "Counter event: the short reminder was sent."
+value = "short_emitted"
+
+[task_tracker.event_short_same]
+doc = "Counter event: the short reminder was withheld because the task list is in the state the agent was already told (unchanged list, or the dedupe store holds the text)."
+value = "short_suppressed_same_state"
+
+[task_tracker.untracked_prompts]
+doc = "Prompts before the short reminder repeats. Prompts holding a request no task covers (see change_setting) after which the short reminder speaks again (context.taskTrackerUntrackedPrompts)."
+value = { section = "context", key = "taskTrackerUntrackedPrompts", env = "ANTIHALL_TASK_TRACKER_UNTRACKED_PROMPTS", aliases = [], option = "", default = 8, min = 1 }
+
+[task_tracker.untracked_min_chars]
+doc = "The fewest characters a prompt needs to count as a request that may need a task (a shorter one is a follow-up, a yes or a command)."
+value = 40
+min = 1
+unit = "chars"
+
+[metric.task_tracker_emitted]
+doc = "Task tracker messages, by form (full_emitted: the full directive was sent; short_emitted: the short reminder was sent; short_suppressed_same_state: the short reminder was withheld because the agent was already told this state)."
+value = { kind = "counter", unit = "messages", labels = ["form"] }
+
+[task_tracker.sw_skip_scheduled]
+doc = "Switch context.taskTrackerSkipScheduled (default on): on a turn the host scheduler delivered (a cron tick: the newest user turn of the transcript is a scheduled one with the prompt now submitted) the tracker says nothing while the open-task list is unchanged since its last note, and does not ask Jev to label the prompt. A changed list, or any prompt a person typed, still gets the note. Off restores the note on every scheduled turn."
+value = { section = "context", key = "taskTrackerSkipScheduled", env = "ANTIHALL_TASK_TRACKER_SKIP_SCHEDULED", aliases = [], option = "", default = true }
+
+[task_tracker.skip_scheduled_source]
+doc = "The `source` label of the waste counters when the tracker is skipped on an unchanged scheduled turn."
+value = "tracker_scheduled"

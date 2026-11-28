@@ -1,0 +1,580 @@
+//! Completed-task orders (GH #762): a completed task left in the session list is ordered deleted (PostToolUse on completion, then
+//! UserPromptSubmit past guards.doneOrderAfterMin on the done_order.steps_min schedule, and at Stop only with handover.taskListEnforce =
+//! block). Each test runs the real check in a scratch HOME with a task store and a done-order record whose ages it seeds.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
+
+use serde_json::{Value, json};
+use std::io::Write;
+use std::path::{Path, PathBuf};
+use std::process::{Command, Stdio};
+
+const SID: &str = "0a1b2c3d-1111-2222-3333-444455556666";
+
+struct Scratch {
+    dir: PathBuf,
+}
+
+impl Scratch {
+    fn new(tag: &str) -> Scratch {
+        let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("trs-{tag}-{}", std::process::id()));
+        ah_engine::discard::harmless(std::fs::remove_dir_all(&dir));
+        std::fs::create_dir_all(dir.join("home/.anti-hall")).unwrap();
+        std::fs::create_dir_all(dir.join("proj/.git")).unwrap();
+        Scratch { dir }
+    }
+
+    fn home(&self) -> PathBuf {
+        self.dir.join("home")
+    }
+
+    /// The session's store with one task per status given (ids 1..).
+    fn store(&self, statuses: &[&str]) {
+        let store = self.home().join(".claude/tasks/session-0a1b2c3d");
+        std::fs::create_dir_all(&store).unwrap();
+        for (i, st) in statuses.iter().enumerate() {
+            let n = i + 1;
+            let rec = json!({"id": n.to_string(), "subject": format!("store task {n}"), "description": "d", "status": st, "blocks": [], "blockedBy": []});
+            std::fs::write(store.join(format!("{n}.json")), rec.to_string()).unwrap();
+        }
+    }
+
+    /// A transcript whose reconstruction holds one task (#1) with `status`.
+    fn transcript(&self, status: &str) -> PathBuf {
+        let t = format!(
+            "{}\n{}\n{}\n",
+            json!({"type": "assistant", "message": {"id": "m1", "role": "assistant", "content": [{"type": "tool_use", "id": "tu1", "name": "TaskCreate", "input": {"subject": "transcript task"}}]}}),
+            json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "tu1", "content": "Task #1 created successfully: transcript task"}]}}),
+            json!({"type": "assistant", "message": {"id": "m2", "role": "assistant", "content": [{"type": "tool_use", "id": "tu2", "name": "TaskUpdate", "input": {"taskId": "1", "status": status}}]}}),
+        );
+        let p = self.dir.join("t.jsonl");
+        std::fs::write(&p, t).unwrap();
+        p
+    }
+
+    /// `ah-engine check <name>` on `payload` in the scratch HOME; stdout.
+    fn check(&self, name: &str, payload: &Value, env: &[(&str, &str)]) -> String {
+        let plugin = Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall");
+        let mut c = Command::new(env!("CARGO_BIN_EXE_ah-engine"));
+        c.args(["check", name])
+            .env_clear()
+            .env("PATH", std::env::var("PATH").unwrap_or_default())
+            .env("HOME", self.home())
+            .env("ANTIHALL_INGEST_DRY_RUN", "1")
+            .env("AH_ENGINE_DIR", self.dir.join("state"))
+            .env("AH_ENGINE_NOSPAWN", "1")
+            .env("AH_ENGINE_PLUGIN_ROOT", &plugin)
+            .env("CLAUDE_PLUGIN_ROOT", &plugin)
+            .envs(env.iter().copied())
+            .current_dir(&self.dir)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut ch = c.spawn().unwrap();
+        ch.stdin.take().unwrap().write_all(payload.to_string().as_bytes()).unwrap();
+        let o = ch.wait_with_output().unwrap();
+        format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr))
+    }
+
+    /// The `advisory` counters of `ah-engine status --json` in the scratch state directory (no daemon: read from the counter journal).
+    fn advisory_counters(&self) -> Value {
+        let plugin = Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall");
+        let o = Command::new(env!("CARGO_BIN_EXE_ah-engine"))
+            .args(["status", "--json"])
+            .env_clear()
+            .env("PATH", std::env::var("PATH").unwrap_or_default())
+            .env("HOME", self.home())
+            .env("AH_ENGINE_DIR", self.dir.join("state"))
+            .env("AH_ENGINE_NOSPAWN", "1")
+            .env("AH_ENGINE_PLUGIN_ROOT", &plugin)
+            .env("CLAUDE_PLUGIN_ROOT", &plugin)
+            .env("ANTIHALL_INGEST_DRY_RUN", "1")
+            .current_dir(&self.dir)
+            .output()
+            .unwrap();
+        let v: Value = serde_json::from_slice(&o.stdout).unwrap_or_else(|e| panic!("status --json: {e}: {}", String::from_utf8_lossy(&o.stdout)));
+        v["advisory"].clone()
+    }
+}
+
+impl Drop for Scratch {
+    fn drop(&mut self) {
+        ah_engine::discard::harmless(std::fs::remove_dir_all(&self.dir));
+    }
+}
+
+fn now_ms() -> u128 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis()
+}
+
+const MIN: u128 = 60_000;
+
+impl Scratch {
+    fn record_path(&self) -> PathBuf {
+        self.home().join(format!(".anti-hall/done-orders/done-{SID}.json"))
+    }
+
+    /// Seed the completed-task record: task `id` first seen done `age_min` minutes ago, ordered `count` times, last `last_min` minutes ago.
+    fn seed(&self, id: &str, age_min: u128, count: u32, last_min: u128) {
+        let now = now_ms();
+        let rec = json!({"ids": {id: {"first": (now - age_min * MIN) as u64, "count": count, "lastAt": (now - last_min * MIN) as u64}}});
+        std::fs::create_dir_all(self.record_path().parent().unwrap()).unwrap();
+        std::fs::write(self.record_path(), rec.to_string()).unwrap();
+    }
+
+    fn enforce_block(&self) {
+        std::fs::write(self.home().join(".anti-hall/settings.json"), r#"{"handover":{"taskListEnforce":"block"}}"#).unwrap();
+    }
+
+    fn prompt(&self, tr: &Path) -> String {
+        let p = json!({"hook_event_name": "UserPromptSubmit", "session_id": SID, "cwd": self.dir.join("proj"), "transcript_path": tr, "prompt": "continue"});
+        self.check("task-tracker", &p, &[])
+    }
+
+    fn task_update(&self, tr: &Path, status: &str) -> String {
+        let p = json!({"hook_event_name": "PostToolUse", "tool_name": "TaskUpdate", "session_id": SID, "cwd": self.dir.join("proj"), "transcript_path": tr, "tool_input": {"taskId": "1", "status": status}});
+        self.check("tasklist-hygiene", &p, &[])
+    }
+}
+
+fn stop(s: &Scratch, tr: &Path) -> Value {
+    json!({"hook_event_name": "Stop", "session_id": SID, "cwd": s.dir.join("proj"), "transcript_path": tr})
+}
+
+const ORDER: &str = "Do now: 1 completed task(s) still listed: TaskUpdate status=deleted #1";
+
+#[test]
+fn a_completed_task_older_than_the_age_is_ordered_deleted_at_the_prompt() {
+    let s = Scratch::new("do-old");
+    s.store(&["completed", "pending"]);
+    let tr = s.transcript("completed");
+    s.seed("1", 11, 0, 0);
+    let out = s.prompt(&tr);
+    assert!(out.contains(ORDER), "a task done for 11 min (age 10) gets the order: {out}");
+}
+
+#[test]
+fn a_completed_task_inside_the_age_is_not_ordered_at_the_prompt() {
+    let s = Scratch::new("do-young");
+    s.store(&["completed", "pending"]);
+    let tr = s.transcript("completed");
+    s.seed("1", 2, 0, 0);
+    let out = s.prompt(&tr);
+    assert!(!out.contains("status=deleted"), "a task done 2 min ago is not ordered yet: {out}");
+}
+
+#[test]
+fn the_completion_line_is_an_order_not_a_tip() {
+    let s = Scratch::new("do-fresh");
+    s.store(&["completed", "pending"]);
+    let tr = s.transcript("completed");
+    let out = s.task_update(&tr, "completed");
+    assert!(out.contains("Do now: task #1 is done"), "the PostToolUse line is the order form: {out}");
+    assert!(out.contains("TaskUpdate status=deleted #1"), "it names the delete: {out}");
+    assert!(!out.contains("💡"), "no tip icon: {out}");
+}
+
+/// Ignored-rules 5/6: a subagent's task call gets no delete order (its list is the spawner's; it ignored the order by design); the main
+/// thread's identical call still does, and the skip is counted.
+#[test]
+fn a_subagents_task_call_gets_no_delete_order_and_the_skip_is_counted() {
+    let s = Scratch::new("do-subagent");
+    std::fs::create_dir_all(s.dir.join("state")).unwrap();
+    s.store(&["completed", "pending"]);
+    let tr = s.transcript("completed");
+    let mut p = json!({"hook_event_name": "PostToolUse", "tool_name": "TaskUpdate", "session_id": SID, "cwd": s.dir.join("proj"), "transcript_path": tr, "tool_input": {"taskId": "1", "status": "completed"}});
+    assert!(s.check("tasklist-hygiene", &p, &[]).contains("Do now: task #1 is done"), "the main thread is still ordered");
+    p["agent_id"] = "worker-1".into();
+    let out = s.check("tasklist-hygiene", &p, &[]);
+    assert!(!out.contains("status=deleted"), "a subagent is not ordered: {out}");
+    let adv = s.advisory_counters();
+    assert!(adv.to_string().contains("subagent_skipped"), "the skip is counted: {adv}");
+}
+
+/// PR #893 review: the subagent skip covers only the done order and tip. A subagent's oversize TaskCreate is still refused with
+/// handover.taskListEnforce = block, and a subagent's delete is still counted as deleted.
+#[test]
+fn a_subagents_task_call_is_still_blocked_with_enforce_block_and_its_delete_is_still_counted() {
+    let s = Scratch::new("do-subagent-block");
+    std::fs::create_dir_all(s.dir.join("state")).unwrap();
+    s.store(&["completed", "pending"]);
+    let tr = s.transcript("completed");
+    s.enforce_block();
+    let long = "x".repeat(200);
+    let pre = json!({"hook_event_name": "PreToolUse", "tool_name": "TaskCreate", "session_id": SID, "cwd": s.dir.join("proj"), "transcript_path": tr, "agent_id": "worker-1", "tool_input": {"subject": long, "description": "d"}});
+    let out = s.check("tasklist-hygiene", &pre, &[]);
+    assert!(
+        out.contains("\"decision\":\"block\"") || out.contains("\"permissionDecision\":\"deny\"") || out.contains("⛔"),
+        "a subagent's oversize subject is refused with enforce = block: {out}"
+    );
+    let del = json!({"hook_event_name": "PostToolUse", "tool_name": "TaskUpdate", "session_id": SID, "cwd": s.dir.join("proj"), "transcript_path": tr, "agent_id": "worker-1", "tool_input": {"taskId": "1", "status": "deleted"}});
+    s.check("tasklist-hygiene", &del, &[]);
+    let adv = s.advisory_counters();
+    assert_eq!(adv["tasklist_hygiene"]["deleted"], 1, "a subagent's delete is counted: {adv}");
+}
+
+#[test]
+fn after_the_delete_there_is_no_further_order_and_it_counts_as_followed() {
+    let s = Scratch::new("do-followed");
+    std::fs::create_dir_all(s.dir.join("state")).unwrap();
+    s.store(&["completed", "pending"]);
+    let tr = s.transcript("completed");
+    s.seed("1", 30, 1, 0);
+    let out = s.task_update(&tr, "deleted");
+    assert!(!out.contains("status=deleted"), "the delete itself is not ordered again: {out}");
+    std::fs::remove_file(s.home().join(".claude/tasks/session-0a1b2c3d/1.json")).unwrap();
+    let out = s.prompt(&tr);
+    assert!(!out.contains("status=deleted"), "the task is gone: no order at the next prompt: {out}");
+    let rec = std::fs::read_to_string(s.record_path()).unwrap();
+    assert!(!rec.contains("\"1\""), "the record dropped the deleted task: {rec}");
+    let adv = s.advisory_counters();
+    assert_eq!(adv["tasklist_hygiene"]["followed"], 1, "an ordered task that was deleted counts as followed: {adv}");
+}
+
+#[test]
+fn the_order_repeats_only_on_the_schedule() {
+    let s = Scratch::new("do-interval");
+    std::fs::create_dir_all(s.dir.join("state")).unwrap();
+    s.store(&["completed", "pending"]);
+    let tr = s.transcript("completed");
+    s.seed("1", 40, 1, 1); // ordered once, 1 min ago; the next step is 10 min
+    let out = s.prompt(&tr);
+    assert!(!out.contains("status=deleted"), "inside the interval: no order: {out}");
+    s.seed("1", 40, 1, 11);
+    let out = s.prompt(&tr);
+    assert!(out.contains(ORDER), "past the interval: the order repeats: {out}");
+    let again = s.prompt(&tr);
+    assert!(!again.contains("status=deleted"), "and not again on the very next prompt: {again}");
+    s.seed("1", 400, 6, 600); // at the cap
+    let capped = s.prompt(&tr);
+    assert!(!capped.contains("status=deleted"), "after done_order.max_orders the task is left alone: {capped}");
+    let adv = s.advisory_counters();
+    assert_eq!(adv["tasklist_hygiene"]["order_emitted"], 1, "one order was emitted: {adv}");
+    assert!(adv["tasklist_hygiene"]["completed_lingering"].as_u64().unwrap_or(0) >= 1, "the lingering task is counted: {adv}");
+}
+
+#[test]
+fn at_stop_the_order_blocks_only_with_the_enforce_switch_on_block() {
+    let s = Scratch::new("do-stop");
+    s.store(&["completed"]);
+    let tr = s.transcript("completed");
+    s.seed("1", 11, 0, 0);
+    let out = s.check("task-guard", &stop(&s, &tr), &[]);
+    assert!(!out.contains("status=deleted"), "default enforce (advisory): the Stop is not blocked for a lingering task: {out}");
+    s.enforce_block();
+    let out = s.check("task-guard", &stop(&s, &tr), &[]);
+    assert!(out.contains("\"decision\":\"block\"") && out.contains(ORDER), "enforce = block: the Stop is blocked with the order: {out}");
+    let again = s.check("task-guard", &stop(&s, &tr), &[]);
+    assert!(!again.contains("status=deleted"), "the next Stop inside the interval is not blocked again: {again}");
+}
+
+impl Scratch {
+    /// A named shared list (`CLAUDE_CODE_TASK_LIST_ID`): task `n` of `statuses`, owned by `owner` when it is not empty.
+    fn named_list(&self, list: &str, tasks: &[(&str, &str)]) {
+        let dir = self.home().join(".claude/tasks").join(list);
+        std::fs::create_dir_all(&dir).unwrap();
+        for (i, (st, owner)) in tasks.iter().enumerate() {
+            let n = i + 1;
+            let rec = json!({"id": n.to_string(), "subject": format!("shared task {n}"), "description": "d", "status": st, "owner": owner, "blocks": [], "blockedBy": []});
+            std::fs::write(dir.join(format!("{n}.json")), rec.to_string()).unwrap();
+        }
+    }
+
+    fn task_update_env(&self, tr: &Path, env: &[(&str, &str)]) -> String {
+        let p = json!({"hook_event_name": "PostToolUse", "tool_name": "TaskUpdate", "session_id": SID, "cwd": self.dir.join("proj"), "transcript_path": tr, "tool_input": {"taskId": "1", "status": "completed"}});
+        self.check("tasklist-hygiene", &p, env)
+    }
+
+    fn prompt_env(&self, tr: &Path, env: &[(&str, &str)]) -> String {
+        let p = json!({"hook_event_name": "UserPromptSubmit", "session_id": SID, "cwd": self.dir.join("proj"), "transcript_path": tr, "prompt": "continue"});
+        self.check("task-tracker", &p, env)
+    }
+}
+
+#[test]
+fn a_private_completed_id_never_orders_the_delete_of_a_teammates_pending_task_in_the_shared_list() {
+    let s = Scratch::new("do-shared");
+    s.store(&["completed"]); // the session's own session-<8> list: a stale completed #1
+    s.named_list("team-a", &[("pending", "mate")]); // the list the harness writes: a teammate's pending #1
+    let tr = s.transcript("completed");
+    s.seed("1", 30, 0, 0);
+    let out = s.prompt_env(&tr, &[("CLAUDE_CODE_TASK_LIST_ID", "team-a")]);
+    assert!(!out.contains("status=deleted"), "#1 of the shared list is pending and another owner's: no delete order: {out}");
+}
+
+#[test]
+fn in_a_shared_list_a_completed_task_another_owner_holds_is_not_ordered_but_an_unowned_one_is() {
+    let s = Scratch::new("do-shared-owner");
+    s.named_list("team-a", &[("completed", "mate"), ("completed", "")]);
+    let tr = s.transcript("completed");
+    let now = now_ms();
+    let rec = json!({"ids": {"team-a/1": {"first": (now - 30 * MIN) as u64, "count": 0, "lastAt": 0}, "team-a/2": {"first": (now - 30 * MIN) as u64, "count": 0, "lastAt": 0}}});
+    std::fs::create_dir_all(s.record_path().parent().unwrap()).unwrap();
+    std::fs::write(s.record_path(), rec.to_string()).unwrap();
+    let out = s.prompt_env(&tr, &[("CLAUDE_CODE_TASK_LIST_ID", "team-a")]);
+    assert!(out.contains("1 completed task(s) still listed: TaskUpdate status=deleted #2"), "only the unowned #2 is ordered: {out}");
+    assert!(!out.contains("#1"), "the teammate's #1 is not named: {out}");
+}
+
+#[test]
+fn in_a_shared_list_a_completed_task_whose_owner_is_not_a_string_is_not_ordered_but_an_absent_owner_is() {
+    let s = Scratch::new("do-shared-owner-kind");
+    s.named_list("team-a", &[("completed", ""), ("completed", ""), ("completed", "")]);
+    // #1 owner 7 (a number), #2 owner null, #3 no owner key: only a missing owner is "nobody"
+    let dir = s.home().join(".claude/tasks/team-a");
+    for (n, owner) in [(1, Some(json!(7))), (2, Some(json!(null))), (3, None)] {
+        let mut rec =
+            json!({"id": n.to_string(), "subject": format!("shared task {n}"), "description": "d", "status": "completed", "blocks": [], "blockedBy": []});
+        if let Some(o) = owner {
+            rec["owner"] = o;
+        }
+        std::fs::write(dir.join(format!("{n}.json")), rec.to_string()).unwrap();
+    }
+    let tr = s.transcript("completed");
+    let now = now_ms();
+    let first = |_: u32| json!({"first": (now - 30 * MIN) as u64, "count": 0, "lastAt": 0});
+    let rec = json!({"ids": {"team-a/1": first(1), "team-a/2": first(2), "team-a/3": first(3)}});
+    std::fs::create_dir_all(s.record_path().parent().unwrap()).unwrap();
+    std::fs::write(s.record_path(), rec.to_string()).unwrap();
+    let out = s.prompt_env(&tr, &[("CLAUDE_CODE_TASK_LIST_ID", "team-a")]);
+    assert!(out.contains("1 completed task(s) still listed: TaskUpdate status=deleted #3"), "only the owner-less #3 is ordered: {out}");
+    assert!(!out.contains("#1") && !out.contains("#2"), "a task whose owner cannot be read is never ordered: {out}");
+}
+
+#[test]
+fn a_named_list_id_with_no_store_directory_is_ambiguous_and_orders_nothing() {
+    let s = Scratch::new("do-ambiguous");
+    s.store(&["completed"]);
+    let tr = s.transcript("completed");
+    s.seed("1", 30, 0, 0);
+    let out = s.prompt_env(&tr, &[("CLAUDE_CODE_TASK_LIST_ID", "no-such-list")]);
+    assert!(!out.contains("status=deleted"), "which list the harness writes is unknown: no order: {out}");
+}
+
+#[test]
+fn the_completion_line_in_a_shared_list_skips_a_task_another_owner_holds() {
+    let s = Scratch::new("do-fresh-foreign");
+    s.named_list("team-a", &[("completed", "mate")]);
+    let tr = s.transcript("completed");
+    let out = s.task_update_env(&tr, &[("CLAUDE_CODE_TASK_LIST_ID", "team-a")]);
+    assert!(!out.contains("status=deleted"), "a teammate's task is never ordered deleted at completion: {out}");
+    assert!(!s.record_path().exists(), "no record is started for it");
+}
+
+#[test]
+fn the_completion_line_in_a_shared_list_orders_an_unowned_task() {
+    let s = Scratch::new("do-fresh-unowned");
+    s.named_list("team-a", &[("completed", "")]);
+    let tr = s.transcript("completed");
+    let out = s.task_update_env(&tr, &[("CLAUDE_CODE_TASK_LIST_ID", "team-a")]);
+    assert!(out.contains("TaskUpdate status=deleted #1"), "an unowned task of the shared list is ordered: {out}");
+}
+
+#[test]
+fn the_completion_line_with_an_ambiguous_list_orders_nothing() {
+    let s = Scratch::new("do-fresh-ambiguous");
+    s.store(&["completed"]);
+    let tr = s.transcript("completed");
+    let out = s.task_update_env(&tr, &[("CLAUDE_CODE_TASK_LIST_ID", "no-such-list")]);
+    assert!(!out.contains("status=deleted"), "the named list has no directory: which list is written is unknown: {out}");
+}
+
+#[test]
+fn an_unreadable_file_in_the_named_list_orders_nothing_and_never_falls_back_to_the_transcript() {
+    let s = Scratch::new("do-unreadable");
+    s.named_list("team-a", &[]);
+    std::fs::write(s.home().join(".claude/tasks/team-a/1.json"), "{not json").unwrap();
+    let tr = s.transcript("completed"); // the transcript alone would name #1 as completed and unowned
+    let now = now_ms();
+    let rec = json!({"ids": {"team-a/1": {"first": (now - 30 * MIN) as u64, "count": 0, "lastAt": 0}}});
+    std::fs::create_dir_all(s.record_path().parent().unwrap()).unwrap();
+    std::fs::write(s.record_path(), rec.to_string()).unwrap();
+    let out = s.prompt_env(&tr, &[("CLAUDE_CODE_TASK_LIST_ID", "team-a")]);
+    assert!(!out.contains("status=deleted"), "an unreadable list file: the list is unknown, no order from the transcript: {out}");
+}
+
+#[test]
+fn the_record_is_bounded_to_max_entries() {
+    let s = Scratch::new("do-bound");
+    std::fs::create_dir_all(s.dir.join("state")).unwrap();
+    let n = 230usize;
+    let statuses = vec!["completed"; n];
+    s.store(&statuses);
+    let tr = s.transcript("completed");
+    let now = now_ms();
+    let ids: serde_json::Map<String, Value> =
+        (1..=n).map(|i| (i.to_string(), json!({"first": (now - 400 * MIN) as u64, "count": 6, "lastAt": (now - 300 * MIN) as u64 + i as u64}))).collect();
+    std::fs::create_dir_all(s.record_path().parent().unwrap()).unwrap();
+    std::fs::write(s.record_path(), json!({"ids": ids}).to_string()).unwrap();
+    s.task_update(&tr, "completed"); // a write: #1 is recorded fresh
+    let rec: Value = serde_json::from_str(&std::fs::read_to_string(s.record_path()).unwrap()).unwrap();
+    assert!(rec["ids"].as_object().unwrap().len() <= 200, "the record is capped at done_order.max_entries: {}", rec["ids"].as_object().unwrap().len());
+}
+
+/// Today's UTC date as the history ledger directory spells it.
+fn utc_date() -> String {
+    String::from_utf8(Command::new("date").args(["-u", "+%F"]).output().unwrap().stdout).unwrap().trim().to_string()
+}
+
+impl Scratch {
+    fn ledger(&self) -> PathBuf {
+        self.dir.join("proj/.anti-hall/history").join(utc_date()).join(format!("{SID}.md"))
+    }
+
+    fn write_ledger(&self, text: &str) {
+        std::fs::create_dir_all(self.ledger().parent().unwrap()).unwrap();
+        std::fs::write(self.ledger(), text).unwrap();
+    }
+}
+
+/// GH #794: the completion line asks for the ledger entry only while there is none. A written entry (a `## Task #1` heading) turns it into the
+/// delete-only order; the rows the engine appends itself on TaskCreated/TaskCompleted are not entries.
+#[test]
+fn the_completion_line_does_not_ask_for_a_ledger_entry_that_is_already_written() {
+    let s = Scratch::new("do-logged");
+    s.store(&["completed", "pending"]);
+    let tr = s.transcript("completed");
+    s.write_ledger("- 2026-11-18T12:00:00.000Z · TaskCompleted · task_id=1 · store task 1\n");
+    let rows_only = s.task_update(&tr, "completed");
+    assert!(rows_only.contains("log its Cause/Fix/Verified"), "a lifecycle row is not an entry: {rows_only}");
+    let s = Scratch::new("do-logged2");
+    s.store(&["completed", "pending"]);
+    let tr = s.transcript("completed");
+    s.write_ledger("## Task #1 store task 1\n- Cause: x\n- Fix: y\n- Verified: z\n");
+    let out = s.task_update(&tr, "completed");
+    assert!(out.contains("task #1 is done and logged") && out.contains("TaskUpdate status=deleted #1"), "delete-only order: {out}");
+    assert!(!out.contains("Cause/Fix/Verified"), "no request to log what is logged: {out}");
+    // task #1 is not task #11: the entry of another task does not stand in
+    let s = Scratch::new("do-logged3");
+    s.store(&["completed", "pending"]);
+    let tr = s.transcript("completed");
+    s.write_ledger("## Task #11 another\n- Cause: x\n");
+    assert!(s.task_update(&tr, "completed").contains("log its Cause/Fix/Verified"), "entry of #11 is not #1");
+    // the switch off restores the old line
+    let s = Scratch::new("do-logged4");
+    s.store(&["completed", "pending"]);
+    let tr = s.transcript("completed");
+    s.write_ledger("## Task #1 store task 1\n- Cause: x\n");
+    let p = json!({"hook_event_name": "PostToolUse", "tool_name": "TaskUpdate", "session_id": SID, "cwd": s.dir.join("proj"), "transcript_path": tr, "tool_input": {"taskId": "1", "status": "completed"}});
+    assert!(s.check("tasklist-hygiene", &p, &[("ANTIHALL_DONE_ORDER_SKIP_LOGGED", "0")]).contains("log its Cause/Fix/Verified"));
+}
+
+/// GH #794: one completion that reaches the TaskCompleted hook several times is one ledger row; another task, and another event of the same
+/// task, are rows of their own.
+#[test]
+fn a_repeated_task_event_is_one_ledger_row() {
+    let s = Scratch::new("lc-dedupe");
+    let ev = |event: &str, id: &str, mate: Option<&str>| {
+        let mut p = json!({"hook_event_name": event, "session_id": SID, "cwd": s.dir.join("proj"), "task_id": id, "task_subject": "write the parser"});
+        if let Some(m) = mate {
+            p["teammate_name"] = m.into();
+        }
+        s.check("task-lifecycle-log", &p, &[]);
+    };
+    ev("TaskCreated", "7", None);
+    for mate in [Some("fix-a"), Some("fix-b"), None, Some("fix-a"), None] {
+        ev("TaskCompleted", "7", mate);
+    }
+    ev("TaskCompleted", "70", None); // task 70 is not task 7
+    let text = std::fs::read_to_string(s.ledger()).unwrap();
+    let rows = |needle: &str| text.lines().filter(|l| l.contains(needle)).count();
+    assert_eq!(rows("TaskCreated · task_id=7"), 1, "{text}");
+    assert_eq!(rows("TaskCompleted · task_id=7 "), 1, "five deliveries, one row: {text}");
+    assert_eq!(rows("TaskCompleted · task_id=70"), 1, "{text}");
+    // off: every delivery is a row, as before
+    let s = Scratch::new("lc-dedupe-off");
+    for _ in 0..3 {
+        let p = json!({"hook_event_name": "TaskCompleted", "session_id": SID, "cwd": s.dir.join("proj"), "task_id": "7", "task_subject": "x"});
+        s.check("task-lifecycle-log", &p, &[("ANTIHALL_TASK_LIFECYCLE_DEDUPE", "0")]);
+    }
+    assert_eq!(std::fs::read_to_string(s.ledger()).unwrap().lines().count(), 3);
+}
+
+impl Scratch {
+    /// The tracker's retained rows: one agent per `(id, name)` launched by the session `SID`.
+    fn track_agents(&self, agents: &[(&str, &str)]) {
+        let rows: Vec<(&str, &str, &str)> = agents.iter().map(|(i, n)| (*i, *n, SID)).collect();
+        self.track_rows(&rows, &self.home().to_string_lossy());
+    }
+
+    /// The tracker's retained rows: `(id, name, parent)` with the given `cwd` (a row of ANOTHER session in this session's project).
+    fn track_rows(&self, agents: &[(&str, &str, &str)], cwd: &str) {
+        let mut st = ah_engine::agents::State::default();
+        for (id, name, parent) in agents {
+            let a = ah_engine::agents::Agent {
+                id: (*id).into(),
+                kind: "subagent".into(),
+                parent: (*parent).into(),
+                name: (*name).into(),
+                cwd: cwd.into(),
+                path: self.home().join(format!("{id}.jsonl")).to_string_lossy().into_owned(),
+                ..Default::default()
+            };
+            st.agents.insert((*id).into(), a);
+        }
+        std::fs::create_dir_all(self.home().join(".anti-hall/agent-tracker")).unwrap();
+        std::fs::write(self.home().join(".anti-hall/agent-tracker/state.json"), serde_json::to_string(&st).unwrap()).unwrap();
+    }
+}
+
+/// GH #794 (bug 6): the coordinator's NAMED list (CLAUDE_CODE_TASK_LIST_ID) holds tasks owned by the agents it launched (the pairing rule makes
+/// every owner an agent name). Those are the session's own and are ordered deleted; a task owned by a name the session never launched is
+/// another session's and is left alone, a coordinator-named owner (`main`) included (another session's coordinator uses that name too).
+#[test]
+fn in_a_named_list_a_completed_task_owned_by_an_agent_of_this_session_is_ordered_deleted() {
+    let s = Scratch::new("do-own-owner");
+    s.named_list("anti-hall", &[("completed", "fix-df1"), ("completed", "someone-elses-agent"), ("completed", "main"), ("completed", "")]);
+    s.track_agents(&[("a000000000000001", "fix-df1")]);
+    let tr = s.transcript("completed");
+    let now = now_ms();
+    let first = json!({"first": (now - 30 * MIN) as u64, "count": 0, "lastAt": 0});
+    let rec = json!({"ids": {"anti-hall/1": first, "anti-hall/2": first, "anti-hall/3": first, "anti-hall/4": first}});
+    std::fs::create_dir_all(s.record_path().parent().unwrap()).unwrap();
+    std::fs::write(s.record_path(), rec.to_string()).unwrap();
+    let out = s.prompt_env(&tr, &[("CLAUDE_CODE_TASK_LIST_ID", "anti-hall")]);
+    assert!(out.contains("2 completed task(s) still listed: TaskUpdate status=deleted #1 #4"), "own agent's and the unowned task: {out}");
+    assert!(!out.contains("#2"), "an owner this session never launched is not ours: {out}");
+    assert!(!out.contains("#3"), "a task another session's coordinator holds (`main`) is not ours, whatever the name: {out}");
+    // switched off: every owned task is left alone again
+    let s = Scratch::new("do-own-owner-off");
+    s.named_list("anti-hall", &[("completed", "fix-df1")]);
+    s.track_agents(&[("a000000000000001", "fix-df1")]);
+    let tr = s.transcript("completed");
+    s.seed("anti-hall/1", 30, 0, 0);
+    let out = s.prompt_env(&tr, &[("CLAUDE_CODE_TASK_LIST_ID", "anti-hall"), ("ANTIHALL_DONE_ORDER_OWN_OWNERS", "0")]);
+    assert!(!out.contains("status=deleted"), "{out}");
+}
+
+/// GH #794 review P0: the tracker's guard rows hold every row of the project's cwd, other sessions' agents included. A completed task owned by
+/// an agent of ANOTHER session (same cwd) is not this session's and is never ordered deleted.
+#[test]
+fn a_task_owned_by_another_sessions_agent_in_the_same_project_is_never_ordered_deleted() {
+    let s = Scratch::new("do-other-session");
+    // task #1 is the one this session's transcript created (`transcript`); #2 belongs to another session's agent
+    s.named_list("anti-hall", &[("completed", "fix-df1"), ("completed", "executor")]);
+    let proj = s.dir.join("proj").to_string_lossy().into_owned();
+    s.track_rows(&[("a000000000000001", "executor", "OTHER-SESSION"), ("a000000000000002", "fix-df1", SID)], &proj);
+    let tr = s.transcript("completed");
+    let first = json!({"first": (now_ms() - 30 * MIN) as u64, "count": 0, "lastAt": 0});
+    std::fs::create_dir_all(s.record_path().parent().unwrap()).unwrap();
+    std::fs::write(s.record_path(), json!({"ids": {"anti-hall/1": first, "anti-hall/2": first}}).to_string()).unwrap();
+    let out = s.prompt_env(&tr, &[("CLAUDE_CODE_TASK_LIST_ID", "anti-hall")]);
+    assert!(out.contains("1 completed task(s) still listed: TaskUpdate status=deleted #1"), "only this session's own agent's task: {out}");
+    assert!(!out.contains("#2"), "another session's agent's task is not ours: {out}");
+}
+
+/// GH #794 review r3: a NAME is not ownership. Two sessions share one named list and each has an agent called `worker`; the tracker shows this
+/// session's `worker`, so a name check alone adopts the other session's `worker` task too. Only a task this session's own transcript created
+/// or updated (#1 here; #2 was made by the other session) is adopted.
+#[test]
+fn a_same_named_agent_of_another_session_does_not_make_its_task_ours() {
+    let s = Scratch::new("do-same-name");
+    s.named_list("anti-hall", &[("completed", "worker"), ("completed", "worker")]);
+    s.track_agents(&[("a000000000000001", "worker")]);
+    let tr = s.transcript("completed");
+    let first = json!({"first": (now_ms() - 30 * MIN) as u64, "count": 0, "lastAt": 0});
+    std::fs::create_dir_all(s.record_path().parent().unwrap()).unwrap();
+    std::fs::write(s.record_path(), json!({"ids": {"anti-hall/1": first, "anti-hall/2": first}}).to_string()).unwrap();
+    let out = s.prompt_env(&tr, &[("CLAUDE_CODE_TASK_LIST_ID", "anti-hall")]);
+    assert!(out.contains("1 completed task(s) still listed: TaskUpdate status=deleted #1"), "the task this session created: {out}");
+    assert!(!out.contains("#2"), "the other session's same-named agent's task is not ours: {out}");
+}

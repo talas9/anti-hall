@@ -48,6 +48,10 @@ value = "Appends one line per TaskCreated/TaskCompleted event to the per-session
 doc = "Where the on/off switch is read from (maintenance.taskLifecycleLog, default on)."
 value = { section = "maintenance", key = "taskLifecycleLog", env = "", aliases = [], option = "maintenance_task_lifecycle_log", default = true }
 
+[task_lifecycle_log.dedupe_setting]
+doc = "Off switch (maintenance.taskLifecycleDedupe, default on, GH #794): a task event (created, completed) is written to the history ledger once. A repeat of the same event for the same task id (the hook is reached again for a teammate's completion, then the session's) adds no row; one completion produced five."
+value = { section = "maintenance", key = "taskLifecycleDedupe", env = "ANTIHALL_TASK_LIFECYCLE_DEDUPE", aliases = [], option = "", default = true }
+
 [task_lifecycle_log.events]
 doc = "The hook events the ledger records."
 value = ["TaskCreated", "TaskCompleted"]
@@ -103,12 +107,16 @@ doc = "The task tools whose text changes the hook classifies."
 value = ["TaskCreate", "TaskUpdate"]
 
 [dispatch_tier.owner_marker_setting]
-doc = "Where the switch of the owner-blocked marker is read from (guards.taskGuardOwnerBlockedMarker, default on): a task marked as waiting on the owner is never classified."
+doc = "Owner-blocked marker switch. Where the switch of the owner-blocked marker is read from (guards.taskGuardOwnerBlockedMarker, default on): a task marked as waiting on the owner is never classified."
 value = { section = "guards", key = "taskGuardOwnerBlockedMarker", env = "ANTIHALL_TASK_GUARD_OWNER_BLOCKED_MARKER", aliases = [], option = "guards_task_guard_owner_blocked_marker", default = true }
 
 [dispatch_tier.owner_values]
-doc = "The blockedOn values (trimmed, lowercase) that mark a task as waiting on the owner."
+doc = "The words that mark a task as waiting on the owner: a blockedOn reason any whole word of which (lowercase, split at every non-alphanumeric character except dispatch_tier.owner_word_joiners) is one of these, so \"owner\", \"NEEDS OWNER: x\" and \"owner: deferred until y\" all count. One matcher (the engine's owner_named, ah.ownerNamed in scripts) serves the agent tracker's hold_owner and the task-guard, task-tracker and dispatch-tier checks alike."
 value = ["owner", "user", "human", "external"]
+
+[dispatch_tier.owner_word_joiners]
+doc = "Characters that join a word of a blockedOn reason instead of splitting it, for the owner matcher of dispatch_tier.owner_values: with - and _ here \"user-facing\" and \"owner_tools\" are single words and name nobody, while \"NEEDS OWNER: x\" still names the owner."
+value = "-_"
 
 [dispatch_tier.owner_subject_re]
 doc = "JavaScript regex source (case-insensitive) of a subject that marks a task as waiting on the owner (OWNER: ... or OWNER DECISION ...)."
@@ -163,6 +171,60 @@ doc = "How much of the end of a transcript the task reconstruction reads (the No
 value = 1572864
 min = 1
 
+[taskstate.prompt_key_max_lines]
+doc = "How many of the newest user-entry lines of the transcript tail the task guard reads to find the newest real prompt (its key). Tool results are user entries too, so a long run of them is skipped; when the newest this-many are all unusable the whole tail is read, so the key is the same as a full scan gives. 0 reads every user line."
+value = 64
+min = 0
+
+[taskstate.store_base]
+doc = "Path parts, under the home directory, of Claude Code's own task store: one directory per task list, one `<id>.json` per task. It is the authoritative list when it exists (the transcript tail of a long session no longer holds the creates). Codex has no such store, so it keeps the transcript reconstruction."
+value = [".claude", "tasks"]
+
+[taskstate.store_dir_names]
+doc = "Candidate directory names of a session's task list under the store, tried in order, the first that exists wins. `{sid}` is the session id, `{sid8}` its first 8 characters (the list id the `session-<8>` convention uses). A session id with a character outside `[A-Za-z0-9_-]` is not looked up."
+value = ["session-{sid8}", "{sid}"]
+
+[taskstate.store_pointer_file]
+doc = "Name of the file a session's own store directory holds when its tasks live in ANOTHER list (a resumed or shared session): its text is the id of that list (`taskstate.list_id_re`), whose directory under the store is then read instead. Followed one hop; a missing file, an invalid id or a list directory that does not exist leaves the session's own directory as the list."
+value = ".session-list"
+
+[taskstate.store_pointer_max_bytes]
+doc = "Bytes of the pointer file read (a list id is one directory name)."
+value = 256
+min = 1
+
+[taskstate.list_id_env]
+doc = "Name of the environment variable Claude Code reads to put a session's tasks in a NAMED list (`<store_base>/<list id>/`) instead of `session-<8>`. The R-pair spawn-by-id check reads that named list as THE list when the variable is set to a valid id and its directory exists (even empty: Claude Code then keeps the session's tasks only there, and the `session-<8>` directory is left empty). Forwarded to the checks by `request_env.allow`. Unset, or a value that is not a valid id, or no such directory: the `store_dir_names` candidates apply."
+value = "CLAUDE_CODE_TASK_LIST_ID"
+
+[taskstate.list_id_re]
+doc = "A valid named-list id (one directory name under the store: starts with a letter, digit or underscore, then letters, digits, `_`, `.` or `-`; never a path)."
+value = "^[A-Za-z0-9_][A-Za-z0-9_.-]*$"
+
+[taskstate.store_file_suffix]
+doc = "Suffix of the task files in a store directory (the lock and high-water-mark files lack it)."
+value = ".json"
+
+[taskstate.store_max_files]
+doc = "Most task files read from one store directory; a larger directory is read as absent and the transcript reconstruction answers (fail-open, bounded hook latency)."
+value = 1000
+min = 1
+
+[taskstate.store_file_max_bytes]
+doc = "Largest task file read; a bigger one is skipped."
+value = 65536
+min = 1
+
+[taskstate.store_fields]
+doc = "Field names of a task file in the store that a reader needs: `id` (a string or a number) and `status` (a string). A file without both is not a task. The ladder reads the open-task fact from the store with them, as the task guards do."
+value = { id = "id", status = "status" }
+
+[taskstate.memo_entries]
+doc = "How many task reconstructions of a transcript file the engine remembers, each for one state of the file (its size, modification time, window sizes and variant). The Stop checks task-guard (twice), task-pair-guard and tasklist-guard each rebuild the same task list from the same tail, and a tail cut in the middle of a task's history makes each of them scan back up to taskstate.backfill_exact_bytes; with this memo the first check computes it and the others take its answer. A changed file is read afresh. The least recently used is dropped first. 0 turns the memo off and every check reconstructs for itself."
+value = 16
+min = 0
+unit = "count"
+
 [taskstate.re_created]
 doc = "JavaScript regex source (case-insensitive) of the tool result that announces a new task and names its number."
 value = '^Task\s+#(\d+)\s+created\s+successfully'
@@ -179,6 +241,10 @@ value = '^\s*Task\s*(?:#\S+)?\s*not\s+found\b'
 doc = "The input fields a task tool call may name its task id in, in order: the harness's `taskId`, then `id`, then `task_id`."
 value = ["taskId", "id", "task_id"]
 
+[taskstate.skipped_row_types]
+doc = "The transcript row types the task model does not read: rows that replay a request's whole message array (the `api-request-blob` rows), which carry copies of task tool uses and of their results for tasks the conversation has long settled, so reading them makes ghost or stale tasks. Every other row type, an unknown, empty, missing or non-string one included, is read as conversation (a skipped real row could let a Stop through with a task open)."
+value = ["api-request-blob"]
+
 [taskstate.tools_collect_keys]
 doc = "The object keys the tool-use collector descends into, in order (the Node `collectToolUses`)."
 value = ["content", "message", "messages", "tool_uses", "parts"]
@@ -186,6 +252,14 @@ value = ["content", "message", "messages", "tool_uses", "parts"]
 [taskstate.task_tools]
 doc = "The tool names a task reconstruction reacts to (a call that creates, updates, lists or reads tasks, or rewrites the whole list). The kept task lines (transcript.tasks_cache_*) hold every line that names one; a name a reconstruction acts on that is missing here would make its kept answer differ from a fresh read."
 value = ["TodoWrite", "TaskCreate", "TaskUpdate", "TaskList", "TaskGet"]
+
+[taskstate.in_progress_statuses]
+doc = "Statuses (lowercase) that count a task as in progress (a subset of the open statuses); the open-task facts the Stop gate reads from the session task store use it."
+value = ["in_progress", "in-progress"]
+
+[taskstate.pending_statuses]
+doc = "Statuses (lowercase) that count an open task as waiting to start; with the in-progress statuses they make up the open ids the Stop gate reads from the session task store."
+value = ["pending"]
 
 [taskstate.open_statuses]
 doc = "Statuses (lowercase) that make a task open."
@@ -217,6 +291,11 @@ min = 1
 doc = "How much of the transcript the backfill reads at a time."
 value = 1048576
 min = 4096
+
+[taskstate.cut_check_lines]
+doc = "How many transcript lines the task-state scans (the tail reconstruction, the scan view and the widened task-activity search) read between two looks at their call's cut (the request's client deadline, or the check's cap: daemon.check_reserve_ms); the backfill looks once per chunk (taskstate.backfill_chunk_bytes). A cut scan stops and answers unsure (never a partial list taken as whole, and never kept for the next call), so the call fails as a cut and the checks after it keep their time (#763)."
+value = 256
+min = 1
 
 [taskstate.backfill_exact_bytes]
 doc = "How far back the backfill scans before the engine hands the call to Node: Node's own byte cap (64 MiB). Node also stops after 150 ms of wall clock; the engine scans a fixed number of bytes instead so its answer never depends on machine speed. Where Node's clock would have stopped it short on a slow machine, the engine finds the subjects Node missed (a fuller note, never a missing one); past this bound it defers rather than guess where Node would have stopped."
@@ -255,6 +334,87 @@ min = 1
 doc = "Prefix of the stamp file that throttles one prefix's sweep."
 value = ".prune-stamp-"
 
+# ---- task snapshot (#390): the list a transcript tail can no longer show -----------------------------
+
+[taskstate.snapshot_enabled]
+doc = "Keep one snapshot file of each session's rebuilt task list and lay the transcript-tail result over it (the tail wins per task id). Without it a list whose creates lie more than taskstate.tail_bytes before the end of the transcript is read as no tasks, and every task guard goes quiet. False = the tail alone, as before (kill switch)."
+value = true
+
+[taskstate.snapshot_dir]
+doc = "Directory of the task snapshots, relative to paths.base_dir (the home directory's state directory). One file per session transcript, overwritten in place. The engine never deletes a snapshot: when taskstate.snapshot_max_files is reached no new file is made, and old ones are left for the owner to remove."
+value = "ah-engine/task-snapshots"
+
+[taskstate.snapshot_file]
+doc = "File name of one session's snapshot. `{name}` is the transcript's file name without its extension (characters outside [A-Za-z0-9_.-] become `_`, cut to taskstate.snapshot_name_max), `{hash}` the first taskstate.snapshot_hash_len hex digits of the SHA-1 of the transcript path (two transcripts of one name do not share a file)."
+value = "{name}-{hash}.json"
+
+[taskstate.snapshot_name_max]
+doc = "Most characters of the transcript's file name used in a snapshot file name."
+value = 64
+min = 1
+
+[taskstate.snapshot_hash_len]
+doc = "Hex digits of the transcript path's SHA-1 in a snapshot file name."
+value = 8
+min = 4
+max = 40
+
+[taskstate.snapshot_max_files]
+doc = "Most files in the snapshot directory. At the cap a session that has no snapshot yet gets none (fail-open: its tail alone answers; counted as snapshot_error kind `cap`); nothing is deleted. A session that already has a file keeps updating it."
+value = 200
+min = 1
+
+[taskstate.snapshot_max_bytes]
+doc = "Largest snapshot written. A list over it is written without its finished tasks; still over, the write is skipped (counted as snapshot_error kind `big`). Must stay under script.write_max_bytes."
+value = 262144
+min = 1024
+unit = "bytes"
+
+[taskstate.snapshot_gap_max_bytes]
+doc = "Most bytes read to catch a snapshot up when the transcript tail starts after the snapshot's size (bytes nobody has read since the snapshot was written, which can hold a TaskUpdate that finished a task the snapshot still lists as open). The rebuild then reads back to the snapshot's size instead of taskstate.tail_bytes. A gap over this is not read: the snapshot is not trusted for that rebuild (discarded, reason gap) and the tail alone answers, so no Stop blocks on a list that may be stale."
+value = 8388608
+min = 1
+unit = "bytes"
+
+[taskstate.snapshot_refresh_bytes]
+doc = "A snapshot whose tasks did not change is rewritten only after the transcript grew by this much since the last write (the recorded size is what tells a replaced, smaller transcript from the one the snapshot belongs to)."
+value = 262144
+min = 1
+unit = "bytes"
+
+[taskstate.snapshot_format]
+doc = "Version stamped in a snapshot; a snapshot with another number is read as absent (counted as discarded, reason `format`) and replaced. 2 added the session id and the file fingerprint; 3 added, per task, the tool-use id of the TaskCreate that made it (a task's identity: the subject is not one)."
+value = 3
+min = 1
+
+[taskstate.snapshot_lock_suffix]
+doc = "Suffix of the lock file a rebuild holds while it merges and rewrites a session's snapshot (next to the snapshot, never counted against taskstate.snapshot_max_files). Without a lock two hooks that rebuild at the same instant could each rewrite the whole file and lose the other's section."
+value = ".lock"
+
+[taskstate.snapshot_lock_kind]
+doc = "How the snapshot lock is taken: `flock` (a kernel lock on the file named by taskstate.snapshot_flock_suffix: one open and one lock call, released by the kernel when the holder dies; no Node peer uses this file) or `file` (the lock file of taskstate.snapshot_lock_suffix with the owner record, stale takeover and sidecar of the Node lock protocol: four directory creates and four removals per cycle). `file` is the kill switch. Where the platform or filesystem has no flock at all (ENOTSUP, EOPNOTSUPP, ENOSYS), a rebuild falls back to `file` on its own (counted snapshot_lock kind `fallback`); any other failure to take the flock (the file will not open, is a link, an errno) writes nothing (counted snapshot_lock result `failed`). On `file` and on the fallback a lock that is not positively held (busy, no lock file can be made, an exception) also writes nothing."
+value = "flock"
+
+[taskstate.snapshot_flock_suffix]
+doc = "Suffix of the file a rebuild flocks when taskstate.snapshot_lock_kind is `flock`. Kept (never deleted) next to the snapshot and never counted against taskstate.snapshot_max_files. Must differ from taskstate.snapshot_lock_suffix: an engine still on the lock-file protocol would read this empty file as a stale holder."
+value = ".flock"
+
+[taskstate.snapshot_lock_group]
+doc = "The defaults group whose `lock_*` keys (stale, step, reclaim, release) time the snapshot lock; the wait is taskstate.snapshot_lock_wait_ms."
+value = "advisor"
+
+[taskstate.snapshot_lock_wait_ms]
+doc = "How long a rebuild waits for the snapshot lock. A rebuild that cannot take it writes no snapshot this time (its answer is unchanged; counted as snapshot_error kind `lock`) and the next rebuild writes."
+value = 250
+unit = "ms"
+min = 0
+
+[taskstate.snapshot_fingerprint_bytes]
+doc = "Bytes hashed for the transcript fingerprint kept in a snapshot: the first bytes of the file, and the same number of bytes just before the tail window as it stood when the snapshot was written (read back at that fixed offset, so appends do not move it). A transcript whose bytes there differ is another file under the same path: the snapshot is discarded (reason `replaced`). Two reads of this size per rebuild."
+value = 4096
+min = 64
+unit = "bytes"
+
 # ---- task-guard --------------------------------------------------------------------------------
 
 [task_guard.summary]
@@ -270,8 +430,12 @@ doc = "Where the on/off switch is read from (guards.taskGuard, default on)."
 value = { section = "guards", key = "taskGuard", env = "", aliases = [], option = "guards_task_guard", default = true }
 
 [task_guard.prune_setting]
-doc = "How many completed or cancelled tasks the list may hold before the Stop advisory suggests pruning them (guards.pruneCompletedTasksAfter)."
-value = { section = "guards", key = "pruneCompletedTasksAfter", env = "ANTIHALL_PRUNE_COMPLETED_TASKS_AFTER", aliases = [], min = 1, default = 10 }
+doc = "Completed or cancelled tasks kept before the task tracker suggests pruning."
+value = { section = "guards", key = "pruneCompletedTasksAfter", env = "ANTIHALL_PRUNE_COMPLETED_TASKS_AFTER", aliases = [], min = 1, default = 3 }
+
+[task_guard.hold_state_prefix]
+doc = "Prefix of the per-session file under the state directory that holds, per task hold (the task id, the exemption kind and a hash of its marker text), when the Stop first saw it: the clock of nudges.hold.hold_max_ms. Past it the hold lapses and the normal rule applies; a changed marker text is a confirmed blocker and restarts the clock. Covers the owner, blocked_on, parked and clock exemptions of task-guard."
+value = "task-holds-"
 
 [task_guard.state_prefix]
 doc = "Prefix of the per-session file that holds the last blocked task set (`last-stop-taskset-<session>`)."
@@ -281,10 +445,6 @@ value = "last-stop-taskset-"
 doc = "How many hex characters of the transcript path hash name a session that has no id."
 value = 16
 min = 1
-
-[task_guard.prune_advisory]
-doc = "The advisory printed when the list holds many completed tasks; `{n}` is how many and `{limit}` the limit."
-value = "[task-guard] {n} completed/cancelled tasks in the list (> {limit}) — advisory: after recording them in the history ledger, prune them with TaskUpdate status=deleted so the harness reminder stops re-printing them every turn.\n"
 
 [task_guard.note_line]
 doc = "The line that carries the unknown-state note; `{note}` is the note."
@@ -301,9 +461,13 @@ value = "ANTIHALL_JUDGE_CHILD"
 # -- task-guard: the open-task decision (sharp idle-neglect block, generic block, loop state)
 
 [task_guard.max_blocks]
-doc = "Most Stop blocks task-guard makes in one session (both kinds counted); after that every Stop is let through."
+doc = "Most Stop blocks task-guard makes per cap_scope window (both kinds counted); a new real owner turn resets the default owner_turn window. Same-set dedupe remains independent."
 value = 5
 min = 1
+
+[task_guard.cap_scope]
+doc = "Block-cap scope: owner_turn (default) resets max_blocks on a new real user turn; session keeps a session-wide cap. Tool results, hook text, notifications and cross-session messages never reset it. Missing legacy window metadata starts a fresh owner-turn window, with an original-state backup."
+value = "owner_turn"
 
 [task_guard.hash_sep]
 doc = "The separator between the task ids hashed into the loop state (a NUL character)."
@@ -318,7 +482,7 @@ doc = "The loop state file's field for the hash of the last blocked set."
 value = "hash"
 
 [task_guard.state_blocks_key]
-doc = "The loop state file's field for the number of blocks made this session."
+doc = "The loop state file's field for the number of blocks made in the current cap_scope window."
 value = "blocks"
 
 [task_guard.pending_status]
@@ -328,6 +492,22 @@ value = "pending"
 [task_guard.owner_name_key]
 doc = "The field of the Agent call that launched a running agent which names it (its `name`). A task whose owner is that name is attended, like one owned by the agent's id or description."
 value = "name"
+
+[task_guard.owner_decision_markers]
+doc = "Case-insensitive phrases in a task owner, subject or description that mean an explicit owner decision is pending. Honored while guards.taskGuardOwnerBlockedMarker is enabled."
+value = ["owner-go", "waiting owner", "needs your OK"]
+
+[task_guard.advise_unresolved_owners]
+doc = "Advise instead of blocking Stop when a non-coordinator task owner names agent work this session can see (a launched or tracked agent) whose liveness no source can tell. An owner whose agent is known to have ended is not unresolved and blocks. False restores blocking for unresolved owners."
+value = true
+
+[task_guard.advise_unmatched_owners]
+doc = "Advise instead of blocking Stop when a non-coordinator task owner names no agent, tracked agent or live DevSwarm workspace this session can see. False (the default) blocks such a task like any open task, as the Node task-guard did."
+value = false
+
+[task_guard.unresolved_owner_advisory]
+doc = "Fail-open advisory for unresolved task owners; {list} uses the existing bounded task renderer."
+value = "[task-guard] owner liveness is unknown; resolve or reassign these tasks when ready: {list}\n"
 
 [task_guard.owner_match_min]
 doc = "The shortest task owner text that counts as naming a running agent by a part of its description (an owner of fewer characters matches only the agent's id or its whole description). A task owned by a running agent is attended and is not listed by the generic block."
@@ -363,7 +543,7 @@ value = 2
 min = 0
 
 [task_guard.min_priority_setting]
-doc = "The priority floor of the idle-neglect block (guards.idleNeglectMinPriority): a pending task below it is backlog and never nags."
+doc = "Priority floor of the idle-neglect block. The priority floor of the idle-neglect block (guards.idleNeglectMinPriority): a pending task below it is backlog and never nags."
 value = { section = "guards", key = "idleNeglectMinPriority", type = "enum", values = ["p0", "p1", "p2", "p3"], env = "ANTIHALL_IDLE_NEGLECT_MIN_PRIORITY", aliases = [], default = "p1" }
 
 [task_guard.dispatch_demand_setting]
@@ -371,11 +551,11 @@ doc = "Whether running agents are counted per task from this session's transcrip
 value = { section = "guards", key = "dispatchDemand", env = "ANTIHALL_DISPATCH_DEMAND", aliases = [], default = true }
 
 [task_guard.proven_only_setting]
-doc = "Block on idle neglect only when a dispatchable task is uncovered under every placement of the agents that name no task (guards.idleNeglectProvenOnly, default on)."
+doc = "Block idle neglect only when proven. Block on idle neglect only when a dispatchable task is uncovered under every placement of the agents that name no task (guards.idleNeglectProvenOnly, default on)."
 value = { section = "guards", key = "idleNeglectProvenOnly", env = "ANTIHALL_IDLE_NEGLECT_PROVEN_ONLY", aliases = [], default = true }
 
 [task_guard.agent_max_age_setting]
-doc = "Minutes after which a running agent that names no task stops counting as cover in the proven count (guards.idleNeglectAgentMaxAgeMin; 0 = never)."
+doc = "Max age of an agent counted as cover. Minutes after which a running agent that names no task stops counting as cover in the proven count (guards.idleNeglectAgentMaxAgeMin; 0 = never)."
 value = { section = "guards", key = "idleNeglectAgentMaxAgeMin", env = "ANTIHALL_IDLE_NEGLECT_AGENT_MAX_AGE_MIN", aliases = [], min = 0, default = 30 }
 
 [task_guard.agent_max_age_default_min]
@@ -507,6 +687,10 @@ value = "apply_patch"
 doc = "The first line of the idle-neglect block; `{n}` is how many tasks, `{list}` the listed ones, `{more}` the tail."
 value = "{n} open tasks have no agent working on them."
 
+[task_guard.idle_digest]
+doc = "The one-line digest of this rule (#462): what the rule is and what to do, shown to agents at session start and after compaction (guard_rules.digest_entry)."
+value = "Never stop with open tasks idle: assign each to an agent or report why."
+
 [task_guard.idle_why]
 doc = "The why line of the idle-neglect block."
 value = "Work that could run in parallel is sitting idle."
@@ -537,7 +721,7 @@ value = "finish the pending tasks before stopping."
 
 [task_guard.generic_allowed]
 doc = "The allowed-here line of the generic block; `{upd}` is the task update tool."
-value = "a task that is truly blocked: mark it with {upd} (blockedBy an open task, or blockedOn 'owner'); it is then no longer listed."
+value = "a task that is truly blocked: mark it with {upd} (blockedBy an open task, or metadata.blockedOn 'owner'); it is then no longer listed."
 
 [task_guard.block_json]
 doc = "The stdout line of a block; `{reason}` is the reason as a JSON string."
@@ -767,6 +951,119 @@ value = ["Agent", "Task", "CronCreate", "CronDelete"]
 doc = "File-mutating tools: each call counts as work unless it targets an excluded path."
 value = ["Edit", "Write", "MultiEdit", "NotebookEdit"]
 
+[workdetect.bash_write_verbs]
+doc = "Shell commands whose file arguments are files the command changes (GH #794: the tasklist work count names real files, not command strings). The value says which arguments: `all` (every non-flag argument), `last` (the destination of cp, ditto and ln), `rest` (every argument after the first: the mode of chmod, the owner of chown) and `sed` (only `sed -i`: the file arguments after the script). A redirect target (`>`, `>>`) counts for any command. A command that names no file (git commit, mkdir, a build, an install) changes no file this count can name and counts nothing."
+value = { rm = "all", cp = "last", mv = "all", tee = "all", touch = "all", chmod = "rest", chown = "rest", ln = "last", ditto = "last", ex = "all", vi = "all", vim = "all", sed = "sed" }
+
+[workdetect.git_write_subcommands]
+doc = "The git subcommands that change working-tree files by name, and how the files are named: `all` (every non-flag argument: `git rm`, `git mv`, `git restore`) and `dashes` (`git checkout`: the arguments after `--`, or, with no `--`, the arguments that are existing files, since a branch or ref is not one). Any other git command (commit, merge, rebase, stash, apply, push) names no file and counts nothing."
+value = { rm = "all", mv = "all", restore = "all", checkout = "dashes" }
+
+[workdetect.assign_builtins]
+doc = "Shell builtins that stand before a `NAME=value` assignment and still make it (`export F=src/x`): the assignment is kept for the later segments of the same command, so `export F=src/x; echo > $F` names `src/x`."
+value = ["export", "declare", "local", "readonly", "typeset"]
+
+[workdetect.git_unknown_subcommands]
+doc = "The git subcommands that change working-tree files WITHOUT naming them (GH #794: a command that changes files the count cannot name counts as one unknown project file, never zero). The value lists the words that make the subcommand count: `*` is always, `<none>` is the bare subcommand (a plain `git stash` stashes the changes), any other entry is a word among the arguments (`reset --hard`, `merge --continue`, `stash pop`). A merge, cherry-pick or branch switch that only brings in committed work is the integration the tasklist guard leaves out (workdetect.integration_work)."
+value = { apply = ["*"], am = ["*"], rebase = ["*"], revert = ["*"], clean = ["*"], stash = ["<none>", "pop", "apply", "push", "save"], reset = ["--hard", "--merge", "--keep"], merge = ["--continue", "--abort"], "cherry-pick" = ["--continue"] }
+
+[workdetect.unknown_write_res]
+doc = "Regex sources (case-SENSITIVE: `-I` is not `-i`, `-C` is not `-c`) tested against a simple command from its command word on (quotes removed): a command that writes files whose names the count cannot read from its words counts as one unknown project file when no destination can be read from it (workdetect.unknown_write_targets) and it is not a dry run or listing (workdetect.unknown_write_readonly_res) (GH #794). `patch`, `install`, `dd of=`, `rsync`, `truncate`, an extracting or creating `tar` (also the dash-less `tar xzf`, workdetect.old_style_option_verbs), `unzip`, `perl -i` (only among the options BEFORE the script path or `-e`: `perl x.pl -input a` is a script argument), `awk -i inplace`."
+value = ['^patch\b', '^install\b', '^dd\b.*\bof=', '^rsync\b', '^truncate\b', '^tar\b.*(?:\s-[A-Za-z]*[xcru]|\s--(?:extract|create|get|append|update)\b)', '^unzip\b', '^perl(?:\s+-I\s+\S+|\s+-[^\s-]\S*)*?\s+-[nalpsw0]*i', '^g?awk\b.*\s-i\s*inplace']
+
+[workdetect.unknown_write_readonly_res]
+doc = "Regex sources (case-sensitive) tested against a command that matched workdetect.unknown_write_res: a dry run, a check or a listing writes nothing, so it counts as no file. `rsync -n`/`--dry-run`/`--list-only`, `patch --dry-run`/`--check`/`-C`, `unzip -l`/`-t`/`-v`/`-p`/`-Z`, `tar -t`/`--list`, `tar -O`/`--to-stdout` (extracts to the terminal). A `dd of=/dev/null` is a device file, judged by workdetect.excluded_path_res."
+value = ['^rsync\b.*\s(?:-[A-Za-z]*n[A-Za-z]*|--dry-run|--list-only)(?:\s|$)', '^patch\b.*\s(?:--dry-run|--check|-C)(?:\s|$)', '^unzip\b.*\s-[A-Za-z]*[ltvpZ]', '^tar\b.*(?:\s-[A-Za-z]*t|\s--list\b)', '^tar\b.*(?:\s-[A-Za-z]*O|\s--to-stdout\b)']
+
+[workdetect.unknown_write_cwd_verbs]
+doc = "Commands of workdetect.unknown_write_res that, with no destination named, write into the working directory (`unzip a.zip`, `tar -xf a.tar`): when that directory (after a `cd`) is the scratchpad or a temp directory (workdetect.excluded_path_res and friends) the command counts as no project file."
+value = ["unzip", "tar"]
+
+[tasklist_guard.counted_unknown]
+doc = "How a write the count cannot name is listed in the 'Counted:' list of a block: {verb} is the command word (and a git subcommand). The raw command is never shown as a file."
+value = "{verb} (unnamed)"
+
+[tasklist_guard.counted_unknown_verb]
+doc = "The {verb} shown in counted_unknown when the command word cannot be read."
+value = "a command"
+
+[workdetect.unknown_write_targets]
+doc = "Where a command of workdetect.unknown_write_res names its destination, by command word: `last` is the last non-option word (when there is more than one), a word ending in `=` is a `key=value` argument (`of=`), any other word is an option whose next word is the destination (`-C`, `-d`). The destination is judged like any written path (a device file or a path outside the project counts nothing; one inside counts as that file); a command with no entry here, or none of whose destinations is found, counts as one unknown project file."
+value = { rsync = ["last"], install = ["last"], dd = ["of="], tar = ["-C", "--directory"], unzip = ["-d"] }
+
+[workdetect.unknown_write_targets_when]
+doc = "Rules, by command word, that choose which workdetect.unknown_write_targets-style keys name the destination: the first rule whose `re` (case-sensitive, tested against the command from its command word on) matches gives its `keys`; with no match the command's entry in workdetect.unknown_write_targets is used. `tar` that creates or appends (`-c`, `-r`, `-u`, `--create`) writes the ARCHIVE named by `-f`/`--file` (a one-letter option also matches the end of a short-flag cluster: `-czf` is `-f`); the `-f` of an extraction is the archive it reads. A path of `-` (the terminal) names no file."
+value = { tar = [ { re = '\s(?:-[A-Za-z]*[cru][A-Za-z]*|--(?:create|append|update))(?=\s|$)', keys = ["-f", "--file", "--file="] } ] }
+
+[workdetect.remote_target_res]
+doc = "Regex sources (case-sensitive) for a destination word that names another machine: `host:path`, `user@host:path` and a URL (`rsync://host/mod`). A command whose destination is one writes nothing on this machine, so it counts no file (`rsync -av dist/ host:/srv/app`)."
+value = ['^(?:[^/\s@:]+@)?[^/\s@:]+:', '^[A-Za-z][A-Za-z0-9+.-]*://']
+
+[workdetect.old_style_option_verbs]
+doc = "Commands whose first word may be a bundle of option letters with no dash (`tar xzf a.tgz` is `tar -xzf a.tgz`): the command is read with the dash added before workdetect.unknown_write_res is tested."
+value = ["tar"]
+
+[workdetect.git_readonly_flag_res]
+doc = "Regex sources (case-sensitive) by git subcommand: an argument that matches one makes a subcommand of workdetect.git_unknown_subcommands a dry run or a check that changes no file (`git apply --check`/`--stat`, `git clean -n`/`--dry-run`, `git am`/`git rebase --show-current-patch`), or, for a subcommand of workdetect.git_write_subcommands, one that names no working-tree file (`git restore --staged` changes the index only)."
+value = { apply = ['^--(?:check|stat|numstat|summary)$'], clean = ['^-[A-Za-z]*n[A-Za-z]*$', '^--dry-run$'], am = ['^--show-current-patch(?:=.*)?$'], rebase = ['^--show-current-patch$'], restore = ['^--staged$', '^-S$'] }
+
+[workdetect.indirect_end_words]
+doc = "The words that end the command an indirect runner (`find -exec`, `xargs`) runs: a `;` (the `\\;` of `find -exec` reaches the count as a lone `\\`) or a `+`; `:::` ends the command of `parallel` (the words after it are its inputs)."
+value = ["\\", ";", "+", ":::"]
+
+[workdetect.indirect_skip_words]
+doc = "The words of the command an indirect runner runs that are placeholders for the found file (`find -exec cp {} DEST \\;`), not a destination."
+value = ["{}"]
+
+[workdetect.indirect_exec_words]
+doc = "For a runner that runs a command per found file, the words after which that command starts: `find -exec CMD ... \\;`. A write verb is looked for only at the start of such a command (`find . -name cp` and `find . -iname '*.js' -exec sed -n 1p {} \\;` write nothing). A runner not listed here (`xargs`, `parallel`) starts its command after its own options (workdetect.indirect_option_args)."
+value = { find = ["-exec", "-execdir", "-ok", "-okdir"] }
+
+[workdetect.indirect_option_args]
+doc = "The options of `xargs`/`parallel` that take the NEXT word as their argument, so the command is not mistaken for it (`xargs -I {} cp {} dest`, `xargs -n 1 grep rm`). A glued form (`-I{}`, `--max-args=1`) is one word and needs no entry."
+value = { xargs = ["-I", "-J", "-L", "-n", "-P", "-s", "-E", "-a", "-d", "--max-args", "--max-procs", "--max-lines", "--delimiter", "--arg-file", "--eof"], parallel = ["-j", "-n", "-N", "-a", "-S", "--jobs", "--max-args", "--arg-file", "--sshlogin"] }
+
+[workdetect.indirect_write_flags]
+doc = "Words of an indirect runner that make it delete or change files it does not name: `find -delete`. The command counts as one unknown project file."
+value = { find = ["-delete"] }
+
+[workdetect.indirect_verbs]
+doc = "Commands that run another command over files they find or read (`xargs sed -i`, `find -exec rm`): when a word after them is a write verb (workdetect.bash_write_verbs; `sed` only with an in-place flag) and no file was named, the command counts as one unknown project file."
+value = ["xargs", "find", "parallel"]
+
+[workdetect.shell_verbs]
+doc = "Shells whose `-c` argument is itself a command line: it is read for the files it writes (`bash -c 'echo > f'`), down to workdetect.shell_depth_max levels."
+value = ["bash", "sh", "zsh", "dash"]
+
+[workdetect.shell_depth_max]
+doc = "How many nested `bash -c` levels are read for the files they write; a deeper command line counts as one unknown project file."
+value = 2
+min = 0
+
+[workdetect.empty_redirect_verbs]
+doc = "Command words whose redirect writes no content (`: > f`, `true > f`): an empty truncation is not a progress update."
+value = [":", "true", "false"]
+
+[workdetect.progress_dest_verbs]
+doc = "Write verbs whose LAST argument is a destination that receives content (`cp x P`, `mv x P`): a write to the session's progress file by one of them is a progress update, like a redirect. Any other argument (`mv P /x` moves the file away) and the other verbs (`rm`, `touch`, `chmod`) are not."
+value = ["cp", "mv"]
+
+[workdetect.excluded_redirect_res]
+doc = "Regex sources of redirect targets that are build or run logs, not project work (`make &> build.log`): a shell redirect to such a file does not count. Only a `>`/`>>`/`&>` target is judged; an Edit or Write of the file counts."
+value = ['\.log$']
+
+[workdetect.bash_wrappers]
+doc = "Words that may stand before the command proper (`sudo rm f`, `env X=1 tee f`) and are skipped when the write verb is looked for."
+value = ["sudo", "env", "command", "nohup", "time", "nice", "exec", "builtin"]
+
+[workdetect.excluded_path_res]
+doc = "Regex sources of absolute paths that are never project work for the tasklist work count, wherever the project is: the device files (a redirect to /dev/stderr writes no file). The scratchpad directory, anti-hall's progress/history/handover files (workdetect.scratchpad_path, workdetect.state_dir), the TMPDIR of the request and a path the one user request names are excluded on top of these."
+value = ['^/dev/']
+
+[workdetect.excluded_outside_res]
+doc = "Regex sources of absolute paths that are not project work when they lie OUTSIDE the session's project: the system and per-user temporary directories (a session's scratchpad lives there). Only read while guards.tasklistProjectOnly is off and the project is known; with it on, every path outside the project is already left out. A path inside the project or the session's directory is never excluded by these, so a project that lives under a temp directory keeps counting."
+value = ['^/(?:private/)?tmp(?:/|$)', '^/(?:private/)?var/(?:folders|tmp)(?:/|$)']
+
 # ---- tasklist-guard ---------------------------------------------------------------------------
 
 [tasklist_guard.summary]
@@ -848,9 +1145,13 @@ min = 1
 # ---- tasklist-guard: the block path (the Stop that nudges) ---------------------------------------------------------------
 
 [tasklist_guard.max_blocks]
-doc = "How many blocks one session gets at most (MAX_BLOCKS); a session at the cap stops quietly."
+doc = "Most blocks per cap_scope window; a new real owner turn resets the default owner_turn window. Same-signal dedupe remains independent; the separate once-per-session reduced-nag budget is unchanged."
 value = 3
 min = 1
+
+[tasklist_guard.cap_scope]
+doc = "Block-cap scope: owner_turn (default) resets max_blocks on a new real user turn; session keeps a session-wide cap. Tool results, hook text, notifications and cross-session messages never reset it. Missing legacy window metadata starts a fresh owner-turn window, with an original-state backup."
+value = "owner_turn"
 
 [tasklist_guard.work_bucket_max]
 doc = "Highest work bucket in the dedupe signal (the work count divided by the threshold, floored, capped here)."
@@ -903,6 +1204,10 @@ value = "The old tasks are gone, not finished."
 [tasklist_guard.what_no_tasks]
 doc = "Block headline when work was done and no task was tracked; {n} is the work count."
 value = "{n} files changed but no tasks tracked."
+
+[tasklist_guard.digest_no_tasks]
+doc = "The one-line digest of this rule (#462): what the rule is and what to do, shown to agents at session start and after compaction (guard_rules.digest_entry)."
+value = "Track work in the task list and a fresh progress file: changes with no tasks or a missing/stale progress file block the stop."
 
 [tasklist_guard.why_no_tasks]
 doc = "Block reason when no task was tracked."
@@ -962,7 +1267,7 @@ value = "add the work as tasks, then stop again."
 
 [tasklist_guard.instead_files]
 doc = "The rest of what to do instead; {progress}, {header}, {history} and {append} are filled in."
-value = "Progress file: {progress}\nA new progress file starts with this line: {header}\nHistory ledger: {history}\n\n1. Keep the progress file current (done / in progress / next). It may be written freely; add it to .gitignore.\n2. Append each COMPLETED task to the history ledger, one entry per task (Cause / Fix / Verified); add it to .gitignore too. The ledger usually exists already, so {append}.\n3. Do not write these files with a Bash heredoc (git-guard scans its body as shell)."
+value = "Progress file: {progress}\nA new progress file starts with this line: {header}\nHistory ledger: {history}\n\n1. Keep the progress file current (done / in progress / next). It may be written freely; add it to .gitignore.\n2. Append each COMPLETED task to the history ledger, one entry per task (Cause / Fix / Verified); add it to .gitignore too. Write the entry yourself with the Write or Edit tool; the facts are in your context, and a teammate lacks them. The ledger usually exists already, so {append}.\n3. Do not write these files with a Bash heredoc (git-guard scans its body as shell)."
 
 [tasklist_guard.append_claude]
 doc = "How to append to the history file (Claude wording)."
@@ -1038,7 +1343,7 @@ doc = "The session summary Jev judges; the fields are the work count, threshold,
 value = "workCount={work} threshold={threshold} sawTaskActivity={saw} hasStaleInProgress={stale} progressFresh={fresh} openTaskCount={open}"
 
 [tasklist_guard.no_task_tools_setting]
-doc = "The nag form for a session positively known to lack task tools (guards.tasklistNoTaskTools: reduced, full or skip)."
+doc = "Nag form when task tools are missing. The nag form for a session positively known to lack task tools (guards.tasklistNoTaskTools: reduced, full or skip)."
 value = { section = "guards", key = "tasklistNoTaskTools", type = "enum", env = "ANTIHALL_TASKLIST_NO_TASK_TOOLS", aliases = [], option = "", default = "reduced", values = ["reduced", "full", "skip"] }
 
 [tasklist_guard.protocol_setting]
@@ -1078,7 +1383,7 @@ doc = "guards.stopHookVersionDowngrade: skip the block while the host registered
 value = { section = "guards", key = "stopHookVersionDowngrade", env = "ANTIHALL_STOP_HOOK_VERSION_DOWNGRADE", aliases = [], option = "", default = true }
 
 [tasklist_guard.ack_setting]
-doc = "guards.stopAck: honor a per-signature acknowledgement of this block for the rest of the session."
+doc = "Honor verified Stop acknowledgements. guards.stopAck: honor a per-signature acknowledgement of this block for the rest of the session."
 value = { section = "guards", key = "stopAck", env = "ANTIHALL_STOP_ACK", aliases = [], option = "", default = true }
 
 [tasklist_guard.ack_dir]
@@ -1228,3 +1533,729 @@ value = "update the progress file, then stop again."
 [tasklist_guard.resume_instead]
 doc = "Compact guard message text."
 value = "verify the handover and record the result."
+
+# ---- tasklist-hygiene ------------------------------------------------------------------------
+
+[tasklist_hygiene.summary]
+doc = "One-line description of the tasklist-hygiene check in the generated reference."
+value = "Task window at TaskCreate/TaskUpdate (guards.taskWindow): at most guards.taskWindowSize active tasks plus one `T-∞ Backlog:` line, subjects `T-<n> [P<0-3>] title`, top priorities only, an owner on in-progress tasks, blocked tasks moved to the backlog store, resumed lists rebuilt from the saved store; each refusal names the form to use and /anti-hall:tasks-reconcile keeps the store. Claude only (Codex has no task tools). After a task is marked completed, orders the agent in one line (Do now: ...) to log the outcome in the named history ledger path and then delete the task (own task entries are not user data; the progress percentage comes from the progress file, not from kept tasks); a completed task that stays in the list past guards.doneOrderAfterMin is ordered deleted again at UserPromptSubmit (task-tracker) on the done_order.steps_min schedule, and at Stop (task-guard) only with handover.taskListEnforce = block, each counted as completed_lingering, order_emitted and followed (guards.doneOrder switches it); when a task subject is over handover.taskSubjectMax or the open tasks are over handover.taskListBudget, one advisory line with the numbers (handover.taskListEnforce = block refuses the call instead). Switches handover.taskDoneNote and handover.taskListEnforce."
+
+[tasklist_hygiene.skip_subagent]
+doc = "true: a subagent's task call (its payload carries a coordinator_work.agent_markers field) marked done gets no delete order and no done tip: a subagent's list is the spawner's, and its order to delete a task it may not edit was ignored by design (ignored-rules audit 2026-11-20). Only those two are skipped: the taskListEnforce = block refusal, the budget line and the deleted count still apply."
+value = true
+
+[tasklist_hygiene.guard_name]
+doc = "The guard id this check answers to in skip.json and in messages."
+value = "tasklist-hygiene"
+
+[tasklist_hygiene.create_tool]
+doc = "The tool that creates a task."
+value = "TaskCreate"
+
+[tasklist_hygiene.update_tool]
+doc = "The tool that changes a task (status, subject)."
+value = "TaskUpdate"
+
+[tasklist_hygiene.done_trigger]
+doc = "The TaskUpdate status values that count as a task being finished and trigger the delete-it line."
+value = ["completed"]
+
+[tasklist_hygiene.msg_done]
+doc = "What the done line says; {id} is the task id."
+value = "task {id} done: write its Cause/Fix/Verified ledger entry yourself."
+
+[tasklist_hygiene.instead_done]
+doc = "What to do, in the done line."
+value = "TaskUpdate status=deleted (own task entries are not user data)."
+
+[tasklist_hygiene.detail_done]
+doc = "Extra line of the done note, saved only in the details file (never shown inline): why deleting is allowed and where the progress percentage comes from."
+value = "Write the ledger entry yourself (Write or Edit tool, no heredoc). Ledger: .anti-hall/history/<date>/<session>.md. Deleting this session's own finished task entries is not deleting user data (nothing else is exempt from the never-delete rule). Compute progress % (done/total) from the progress file or ledger counts, not by keeping completed tasks in the list; the list holds open tasks only."
+
+[tasklist_hygiene.event_nudge]
+doc = "Counter event: a completed-task note was shown (one per TaskUpdate to a done status)."
+value = "nudge"
+
+[tasklist_hygiene.event_subagent_skipped]
+doc = "Counter event: the check stayed silent on a task call of a subagent (tasklist_hygiene.skip_subagent), so its order to delete a task it may not edit was not sent."
+value = "subagent_skipped"
+
+[tasklist_hygiene.event_deleted]
+doc = "Counter event: a task was deleted through TaskUpdate (the action the completed-task note asks for; an acted_on proxy, not tied to a nudge)."
+value = "deleted"
+
+[tasklist_hygiene.event_prune]
+doc = "Counter event: the prune suggestion (more finished tasks than the prune default) reached the model."
+value = "prune_suggested"
+
+[tasklist_hygiene.delete_trigger]
+doc = "The TaskUpdate statuses that count as deleting a task."
+value = ["deleted"]
+
+[metric.tasklist_hygiene]
+doc = "Task-list hygiene events (completed-task note shown, task deleted, prune suggestion shown, and the done_order events completed_lingering, order_emitted and followed), by event; recorded through the advisory counters (`ah.advisory(advisory_kind, event)`), so the engine report's `advisory` section shows tasklist_hygiene.<event>."
+value = { kind = "counter", unit = "events", labels = ["event"], advisory_kind = "tasklist_hygiene" }
+
+[tasklist_hygiene.order_joiner]
+doc = "Separator between the completion order and the budget tip in one PostToolUse line."
+value = "\n"
+
+[tasklist_hygiene.msg_subject]
+doc = "The subject breach; {n} is the subject length and {max} handover.taskSubjectMax."
+value = "task subject is {n} chars (max {max})."
+
+[tasklist_hygiene.msg_open]
+doc = "The open-count breach; {n} is the open-task count and {max} handover.taskListBudget."
+value = "{n} open tasks (budget {max})."
+
+[tasklist_hygiene.join]
+doc = "Separator between the parts of one line."
+value = " "
+
+[tasklist_hygiene.instead_budget]
+doc = "What to do, in the advisory line."
+value = "keep subjects as `T-<n> [P] title`, details in the history ledger; delete finished tasks."
+
+[tasklist_hygiene.instead_block]
+doc = "What to do, in the block message."
+value = "shorten the subject and delete finished tasks first; put details in the history ledger."
+
+# ---- done-order: completed tasks still listed are ordered deleted (GH #762) ----------------------------------------------------
+
+[done_order.sw_enabled]
+doc = "Claude only (Codex has no task tools). Where the on/off switch of the completed-task orders is read from (guards.doneOrder, default on). Off: the completion line stays the one-shot tip and no order is given for a completed task left in the list."
+value = { section = "guards", key = "doneOrder", env = "ANTIHALL_DONE_ORDER", default = true }
+
+[done_order.sw_skip_logged]
+doc = "Off switch (guards.doneOrderSkipLogged, default on, GH #794). On: when the session's history ledger already holds a written entry for a task that was just marked completed (a heading matching done_order.entry_re), the completion line only orders the task deleted; it no longer tells the agent to log the outcome it already logged. Off: every completion gets the log-then-delete line."
+value = { section = "guards", key = "doneOrderSkipLogged", env = "ANTIHALL_DONE_ORDER_SKIP_LOGGED", default = true }
+
+[done_order.sw_own_owners]
+doc = "Off switch (guards.doneOrderOwnOwners, default on, GH #794). In a NAMED task list (CLAUDE_CODE_TASK_LIST_ID) a completed task whose owner is an agent this session launched (a row of the agent tracker, by name or id) or the coordinator is the session's own and is ordered deleted; one whose owner is anyone else stays untouched (another session's). Off: any task with an owner is left alone, so with the pairing rule (every task owned by an agent name) nothing in a named list was ever ordered."
+value = { section = "guards", key = "doneOrderOwnOwners", env = "ANTIHALL_DONE_ORDER_OWN_OWNERS", default = true }
+
+[done_order.entry_re]
+doc = "Regex source (multiline) of a written ledger entry for one task: a heading such as `## Task #19 Release`. {id} is the task id, regex-escaped. The rows the engine appends itself on TaskCreated/TaskCompleted (`- <time> · TaskCompleted · task_id=...`) are not entries."
+value = '^#+\s*Task\s*#?{id}(?![0-9A-Za-z])'
+
+[done_order.num_after_min]
+doc = "Where the minutes a completed task may stay in the list before the first order are read from (guards.doneOrderAfterMin, default 10). The age counts from the first time the engine saw the task done (the completion itself, or the first prompt or Stop that found it)."
+value = { section = "guards", key = "doneOrderAfterMin", env = "ANTIHALL_DONE_ORDER_AFTER_MIN", default = 10, min = 1 }
+
+[done_order.steps_min]
+doc = "The repeat schedule: minutes to wait after the 1st order before the 2nd, after the 2nd before the 3rd, and so on; the last entry repeats. Never every turn."
+value = [10, 30, 60]
+
+[done_order.max_orders]
+doc = "Most orders given for one completed task; after that it is left alone."
+value = 6
+
+[done_order.dir]
+doc = "The state directory (under the home directory) of the completed-task records: one file per session holding {ids: {<task id>: {first, count, lastAt}}}."
+value = ".anti-hall/done-orders"
+
+[done_order.max_entries]
+doc = "Most task records kept in one session's completed-task file; past it the oldest (by last order, else first seen) are dropped on the next write. The file prune by age (7 days) only drops whole stale files."
+value = 200
+min = 1
+
+[done_order.file_prefix]
+doc = "The file name prefix of a completed-task record (<prefix>-<session>.json); stale ones are pruned by that prefix."
+value = "done"
+
+[done_order.no_session]
+doc = "The session part of the record file name when the payload carries no session id."
+value = "nosession"
+
+[done_order.key_max]
+doc = "Most characters of the session id kept in a record file name."
+value = 80
+
+[done_order.ms_per_minute]
+doc = "Milliseconds in a minute (ages are kept in ms, settings in minutes)."
+value = 60000
+
+[done_order.list_max]
+doc = "Most task ids named in one order; the rest are counted."
+value = 6
+
+[done_order.list_joiner]
+doc = "Separator between the task ids named in one order."
+value = " "
+
+[done_order.item]
+doc = "One task id in the order. Placeholder: {id}."
+value = "#{id}"
+
+[done_order.more]
+doc = "Appended to the named ids when more tasks are due. Placeholder: {m}."
+value = " +{m} more"
+
+[done_order.msg_list]
+doc = "The order for completed tasks still in the list past the age (UserPromptSubmit; at Stop only as the block reason with handover.taskListEnforce = block). Placeholders: {n} how many are due, {list} their ids. It is one line so the prompt digest keeps all of it."
+value = "⚠️ Do now: {n} completed task(s) still listed: TaskUpdate status=deleted {list}. Log each outcome in the history ledger first."
+
+[done_order.msg_fresh]
+doc = "The order given when a task is marked completed (PostToolUse of TaskUpdate). Placeholder: {id} the task id."
+value = "⚠️ Do now: task #{id} is done: log its Cause/Fix/Verified in the history ledger (write it yourself), then TaskUpdate status=deleted #{id}."
+
+[done_order.msg_fresh_logged]
+doc = "The order given when a task is marked completed and its ledger entry is already written (done_order.sw_skip_logged). Placeholder: {id} the task id."
+value = "⚠️ Do now: task #{id} is done and logged: TaskUpdate status=deleted #{id}."
+
+[done_order.events]
+doc = "Counter events (advisory kind tasklist_hygiene) of the completed-task orders: lingering = one per completed task found in the list past the age; emitted = one per completed task an order was given for; followed = one per task that was ordered and then deleted before the next order."
+value = { lingering = "completed_lingering", emitted = "order_emitted", followed = "followed" }
+
+# ---- task-list enforcement at Stop: capped prune block + P0-P3 priority slot ----
+
+[task_guard.prune_block_setting]
+doc = "Capped Stop block after an ignored prune advisory."
+value = { section = "guards", key = "pruneStopBlock", env = "ANTIHALL_PRUNE_STOP_BLOCK", aliases = [], default = true }
+
+[task_guard.prune_block_max_setting]
+doc = "Max prune Stop blocks per completed-task count."
+value = { section = "guards", key = "pruneStopBlockMax", env = "ANTIHALL_PRUNE_STOP_BLOCK_MAX", aliases = [], min = 1, default = 2 }
+
+[task_guard.prune_block_text]
+doc = "The reason of the prune Stop block; `{n}` is the completed/cancelled count and `{limit}` the limit (guards.pruneCompletedTasksAfter)."
+value = "🧹 [task-guard] {n} completed tasks (> {limit}) still listed: log them in the history ledger, then TaskUpdate status=deleted."
+
+[task_guard.priority_check_setting]
+doc = "Stop check for non-P0-P3 priority tags."
+value = { section = "guards", key = "priorityTagCheck", env = "ANTIHALL_PRIORITY_TAG_CHECK", aliases = [], default = true }
+
+[task_guard.priority_check_max_setting]
+doc = "Max priority-tag Stop blocks per tag set."
+value = { section = "guards", key = "priorityTagBlockMax", env = "ANTIHALL_PRIORITY_TAG_BLOCK_MAX", aliases = [], min = 1, default = 2 }
+
+[task_guard.priority_slot_re]
+doc = "JavaScript regex source of the priority slot of a task subject: an optional `T-<n>` id, then a bracketed tag; group 1 is the tag text."
+value = '^\s*(?:T-\d+\s+)?\[([^\]]*)\]'
+
+[task_guard.priority_ok_re]
+doc = "JavaScript regex source (case-insensitive) a priority slot must match whole: P0 to P3."
+value = '^P[0-3]$'
+
+[task_guard.priority_list_max]
+doc = "Most offending tags named in the priority block message."
+value = 3
+min = 1
+
+[task_guard.priority_block_text]
+doc = "The reason of the priority-tag Stop block; `{list}` names the offending tags."
+value = "🏷️ [task-guard] priority tag must be P0-P3 (found {list}): rename the task, e.g. `[P1] Owner/blocked: …`, label goes in the text."
+
+[task_guard.enforce_state_prefix]
+doc = "Prefix of the per-session file that counts the prune and priority Stop blocks (`<prefix><session>`)."
+value = "tasklist-enforce-"
+
+[workdetect.integration_work]
+doc = "JavaScript regex source (case-insensitive, global) of the PURE integration forms of git: a branch or ref checkout/switch (one ref argument, no `--` pathspec, no flag, no file-like argument) and a merge/cherry-pick that brings in committed work (not --continue, --skip, --abort or --quit, which resolve or undo file content). With guards.tasklistIntegrationSkip on, a command whose only work is one of these does not count toward tasklist-guard's work count: the files were changed by a delegated worker. Anything else (`checkout HEAD -- path`, `checkout --ours`, `merge --continue`, restore, reset) still counts."
+value = '\bgit\s+(?:checkout|switch)(?:\s+-[bBcC])?\s+(?!-)\w[\w/-]*(?:\.\d[\w.-]*)*(?=\s*(?:$|[;&|)\n]))|\bgit\s+(?:merge|cherry-pick)(?:\s+(?!--(?:continue|skip|abort|quit)(?:\s|$))[^\s;&|]+)+'
+
+[tasklist_guard.integration_skip_setting]
+doc = "Off switch (guards.tasklistIntegrationSkip, default on): git commands that only integrate worker commits (workdetect.integration_work) are not counted as this session's own work."
+value = { section = "guards", key = "tasklistIntegrationSkip", env = "ANTIHALL_TASKLIST_INTEGRATION_SKIP", aliases = [], option = "", default = true }
+
+[tasklist_guard.carry_setting]
+doc = "Off switch (guards.tasklistCarryProgress, default on): a session that crossed midnight keeps using its progress file under the earlier date instead of being asked for a new one under today's date."
+value = { section = "guards", key = "tasklistCarryProgress", env = "ANTIHALL_TASKLIST_CARRY_PROGRESS", aliases = [], option = "", default = true }
+
+[tasklist_guard.file_count_setting]
+doc = "Off switch (guards.tasklistCountFiles, default on, GH #794): the work count is the number of distinct project files written (an Edit or Write path, a shell redirect target, the file arguments of rm, cp, mv, tee, touch, chmod, sed -i and git rm/mv/restore/checkout), deduplicated, and a command that names no file (git commit, mkdir, a build) counts nothing. Off: every Edit or Write and every shell command that looks like a file change counts one, named by its command text, as before."
+value = { section = "guards", key = "tasklistCountFiles", env = "ANTIHALL_TASKLIST_COUNT_FILES", aliases = [], option = "", default = true }
+
+[tasklist_guard.project_only_setting]
+doc = "Off switch (guards.tasklistProjectOnly, default on): only a file written inside the session's project (its root, or the working directory) counts toward tasklist-guard's work count; a write to another repository or a path outside the project does not."
+value = { section = "guards", key = "tasklistProjectOnly", env = "ANTIHALL_TASKLIST_PROJECT_ONLY", aliases = [], option = "", default = true }
+
+[tasklist_guard.name_counted_setting]
+doc = "Off switch (guards.tasklistNameCounted, default on): the block message names the first counted actions."
+value = { section = "guards", key = "tasklistNameCounted", env = "ANTIHALL_TASKLIST_NAME_COUNTED", aliases = [], option = "", default = true }
+
+
+
+[tasklist_guard.date_dir_re]
+doc = "Regex source of a progress date directory name."
+value = '^\d{4}-\d{2}-\d{2}$'
+
+[tasklist_guard.counted_max]
+doc = "How many counted files (or stalled tasks) the block message names (the visible block text holds 115 characters)."
+value = 3
+min = 1
+
+[tasklist_guard.counted_label_max]
+doc = "Longest label (characters) of one named file; a longer path is cut at the front, so the file name stays."
+value = 28
+min = 8
+
+[tasklist_guard.counted_task_label]
+doc = "How one in-progress task is named in the 'Counted:' list of a stalled-tasks block; {id} is the task id and {subject} its subject (cut to counted_task_subject_max)."
+value = "#{id} {subject}"
+
+[tasklist_guard.counted_task_subject_max]
+doc = "Longest task subject (characters) shown in the stalled-tasks 'Counted:' list; a longer one is cut."
+value = 24
+min = 4
+
+[tasklist_guard.counted_task_label_max]
+doc = "Longest whole task label (characters) in the stalled-tasks 'Counted:' list; a longer one is cut."
+value = 32
+min = 8
+
+[tasklist_guard.counted_ellipsis]
+doc = "Appended to a cut label."
+value = "..."
+
+[tasklist_guard.counted_sep]
+doc = "Separator between the named actions."
+value = "; "
+
+[tasklist_guard.counted_text]
+doc = "Added to the block reason; {list} is the named counted actions, {more} the counted_more text when there are others."
+value = " Counted: {list}{more}."
+
+[tasklist_guard.counted_more]
+doc = "{n} further counted actions that are not named."
+value = " (+{n} more)"
+
+[metric.tasklist_integration_skipped]
+doc = "Stops where git integration commands (merge, cherry-pick, checkout, switch) alone would have reached the tasklist-guard work threshold and were not counted as the session's own work."
+value = { kind = "counter", unit = "stops", labels = ["kind"] }
+
+[metric.tasklist_progress_carried]
+doc = "Stops where tasklist-guard used the session's progress file under an earlier date (the session crossed midnight)."
+value = { kind = "counter", unit = "stops", labels = ["kind"] }
+
+# ---- R-idle (plan v2 section 4, GH #461 #516 #517 #262 #177): the idle-task rule behind guards.idleRule (off by default) ----
+# With the switch off nothing below is read and the Stop answers are the ones task-guard always gave. With it on, the Stop block skips a task
+# that has a live owner agent, that an agent's description or launch name names (#<id>), that waits on the owner, that carries a blockedOn
+# reason, that says it is parked/blocked/waiting and gives the reason, or that waits on a clock; plan mode is quiet; and the block names the
+# exact task ids and the one step that clears them. Acted-on / ignored come from the delivery funnel (delivery.act, row task-guard).
+
+[task_guard.idle_rule_setting]
+doc = "Switch guards.idleRule (default off, plan v2 D14). On: the task-guard Stop blocks leave out tasks that are not idle (live owner agent, an agent that names the task, owner decision, blockedOn reason, parked/blocked/waiting marker with its reason, a wait on a clock), stay quiet in plan mode, and name the exact task ids and the step that clears them. Off: the Stop answers are unchanged."
+value = { section = "guards", key = "idleRule", type = "boolean", env = "ANTIHALL_IDLE_RULE", option = "", default = false }
+
+[idle_rule.text_max]
+doc = "Most UTF-16 units of a task's subject plus description that the parked and clock markers are looked for in."
+value = 600
+min = 1
+
+[idle_rule.blocked_on_min]
+doc = "Fewest characters a task's blockedOn text needs to count as a stated reason (a bare or one-letter value does not)."
+value = 3
+min = 1
+
+[idle_rule.parked_re]
+doc = "JavaScript regex source (case-insensitive) of a parked/blocked/waiting marker that GIVES ITS REASON: the marker word, then a colon, dash, parenthesis or on/for/until/till/by/behind, then at least two characters of reason. A bare BLOCKED with no reason does not match, so it still counts as idle; a negated marker (not/no/never blocked) does not match either."
+value = '(?:^|[\s\[(])(?<!\b(?:not|no|never)\s+)(?:parked|blocked|waiting|on hold|deferred)\b\s*(?::|-|–|—|\(|\bon\b|\bfor\b|\buntil\b|\btill\b|\bby\b|\bbehind\b)\s*[^\s.,;:)]{2,}'
+
+[idle_rule.clock_re]
+doc = "JavaScript regex source (case-insensitive) of a wait on a clock: a waiting word (wait, until, till, after, retry, recheck, resume) that opens the text or a clause (after punctuation or the word then), so a noun inside a task title such as implement retry after 2 minutes is not a wait, followed within 40 characters of a time of day, a duration, tomorrow, tonight, next week/month/day or an ISO date."
+value = '(?:^|[\n.;:,(\[–—]\s*|\bthen\s+)(?:waiting|wait|until|till|after|retry|retrying|re-?check|resumes?|resuming)\b[^.\n]{0,40}?(?:\b\d{1,2}:\d{2}\b|\b\d+(?:\.\d+)?\s*(?:s|sec|secs|seconds?|m|min|mins|minutes?|h|hr|hrs|hours?|d|days?|weeks?)\b|\btomorrow\b|\btonight\b|\bnext (?:week|month|day)\b|\b\d{4}-\d{2}-\d{2}\b)'
+
+[idle_rule.reason_owner]
+doc = "Suppression reason label: the task waits on the owner."
+value = "owner"
+
+[idle_rule.reason_blocked_on]
+doc = "Suppression reason label: the task has a blockedOn reason."
+value = "blocked_on"
+
+[idle_rule.reason_parked]
+doc = "Suppression reason label: the task says parked/blocked/waiting and gives the reason."
+value = "parked"
+
+[idle_rule.reason_clock]
+doc = "Suppression reason label: the task waits on a clock."
+value = "clock"
+
+[idle_rule.reason_live_agent]
+doc = "Suppression reason label: the task's owner is a live agent or workspace."
+value = "live_agent"
+
+[idle_rule.reason_agent_ref]
+doc = "Suppression reason label: a running agent's description or launch name names the task (#<id>)."
+value = "agent_ref"
+
+[idle_rule.reason_bg_job]
+doc = "Suppression reason label: an in-progress task while a background shell or Monitor of this session is running (the task waits on that job)."
+value = "bg_job"
+
+[idle_rule.reason_plan_mode]
+doc = "Suppression reason label: the session is in plan mode (counted once per open task)."
+value = "plan_mode"
+
+[idle_rule.kind_idle]
+doc = "Counter label: the sharp idle-neglect block (dispatchable tasks no agent covers)."
+value = "idle"
+
+[idle_rule.kind_open]
+doc = "Counter label: the generic open-tasks block."
+value = "open"
+
+[idle_rule.minutes_cap]
+doc = "Most minutes one block adds to idle_slot_minutes (the age of the oldest listed task is capped here)."
+value = 240
+unit = "min"
+min = 1
+
+[idle_rule.ids_max]
+doc = "Most task ids the visible block line names; the rest are counted ({more}) and listed in the saved details."
+value = 6
+min = 1
+
+[idle_rule.id_sep]
+doc = "Separator between the task ids of the visible block line."
+value = ", "
+
+[idle_rule.more]
+doc = "Tail of the id list when more tasks than idle_rule.ids_max are idle; `{n}` is how many were left out."
+value = " (+{n} more)"
+
+[idle_rule.what_lapsed]
+doc = "First line of either R-idle block when a listed task still carries a blockedOn reason whose hold ran out (nudges.hold.hold_max_ms): the reason is not missing, it must be re-confirmed. Same placeholders as what_idle. Kept short: the visible line is cut near 115 units."
+value = "Blocker lapsed (hold ran out), not missing: {ids}{more}."
+
+[idle_rule.instead_lapsed]
+doc = "The step line for what_lapsed; `{upd}` the task update tool, `{first}` the first listed id. Kept under 115 units."
+value = "re-confirm it: {upd} #{first} with metadata.blockedOn=<reason>, or run an agent for it, or finish it."
+
+[idle_rule.label_lapsed]
+doc = "Tail of a task's line in the saved details when its blockedOn hold ran out: `{reason}` is the reason it still carries, cut to idle_rule.subject_ref_max."
+value = " (blockedOn lapsed: {reason})"
+
+[idle_rule.prompt_ref_max]
+doc = "Most UTF-16 units of a running agent's spawn prompt (from its start) that are read for a task number (#<id>) or a task subject; an agent launched for a task names it in its brief even when its description only names the work."
+value = 600
+min = 1
+
+[idle_rule.prompt_ref_skip_re]
+doc = "JavaScript regex source (case-insensitive) of GitHub-style references in a spawn prompt that are NOT task numbers: a PR, pull request, issue, commit or bug number (a list of them: 'PRs #829, #827 and #826'), or owner/repo#N. They are blanked before the prompt is read for #<id>, so a brief that reviews PR #12 does not attend task #12."
+value = '''\b(?:prs?|pull\s+requests?|pulls?|issues?|gh|commits?|bugs?)\s*:?\s*#\d+(?:\s*(?:,|and|&|/)?\s*#\d+)*|[\w.-]+/[\w.-]+#\d+'''
+
+[idle_rule.subject_ref_min]
+doc = "Fewest characters a task subject (after its priority prefix) needs to count as named when an agent's description, launch name or prompt start quotes it whole; shorter subjects match too much by chance."
+value = 12
+min = 1
+
+[idle_rule.subject_ref_max]
+doc = "Most characters of a task subject compared against the running agents' description, launch name and prompt start."
+value = 80
+min = 1
+
+[idle_rule.what_idle]
+doc = "First line of the R-idle idle block; `{n}` tasks, `{ids}` the ids (#<id>), `{more}` the tail (idle_rule.what_lapsed replaces it when a listed task has a lapsed blockedOn). Kept short: the visible line is cut near 115 units."
+value = "{n} open tasks idle, no live agent, no blocked reason: {ids}{more}."
+
+[idle_rule.what_open]
+doc = "First line of the R-idle generic block; same placeholders as what_idle (idle_rule.what_lapsed replaces it when a listed task has a lapsed blockedOn)."
+value = "{n} open tasks unfinished, none has a live agent or a blocked reason: {ids}{more}."
+
+[idle_rule.instead]
+doc = "The step that clears the block, in the instead line (kept under 115 units so it stays visible); `{upd}` the task update tool, `{first}` the first listed id."
+value = "run an agent with #{first} in its description, or {upd} metadata.blockedOn=<reason>, or finish it."
+
+[idle_rule.details_list]
+doc = "Saved-details block listing every idle task; `{list}` has one line per task: id, subject, status."
+value = "Idle tasks:\n{list}"
+
+[idle_rule.details_steps]
+doc = "Saved-details text with the three ways to clear a listed task; `{upd}` the task update tool, `{first}` the first listed id."
+value = "To clear a task, do one of: (1) start an agent whose description contains its id, for example description \"#{first} <what it does>\"; (2) {upd} taskId={first} with metadata.blockedOn=<the reason> (the update tool has no blockedOn parameter of its own: only the metadata key counts), or write a line \"BLOCKED: <reason>\" in its subject or description (a bare BLOCKED with no reason does not clear it); a wait on a clock: write \"waiting until <time>\"; (3) finish it and mark it completed."
+
+[metric.idle_rule_fired]
+doc = "R-idle Stop blocks delivered (guards.idleRule on), by kind (idle: the dispatch-demand block; open: the generic block)."
+value = { kind = "counter", unit = "blocks", labels = ["kind"] }
+
+[metric.idle_rule_listed]
+doc = "Tasks named by delivered R-idle blocks, by kind."
+value = { kind = "counter", unit = "tasks", labels = ["kind"] }
+
+[metric.idle_rule_hold_lapsed]
+doc = "Task holds whose exemption lapsed after nudges.hold.hold_max_ms (the normal rule applies again), by exemption kind (owner, blocked_on, parked, clock). Counted once per Stop and task."
+value = { kind = "counter", unit = "tasks", labels = ["reason"] }
+
+[metric.idle_rule_suppressed]
+doc = "Open tasks the R-idle filter kept out of a block's list, by reason (owner, blocked_on, parked, clock, live_agent, agent_ref; plan_mode counts the open tasks of a plan-mode Stop). Counted once per delivered block, plus once per plan-mode Stop."
+value = { kind = "counter", unit = "tasks", labels = ["reason"] }
+
+[metric.idle_slot_minutes]
+doc = "PROXY for plan v2's idle-slot minutes: at each delivered R-idle block, the age in minutes of the oldest listed task since it was created or last set pending/in progress, capped at idle_rule.minutes_cap. Not a time integral (that would need persistent state); blocks of one idle spell add up, so read it as a relative size, not as minutes."
+value = { kind = "counter", unit = "min", labels = ["kind"] }
+
+[metric.idle_rule_age_unknown]
+doc = "Delivered R-idle blocks whose listed tasks had no known start time (a task list read from the store carries none), so idle_slot_minutes got nothing from them."
+value = { kind = "counter", unit = "blocks", labels = ["kind"] }
+
+[metric.taskstate_rows_skipped]
+doc = "Transcript rows the task model skipped because their type is in taskstate.skipped_row_types (replayed API-request rows, not the conversation). Counted once per rebuild pass in the hook dispatcher or the daemon."
+value = { kind = "counter", unit = "rows", labels = [] }
+
+[metric.snapshot_written]
+doc = "Task snapshot files written (taskstate.snapshot_enabled): the session's rebuilt list saved so a later rebuild can recover tasks that left the transcript tail."
+value = { kind = "counter", unit = "files", labels = [] }
+
+[metric.snapshot_overlaid]
+doc = "Tasks a rebuild recovered from the session's snapshot because the transcript tail no longer showed them."
+value = { kind = "counter", unit = "tasks", labels = [] }
+
+[metric.snapshot_gap]
+doc = "Rebuilds whose transcript tail started after the snapshot's size, by result (caught_up: the bytes between were read, so a completion in them is seen; too_big: the gap is over taskstate.snapshot_gap_max_bytes; unread: the wider read could not be made exactly). too_big and unread discard the snapshot (snapshot_discarded reason gap): the Stop answers from the tail alone."
+value = { kind = "counter", unit = "rebuilds", labels = ["result"] }
+
+[metric.snapshot_discarded]
+doc = "Snapshots not laid over a rebuild, by reason (shrunk: the transcript is smaller than when the snapshot was written; reset: the tail restarted or emptied the list; renumbered: the tail holds a TaskCreate for a number the snapshot holds whose tool-use id is not the one the snapshot recorded for it, so a new list began (subjects play no part); format: another snapshot version; session: the snapshot names another transcript path or session id; replaced: the transcript bytes at the fingerprinted places differ, so another file lies under the path; gap: the bytes between the snapshot's size and the tail's start could not be read, so the snapshot may be stale). A discarded snapshot is replaced by the new list, never deleted."
+value = { kind = "counter", unit = "snapshots", labels = ["reason"] }
+
+[metric.snapshot_identity_unknown]
+doc = "Rebuilds whose tail holds a TaskCreate for a number the snapshot holds, over bytes the snapshot already covers, where the create's tool-use id or the snapshot's recorded one is missing (a task no create was recorded for, as a TodoWrite makes). Which list it belongs to cannot be told: the snapshot is kept (fail-open to the snapshot)."
+value = { kind = "counter", unit = "rebuilds", labels = [] }
+
+[metric.snapshot_lock]
+doc = "Task snapshot lock takes, by kind (flock: the kernel lock; file: the lock file of the Node protocol, by taskstate.snapshot_lock_kind; fallback: this platform or filesystem has no flock at all, the lock file was used) and result (taken; busy: held elsewhere past taskstate.snapshot_lock_wait_ms, nothing written; failed: the flock could not be acquired (the file would not open or is a link, or flock failed with an errno other than unsupported), nothing written). On the file and fallback kinds busy also covers a lock file that cannot be made (a directory or link in its place, an unwritable directory) and failed a lock call that raised: nothing is written either way. A write happens only under a lock that is positively held."
+value = { kind = "counter", unit = "takes", labels = ["kind", "result"] }
+
+[metric.snapshot_error]
+doc = "Task snapshot reads or writes that failed and left the rebuild as the tail alone gives it, by kind (read, parse, shape: a section with a malformed task, write, big: over taskstate.snapshot_max_bytes (on a read, the file is replaced), lock: the snapshot lock was busy, cap: taskstate.snapshot_max_files reached, home: no usable home)."
+value = { kind = "counter", unit = "errors", labels = ["kind"] }
+
+[task_guard.prune_advisory]
+doc = "The advisory printed when the list holds many completed tasks; `{n}` is how many and `{limit}` the limit."
+value = "[task-guard] {n} completed/cancelled tasks in the list (> {limit}) — advisory: after recording them in the history ledger, prune them with TaskUpdate status=deleted so the harness reminder stops re-printing them every turn.\n"
+
+# ---- task window (GH #982): N active tasks + one backlog line; the full list in a per-session store; rules enforced at write time ----
+# tasklist-hygiene (PreToolUse/PostToolUse on TaskCreate/TaskUpdate) enforces these. Claude only: Codex has no task tools or task hook
+# events, so on Codex the rules live in the tasks-reconcile and handover skills only.
+
+[task_window.setting]
+doc = "Switch guards.taskWindow (default on): the task-list window rules are enforced when a task is created or changed (subject format, window size, top priorities in the window, an owner on an in-progress task, blocked tasks moved to the backlog, the resume check), and the full list is kept in the per-session task store. Off: none of this runs, and the backlog line counts as an open task again."
+value = { section = "guards", key = "taskWindow", env = "ANTIHALL_TASK_WINDOW", aliases = [], default = true }
+
+[task_window.size_setting]
+doc = "guards.taskWindowSize: most active tasks in the live list (the backlog line is extra, slot N+1). When the switch is on this replaces handover.taskListBudget as the open-task limit."
+value = { section = "guards", key = "taskWindowSize", env = "ANTIHALL_TASK_WINDOW_SIZE", aliases = [], min = 1, default = 5 }
+
+[task_window.priority_setting]
+doc = "Switch guards.taskWindowPriority (default on): a new task may not take a free window slot while the backlog holds a higher-priority task."
+value = { section = "guards", key = "taskWindowPriority", env = "ANTIHALL_TASK_WINDOW_PRIORITY", aliases = [], default = true }
+
+[task_window.owner_setting]
+doc = "Switch guards.taskWindowOwner (default on): a task set to in progress must name its owner (the agent working it, or main)."
+value = { section = "guards", key = "taskWindowOwner", env = "ANTIHALL_TASK_WINDOW_OWNER", aliases = [], default = true }
+
+[task_window.blocked_setting]
+doc = "Switch guards.taskWindowBlocked (default on): a task update that marks a task blocked (metadata.blockedOn with a reason, or addBlockedBy) saves it to the backlog and is refused with the order to delete it from the window."
+value = { section = "guards", key = "taskWindowBlocked", env = "ANTIHALL_TASK_WINDOW_BLOCKED", aliases = [], default = true }
+
+[task_window.resume_setting]
+doc = "Switch guards.taskWindowResume (default on): in a session resumed from a handover, task creates are checked against the predecessor's task store (adopted into this session's store) or, when it has none, its markdown task snapshot, so the list is rebuilt from the saved one and not from memory."
+value = { section = "guards", key = "taskWindowResume", env = "ANTIHALL_TASK_WINDOW_RESUME", aliases = [], default = true }
+
+[task_window.subject_re]
+doc = "JavaScript regex source a task subject must match whole: `T-<n> [P<0-3>] title`. Group 1 is the task number n (a stable id, never renumbered), group 2 the priority digit, group 3 the title."
+value = '^T-(\d+) \[P([0-3])\] (\S.*)$'
+
+[task_window.backlog_re]
+doc = "JavaScript (and Rust) regex source of the backlog line's subject (slot N+1). That task is an index of the backlog, not work: it never counts as an open task for the task guards (tk.isOpen) or the compliance nudges, and never takes a window slot."
+value = '^T-∞ Backlog:'
+
+[task_window.backlog_line]
+doc = "The backlog line's subject as the guard renders it: `{n}` tasks in the backlog, `{counts}` the per-priority counts, `{next}` the top backlog task, `{skill}` task_window.reconcile_skill."
+value = "T-∞ Backlog: {n} more ({counts}) · next: {next} · run {skill}"
+
+[task_window.backlog_count]
+doc = "One priority's count in the backlog line; `{n}` the count, `{p}` the priority digit."
+value = "{n} P{p}"
+
+[task_window.backlog_count_sep]
+doc = "Separator between the per-priority counts."
+value = ", "
+
+[task_window.backlog_none]
+doc = "The `{next}` of a backlog line when nothing waits."
+value = "none"
+
+[task_window.subject_form]
+doc = "A subject in the expected form; `{n}` the number, `{p}` the priority digit or task_window.p_unknown, `{title}` the title."
+value = "T-{n} [P{p}] {title}"
+
+[task_window.p_unknown]
+doc = "The priority slot shown when the guard cannot tell the priority."
+value = "<0-3>"
+
+[task_window.title_strip_re]
+doc = "JavaScript regex source (case-insensitive) removed from the start of a malformed subject to get its title: a `T-<n>`/`#<n>` id and bracketed tags."
+value = '^\s*(?:(?:T-\S+|#\d+)\s*)?(?:\[[^\]]*\]\s*)*'
+
+[task_window.title_max]
+doc = "Longest title the guard quotes in an expected form (UTF-16 units); longer ones are cut with taskkit.ellipsis."
+value = 50
+min = 8
+
+[task_window.reconcile_skill]
+doc = "How the guard names the reconcile skill in its orders."
+value = "/anti-hall:tasks-reconcile"
+
+[task_window.store_dir]
+doc = "Path parts, under the session's project root (ah.project.repoRoot), of the task store directory: one `<session>.json` per session. Must start with paths.base_dir (the scoped writer's rule)."
+value = [".anti-hall", "tasks", "store"]
+
+[task_window.store_format]
+doc = "Version stamped in a store file; a file with another version is read as absent (the guard starts a new one only when the old one is not there, so nothing is overwritten: a file it cannot read is left alone and no store rule runs)."
+value = 1
+min = 1
+
+[task_window.store_max_bytes]
+doc = "Largest store file read or written; a bigger one is left alone (no store rule runs) and counted."
+value = 262144
+min = 1024
+unit = "bytes"
+
+[task_window.states]
+doc = "The store states of a task: in the live window, waiting in the backlog, blocked (in the backlog, waiting on something or the owner), done (finished, to be logged and cleared by tasks-reconcile), dropped (deleted from the live list without being finished; kept, never deleted)."
+value = { window = "window", backlog = "backlog", blocked = "blocked", done = "done", dropped = "dropped" }
+
+[task_window.reserve_ttl_ms]
+doc = "How long a create the guard let through holds its window slot before the created task shows in the live list. Parallel creates are judged under a lock against the live list plus these reservations, so N+1 parallel creates cannot all pass."
+value = 120000
+min = 1000
+unit = "ms"
+
+[task_window.lock_rel]
+doc = "The lock file (relative to the home, under paths.base_dir) that serialises store updates of one session; `{sid}` is the session key."
+value = ".anti-hall/task-window/{sid}.flock"
+
+[task_window.lock_group]
+doc = "The defaults group whose lock_* keys time the store lock."
+value = "advisor"
+
+[task_window.lock_wait_ms]
+doc = "How long a task call waits for the store lock. A call that cannot take it writes nothing and enforces only the rules that need no store (format, owner)."
+value = 400
+min = 0
+unit = "ms"
+
+[task_window.snapshot_file]
+doc = "The detail file of a handover that holds its markdown task snapshot (read only when the predecessor session left no store)."
+value = "state.md"
+
+[task_window.snapshot_heading_re]
+doc = "JavaScript regex source (case-insensitive, multiline) of the task snapshot heading in a handover's state file."
+value = '^##\s*Task list snapshot\s*$'
+
+[task_window.snapshot_row_re]
+doc = "JavaScript regex source of one data row of the snapshot table (a table row that is neither the header nor the divider)."
+value = '^\|(?!\s*-)(?!\s*id\s*\|)\s*[^|\s]'
+
+[task_window.snapshot_end_re]
+doc = "JavaScript regex source of the line that ends the snapshot section (the next markdown heading)."
+value = '^#'
+
+[task_window.snapshot_read_max]
+doc = "Most bytes of the handover state file read for its snapshot."
+value = 262144
+min = 1024
+unit = "bytes"
+
+[task_window.owner_hint]
+doc = "The owner value the in-progress order suggests."
+value = "<agent name, or main>"
+
+[task_window.what_format]
+doc = "Block: the subject is not in the window form; `{subject}` is the subject given (cut)."
+value = "task subject \"{subject}\" is not `T-<n> [P<0-3>] title`."
+
+[task_window.instead_create]
+doc = "Do instead of a malformed create; `{subject}` is the expected subject."
+value = "TaskCreate subject=\"{subject}\""
+
+[task_window.instead_rename]
+doc = "Do instead of a malformed rename; `{id}` the task id, `{subject}` the expected subject."
+value = "TaskUpdate taskId={id} subject=\"{subject}\""
+
+[task_window.what_dup]
+doc = "Block: the number is taken by another task; `{n}` the number, `{other}` the title that has it."
+value = "T-{n} is already \"{other}\"."
+
+[task_window.what_full]
+doc = "Block: the window is full; `{n}` the task, `{open}` the live window count, `{max}` the window size. The task is already saved in the backlog store."
+value = "window full ({open}/{max}): T-{n} saved to the backlog store."
+
+[task_window.instead_full]
+doc = "Do instead when the window is full; `{skill}` the reconcile skill."
+value = "finish or move a window task first; {skill} swaps in higher priorities."
+
+[task_window.what_order]
+doc = "Block: a backlog task outranks the new one; `{n}`/`{p}` the new task, `{bn}`/`{bp}` the backlog one."
+value = "T-{bn} [P{bp}] in the backlog outranks T-{n} [P{p}]."
+
+[task_window.instead_order]
+doc = "Do instead: pull the backlog task first; `{subject}` its subject."
+value = "TaskCreate subject=\"{subject}\" first."
+
+[task_window.what_owner]
+doc = "Block: an in-progress task with no owner; `{id}` the task id."
+value = "task {id} goes in progress with no owner."
+
+[task_window.instead_owner]
+doc = "Do instead; `{id}` the task id, `{owner}` task_window.owner_hint."
+value = "TaskUpdate taskId={id} status=in_progress owner=\"{owner}\""
+
+[task_window.what_blocked]
+doc = "Block: a blocked task belongs in the backlog; `{n}` its number. It is already saved there as blocked."
+value = "blocked tasks leave the window: T-{n} saved to the backlog store as blocked."
+
+[task_window.instead_blocked]
+doc = "Do now when a blocked task was saved; `{id}` the task id."
+value = "TaskUpdate taskId={id} status=deleted"
+
+[task_window.what_drift]
+doc = "Block: a resumed session creates a task before loading the saved window; `{missing}` how many saved window tasks are not live yet."
+value = "resumed list: {missing} saved window task(s) not loaded yet."
+
+[task_window.instead_drift]
+doc = "Do instead: load the saved window; `{subject}` the first saved window subject."
+value = "TaskCreate subject=\"{subject}\" (load the saved window first)"
+
+[task_window.drift_detail]
+doc = "Details line: the saved window subjects to create, in order; `{list}` joined by task_window.drift_sep."
+value = "Load these saved window tasks first, then the backlog line: {list}"
+
+[task_window.drift_sep]
+doc = "Separator of the saved window subjects in the drift details."
+value = " | "
+
+[task_window.what_import]
+doc = "Block: a resumed session has only a markdown task snapshot; `{path}` the handover state file."
+value = "resumed list not imported from {path}."
+
+[task_window.instead_import]
+doc = "Do now: import the snapshot; `{skill}` the reconcile skill."
+value = "run {skill} (it imports the snapshot into the store)"
+
+[task_window.what_backlog_dup]
+doc = "Block: a second backlog line; `{id}` the existing one's task id."
+value = "a backlog line already exists (task {id})."
+
+[task_window.instead_backlog_dup]
+doc = "Do instead: update the existing backlog line; `{id}` its task id."
+value = "TaskUpdate taskId={id} with the new backlog subject"
+
+[task_window.slot_free]
+doc = "Order after a window task was finished or deleted while the backlog holds tasks; `{skill}` the reconcile skill, `{next}` the top backlog task."
+value = "a window slot is free: run {skill} (next: {next})."
+
+[task_window.slot_free_then]
+doc = "The slot-free order folded into the done order of the same call (one order per message); same placeholders as task_window.slot_free."
+value = " Then run {skill}: a window slot is free (next: {next})."
+
+[task_window.skill_rules]
+doc = "The task-list rules as the skills state them (tasks-reconcile and handover, Claude and Codex). A test checks that each of those skills holds this text exactly, so the guard and the skills cannot drift. `{size}` is not filled: the skills name the setting."
+value = "Task list rules (enforced at TaskCreate/TaskUpdate by tasklist-hygiene): at most `guards.taskWindowSize` (default 5) active tasks, all top priority, plus one backlog line `T-∞ Backlog: …` as the last slot; subjects are `T-<n> [P<0-3>] title` with `n` a stable task number (never renumbered); an in-progress task names its owner; blocked tasks and tasks waiting on the owner live in the backlog store, not in the window; the full list lives in `.anti-hall/tasks/store/<session>.json`."
+
+[metric.task_window]
+doc = "Task-window actions at TaskCreate/TaskUpdate, by action (block_format, block_dup, block_full, block_order, block_owner, block_blocked, block_drift, block_import, block_backlog_dup, saved_backlog, reserved, adopted, slot_free, store_write_failed, store_unreadable, lock_busy)."
+value = { kind = "counter", unit = "events", labels = ["action"] }

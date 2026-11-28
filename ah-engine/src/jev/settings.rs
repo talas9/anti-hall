@@ -339,6 +339,10 @@ pub struct JevSettings {
     pub price_in: f64,
     /// USD per million output tokens when no price entry applies.
     pub price_out: f64,
+    /// `jev.modelPin`: the versioned model id for the direct TypeSafe vendor when the owner set one (`jev-latest` follows the moving alias); `None` when unset, which selects the shipped `jev.model_pin`.
+    pub model_pin: Option<String>,
+    /// `jev.stateMaxTokens`: the per-question input cap in estimated tokens.
+    pub state_max_tokens: u64,
     /// The cascade's global kill switch (`jev.cascade`, `ANTIHALL_JEV_CASCADE`): false turns it off for every integration.
     pub cascade_enabled: bool,
     /// Whether the cascade shows the model Jev's answer (`jev.cascadeShowJevAnswer`).
@@ -413,6 +417,11 @@ impl JevSettings {
             |key: &str, dflt: &str| file_value(key, None).as_ref().and_then(coerce_num).filter(|n| *n >= 0.0).unwrap_or_else(|| dflt.parse().unwrap_or(0.0));
         let price_in = price("priceUsdPerMInput", defaults::text("jev.price_usd_per_m_input"));
         let price_out = price("priceUsdPerMOutput", defaults::text("jev.price_usd_per_m_output"));
+        let model_pin = file_value("modelPin", None).as_ref().and_then(coerce_str).map(|m| m.trim().to_string());
+        let state_max_tokens = match file_value("stateMaxTokens", None).as_ref().and_then(coerce_num) {
+            Some(n) if n >= 1.0 => n.floor() as u64,
+            _ => defaults::num("jev.state_max_tokens"),
+        };
         let flag = |entry: &'static defaults::V| -> bool {
             let (key, env) = (entry.str_field("key"), entry.str_field("env"));
             sources
@@ -447,6 +456,8 @@ impl JevSettings {
             prices,
             price_in,
             price_out,
+            model_pin,
+            state_max_tokens,
             cascade_enabled,
             cascade_show_jev,
             sources,
@@ -619,6 +630,17 @@ mod tests {
         assert_eq!(k.mode("modelRouting", false), Mode::Off);
     }
 
+    /// #466: gitGuardSelfCredit ships `off`, but a mode a user already set keeps precedence (settings.json or the legacy file).
+    #[test]
+    fn git_guard_self_credit_defaults_off_and_an_explicit_mode_still_wins() {
+        let d = resolve(&[("ANTIHALL_JEV", "1")], json!({}), json!({}));
+        assert_eq!(d.mode("gitGuardSelfCredit", false), Mode::Off);
+        let legacy = resolve(&[("ANTIHALL_JEV", "1")], json!({}), json!({"integrations": {"gitGuardSelfCredit": "shadow"}}));
+        assert_eq!(legacy.mode("gitGuardSelfCredit", false), Mode::Shadow);
+        let file = resolve(&[("ANTIHALL_JEV", "1")], json!({"jevIntegrations": {"gitGuardSelfCredit": "on"}}), json!({}));
+        assert_eq!(file.mode("gitGuardSelfCredit", false), Mode::On);
+    }
+
     #[test]
     fn unknown_ids_default_to_shadow_and_the_legacy_on_ids_to_on() {
         let s = resolve(&[("ANTIHALL_JEV", "1")], json!({}), json!({}));
@@ -700,5 +722,41 @@ mod tests {
         JevSettings::validate_table().unwrap();
         assert_eq!(known_integrations().len(), 25);
         assert_eq!(default_mode("dispatchTier"), Some(Mode::On));
+    }
+
+    /// Task #548: every `jev.*` key this file reads from the settings file has a row in the settings CLI registry
+    /// (`settings_cli.items`) and in the migration schema (`migrate.settings_schema`), so `settings` can list, set and validate it.
+    /// The keys are the string literals of the `file_value("...")` and `price("...")` calls above the test module, so a key added
+    /// there without a row fails here.
+    #[test]
+    fn every_jev_key_read_from_the_settings_file_has_a_registry_row_and_a_schema_row() {
+        let src = include_str!("settings.rs");
+        let code = src.split("#[cfg(test)]").next().unwrap();
+        let mut keys: Vec<&str> = Vec::new();
+        for call in ["file_value(\"", "price(\""] {
+            let mut rest = code;
+            while let Some(at) = rest.find(call) {
+                rest = &rest[at + call.len()..];
+                let end = rest.find('"').unwrap();
+                keys.push(&rest[..end]);
+            }
+        }
+        assert!(keys.len() >= 15 && keys.contains(&"modelPin") && keys.contains(&"stateMaxTokens"), "the scan finds the calls: {keys:?}");
+        let rows = |list: &str| -> Vec<String> {
+            defaults::list(list)
+                .iter()
+                .filter_map(|r| serde_json::from_str::<Value>(r).ok())
+                .filter(|v| v["section"] == "jev")
+                .filter_map(|v| v["key"].as_str().map(str::to_string))
+                .collect()
+        };
+        let (cli, schema) = (rows("settings_cli.items"), rows("migrate.settings_schema"));
+        let missing: Vec<String> = keys
+            .iter()
+            .flat_map(|k| [("settings_cli.items", &cli), ("migrate.settings_schema", &schema)].map(|(l, have)| (k, l, have.iter().any(|h| h == k))))
+            .filter(|(_, _, ok)| !ok)
+            .map(|(k, l, _)| format!("jev.{k} has no row in {l}"))
+            .collect();
+        assert!(missing.is_empty(), "{missing:#?}");
     }
 }

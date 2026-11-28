@@ -60,7 +60,7 @@ is Opus — never a weaker/cheaper model.
 
 *Fable routing is RE-ENABLED (2026-07-12, owner call): the earlier policy-disable
 (2026-07-02, reported over-restrictive/refusal-prone by the community) is reversed now that
-Fable is available. When `fable-availability.js` reports `args.fableAvailable === true`,
+Fable is available. When `fable-availability` reports `args.fableAvailable === true`,
 the Reviewer seat tries Fable FIRST, falling back to Sonnet then Opus per the availability
 matrix below. KNOWN RESIDUAL RISK (accepted, not mitigated): a soft refusal can still pass
 StructuredOutput validation as a "successful" verdict rather than triggering fallback — the
@@ -77,7 +77,7 @@ All three are dispatched **in the SAME message** so they run truly in parallel.
   above) — when `fableAvailable` is true, route this seat to Fable first (`model:
   "fable"`, effort `xhigh`), falling back to Sonnet then Opus if Fable returns
   null/falsy.
-- **Fable availability (acted on):** the `fable-availability.js` SessionStart hook
+- **Fable availability (acted on):** the `fable-availability` SessionStart hook
   checks `~/.claude.json`'s `modelAccessCache`/`additionalModelOptionsCache` once
   per session and threads `args.fableAvailable=true` into ship-it/deadly-loop
   Workflow invocations when Fable is actually available. Both
@@ -265,7 +265,7 @@ null — never skip straight to Opus just because you haven't re-checked.
 
 **A shared `quota` field short-circuits a known outage.** When a `codex:codex-rescue`
 Agent call comes back with a quota/rate-limit exhaustion message, the PostToolUse
-`codex-quota-detect.js` hook (`guards.codexQuotaDetect`, default on) records it into
+`codex-quota-detect` hook (`guards.codexQuotaDetect`, default on) records it into
 the SAME file as `quota: {available:false, until, reason, recordedAt}` (merged, never
 overwriting the PATH-probe fields) via the Codex quota reader. `readQuota()` treats an
 expired `until` as absent (fail-open toward "assume available"). If `quota.available`

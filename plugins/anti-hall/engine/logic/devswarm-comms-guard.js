@@ -5,7 +5,7 @@
 // case). The cases this script cannot decide with the same answer are decided natively and counted (native_unable): a home that is not
 // absolute resolves against the stand-in directory, a settings chain that depends on a plugin root it does not know counts as unset (the
 // guard stays on), a session index file the interpreter cannot parse exactly is skipped, and a session entry whose directory is relative
-// resolves against the stand-in for the hook's working directory. Mirrors hooks/devswarm-comms-guard.js `main`. Keys and texts: small_guards.toml (devswarm_comms.*).
+// resolves against the stand-in for the hook's working directory. Mirrors hooks/devswarm-comms-guard.js `main`. Keys and texts: spawn_guards.toml (devswarm_comms.*).
 'use strict';
 
 function dcT(k) { return ah.cfg('devswarm_comms.' + k); }
@@ -60,7 +60,35 @@ function dcWorkspacePath(home, cwd) {
   return resolved === root || resolved.indexOf(root + '/') === 0;
 }
 
-function dcLabel(kind, what) { return { advisory: text.advisoryJson('PreToolUse', text.message(kind, dcT('label_name'), { what: what })) }; }
+// A label is shown once per session (and agent) and target (#972 wave 2: the coordinator label repeated on every message to "main"). The targets
+// already labelled live in a small per-session state file; a state the script cannot read or write counts as not labelled (the label
+// shows), so a broken state file never hides a label for good. A block is never deduplicated.
+function dcLabelState(session) {
+  var rel = dcT('label_state_dir') + '/' + dcT('label_state_prefix') + '-' + String(session).replace(/[^A-Za-z0-9_.-]/g, '_') + ah.cfg('guardkit.state_ext');
+  var seen = [], raw = null;
+  try { raw = ah.state.readText(rel); } catch (e) { raw = null; }
+  if (raw !== null && raw.trim() !== '') {
+    var r = jx.parse(raw.trim());
+    if (!r.unsure && !r.invalid && jx.isObj(r.v) && Array.isArray(r.v.targets)) seen = r.v.targets.filter(function (t) { return typeof t === 'string'; });
+  }
+  return { rel: rel, seen: seen };
+}
+
+function dcLabel(p, target, what) {
+  // a teammate's hooks carry its lead's session id plus its own agent id: each agent of the session gets the label once
+  var session = jx.isObj(p) && typeof p.session_id === 'string' ? p.session_id : '';
+  if (session !== '' && typeof p.agent_id === 'string' && p.agent_id !== '') session += '-' + p.agent_id;
+  if (session !== '') {
+    var st = dcLabelState(session), key = target.toLowerCase();
+    if (st.seen.indexOf(key) !== -1) return 'allow';
+    var next = st.seen.concat([key]), max = ah.cfgNum('devswarm_comms.label_state_max');
+    if (next.length > max) next = next.slice(next.length - max);
+    var ok = false;
+    try { ok = ah.state.writeAtomic(st.rel, JSON.stringify({ targets: next })); } catch (e) { ok = false; }
+    if (ok) gk.pruneStale(dcT('label_state_dir'), dcT('label_state_prefix'));
+  }
+  return { advisory: text.advisoryJson('PreToolUse', text.message(dcT('label_kind'), dcT('label_name'), { what: what })) };
+}
 
 function decide(p, opts) {
   var home = hookProc.home(p);
@@ -78,7 +106,7 @@ function decide(p, opts) {
   if (!act) return 'allow';
   var to = jx.isObj(p.tool_input) && typeof p.tool_input.to === 'string' ? p.tool_input.to.trim() : '';
   if (to === '') return 'allow';
-  if (to.toLowerCase() === dcT('coordinator_target')) return dcLabel('tip', dcT('msg_main_what'));
+  if (to.toLowerCase() === dcT('coordinator_target')) return dcLabel(p, to, dcT('msg_main_what'));
   var name = dcStripRef(to), session = dcFindSession(home, name);
   if (session !== null) {
     var ws = dcWorkspacePath(home, session.cwd);
@@ -90,5 +118,5 @@ function decide(p, opts) {
   }
   if (new RegExp(dcT('agent_id_re'), 'i').test(to)) return 'allow';
   if (session === null) return 'allow';
-  return dcLabel('ok', text.render(dcT('msg_ok_what'), { to: to, cwd: session.cwd }));
+  return dcLabel(p, name, text.render(dcT('msg_ok_what'), { to: to, cwd: session.cwd }));
 }

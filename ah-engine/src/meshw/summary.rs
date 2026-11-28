@@ -50,6 +50,9 @@ struct Msg {
     mtype: Option<String>,
     urgency: Option<String>,
     is_heartbeat: bool,
+    needs_reply: bool,
+    /// The stored sender_kind of a declared identity's row (GH #845).
+    sender_kind: Option<String>,
 }
 
 /// A store read that failed: Node's `readAll` swallows it to an empty result (devswarm-store.js, "fail-open contract"), so
@@ -133,6 +136,8 @@ fn messages(st: &MeshStore, id: &str, since: f64) -> R<Vec<Msg>> {
                 mtype: sv(&m["mtype"]),
                 urgency: sv(&m["urgency"]),
                 is_heartbeat: m["isHeartbeat"].as_bool().unwrap_or(false),
+                needs_reply: m["needsReply"].as_bool().unwrap_or(false),
+                sender_kind: sv(&m[defaults::text("mesh_identity.row_kind_field")]),
             });
             true
         })
@@ -643,10 +648,19 @@ pub fn compute(st: &MeshStore, inv: &Inv, _touched: Option<&str>) -> R<OVal> {
     let pq_cap = defaults::num("mesh_write.summary_pending_questions_cap") as usize;
     let bpart = defaults::text("mesh_write.broadcast_partition");
     let broadcast_all = messages(st, bpart, 0.0)?;
+    // GH #845 (contract §3-§4): who each unread broadcast wakes. The stored audience is decoded, and a legacy row's audience
+    // resolved, once per call, the first time some reader has the row unread.
+    let mode = crate::meshw::wakepolicy::Mode::load();
+    let ack_kind = defaults::text("mesh_chat.kind_ack");
+    let ack_suppressed = defaults::num("mesh_chat.ack_suppression") == 1;
+    let bc_extras = st.reader().extras_of(bpart, 0).unwrap_or_else(|e| soft("broadcast-extras", e));
+    let mut bc_audience: HashMap<usize, Option<crate::meshw::wakepolicy::Audience>> = HashMap::new();
+    let mut bc_legacy: HashMap<usize, crate::meshw::wakepolicy::Audience> = HashMap::new();
     let rows = registry(st)?;
+    let roster_ids: Vec<&str> = rows.iter().map(|d| d.id.as_str()).collect();
     let archived = archive_complete_ids(home);
     let registry_ids: HashSet<String> = rows.iter().map(|d| d.id.clone()).filter(|id| !archived.contains(id)).collect();
-    let aliases = crate::meshw::common::read_aliases(home);
+    let aliases = crate::meshw::common::read_aliases(home, &inv.env);
     let mut resolver = Resolver { rows: &rows, aliases: aliases.clone(), pwid: HashMap::new() };
     let mut cur = Cursors::new(home);
     let marker = defaults::text("mesh_write.archive_request_marker");
@@ -699,6 +713,7 @@ pub fn compute(st: &MeshStore, inv: &Inv, _touched: Option<&str>) -> R<OVal> {
                     (cursor, nd_floor),
                     &family,
                     inv.now,
+                    crate::meshw::union::provenance_of(&inv.settings()),
                 )?;
                 crate::meshw::tick::note_own_excluded(&u);
                 unread = u.union.unread as f64;
@@ -791,12 +806,60 @@ pub fn compute(st: &MeshStore, inv: &Inv, _touched: Option<&str>) -> R<OVal> {
         let bc_cursor = st.reader().broadcast_cursor(&d.id).unwrap_or_else(|e| soft("broadcast-cursor", e)) as f64;
         // directUnread: the unread direct mail without what the recipient's own identity family sent
         let own_unread = own_unread.unwrap_or_else(|| unread_rows.iter().filter(|r| r.sender.as_ref().is_some_and(|x| family.contains(x))).count());
-        let direct_unread = (unread - own_unread as f64).max(0.0);
+        let mut direct_unread = (unread - own_unread as f64).max(0.0);
+        // review P2-5: an unread explicit ack (`send --ack-only`) from outside the family is not unread mail while suppression is on,
+        // so the watcher's arm and held re-wake paths (which read this) never wake for it
+        if ack_suppressed && direct_unread > 0.0 {
+            let acks: HashSet<i64> = st.reader().rows_of_kind(&d.id, ack_kind).unwrap_or_else(|e| soft("acks", e)).into_iter().filter_map(|(q, _)| q).collect();
+            let unread_acks = unread_rows
+                .iter()
+                .filter(|r| r.store_seq.is_some_and(|q| q.is_finite() && acks.contains(&(q as i64))))
+                .filter(|r| !r.sender.as_ref().is_some_and(|x| family.contains(x)))
+                .count();
+            direct_unread = (direct_unread - unread_acks as f64).max(0.0);
+        }
         // directTotalFromOthers: the partition total without the rows its own identity family sent (wake-watch wakes on others' mail)
-        let direct_from_others =
-            st.reader().message_count_from_others(&d.id, &family, defaults::text("agent_tracker.wake_prefix")).unwrap_or_else(|e| soft("count", e)) as f64;
-        let unread_bc: Vec<&Msg> = broadcast_all.iter().filter(|r| !r.is_heartbeat && r.store_seq.is_some_and(|q| q.is_finite() && q > bc_cursor)).collect();
-        let bc_from_others = unread_bc.iter().filter(|r| !(!family.is_empty() && r.sender.as_ref().is_some_and(|x| family.contains(x)))).count();
+        // (an explicit ack is left out while mesh_chat.ack_suppression is on: it wakes no one, GH #845)
+        let wake_prefix = defaults::text("agent_tracker.wake_prefix");
+        let direct_from_others = if ack_suppressed {
+            st.reader().message_count_from_others_except(&d.id, &family, wake_prefix, ack_kind)
+        } else {
+            st.reader().message_count_from_others(&d.id, &family, wake_prefix)
+        }
+        .unwrap_or_else(|e| soft("count", e)) as f64;
+        let unread_bc: Vec<(usize, &Msg)> =
+            broadcast_all.iter().enumerate().filter(|(_, r)| !r.is_heartbeat && r.store_seq.is_some_and(|q| q.is_finite() && q > bc_cursor)).collect();
+        let from_others = |r: &Msg| !(!family.is_empty() && r.sender.as_ref().is_some_and(|x| family.contains(x)));
+        let bc_from_others = unread_bc.iter().filter(|(_, r)| from_others(r)).count();
+        // broadcastWakeSeq / broadcastWakePending: the unread broadcasts of others that wake this workspace (contract §3-§4); the
+        // watcher wakes when the highest seq passes its watermark, so a drain plus a new arrival between two polls still wakes
+        let mut wake_seq: Option<f64> = None;
+        let mut wake_pending = 0usize;
+        for (i, r) in unread_bc.iter().filter(|(_, r)| from_others(r)) {
+            let q = r.store_seq.unwrap_or(0.0);
+            let (kind, stored_text) = bc_extras.get(&(q as i64)).map_or((None, None), |(k, a)| (k.as_deref(), a.as_deref()));
+            let stored = bc_audience.entry(*i).or_insert_with(|| crate::meshw::wakepolicy::decode(stored_text)).clone();
+            let legacy = || {
+                bc_legacy
+                    .entry(*i)
+                    .or_insert_with(|| {
+                        let b = crate::meshw::wakepolicy::Bc {
+                            sender: r.sender.as_deref(),
+                            urgency: r.urgency.as_deref(),
+                            question: r.needs_reply,
+                            heartbeat: false,
+                            body: &r.body,
+                            kind: r.sender_kind.as_deref(),
+                        };
+                        crate::meshw::wakepolicy::resolve(&b, &roster_ids).unwrap_or_else(|e| crate::meshw::wakepolicy::Audience::Ids(e.ids))
+                    })
+                    .clone()
+            };
+            if mode.wakes(stored.as_ref(), kind, &d.id, legacy, false) {
+                wake_pending += 1;
+                wake_seq = Some(wake_seq.map_or(q, |m| m.max(q)));
+            }
+        }
         let mut working_on = OVal::Null;
         for r in &broadcast_all {
             if r.is_heartbeat && r.sender.as_deref() == Some(d.id.as_str()) {
@@ -819,8 +882,12 @@ pub fn compute(st: &MeshStore, inv: &Inv, _touched: Option<&str>) -> R<OVal> {
             ("oldestDirectUnreadSender".into(), s_or_null(oldest_sender.as_deref())),
             ("broadcastUnread".into(), n(unread_bc.len() as f64)),
             ("broadcastUnreadFromOthers".into(), n(bc_from_others as f64)),
+            (defaults::text("mesh_wake.summary_field_seq").into(), opt_num(wake_seq)),
+            (defaults::text("mesh_wake.summary_field_pending").into(), n(wake_pending as f64)),
+            // re-review N-3: the reader's broadcast cursor, so a watcher sees an ack that left wake-eligible rows unread
+            (defaults::text("mesh_wake.summary_field_cursor").into(), n(bc_cursor)),
             ("urgencyMax".into(), urgency_max),
-            ("broadcastUrgencyMax".into(), max_urgency(unread_bc.iter().copied())),
+            ("broadcastUrgencyMax".into(), max_urgency(unread_bc.iter().map(|(_, r)| *r))),
             ("working_on".into(), working_on),
             ("gates".into(), gate_vals.clone()),
             ("archive_ready".into(), OVal::Bool(archive_ready)),
@@ -1084,7 +1151,7 @@ mod tests {
     /// `(reader, position, retired_line)`; the summary row of X.
     fn summary_row_of_x(tag: &str, readers: &[(&str, i64, Option<i64>)]) -> (i64, i64) {
         use crate::meshw::store::{CursorPut, RegistryRow};
-        let dir = std::env::temp_dir().join(format!("ah-summary-owner-{}-{tag}", std::process::id()));
+        let dir = crate::testtmp::path(format!("ah-summary-owner-{}-{tag}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&dir)); // keep: cleanup that raced; an absent directory is the goal state
         std::fs::create_dir_all(&dir).unwrap();
         let st = MeshStore::open(&dir.join(defaults::text("mesh_write.store_file"))).unwrap();
@@ -1135,8 +1202,36 @@ mod tests {
         assert_eq!(summary_row_of_x("floor", &[]), (2, 1));
     }
 
+    /// Review P2-5: an unread explicit ack is not counted in `directUnread` while ack suppression is on (`unread` keeps it).
+    #[test]
+    fn direct_unread_leaves_explicit_acks_out() {
+        use crate::meshw::store::RegistryRow;
+        let dir = scratch("acks");
+        let st = MeshStore::open(&dir.join(defaults::text("mesh_write.store_file"))).unwrap();
+        let row =
+            RegistryRow { id: "X".into(), worktree_path: Some("/w/x".into()), session_id: None, inbox_path: None, cursor_path: None, nudge_command: None };
+        st.upsert_registry(&row, 1, |a, b| a == b).unwrap();
+        use crate::meshw::store::{mesh_message_hash, mesh_message_row};
+        for i in 0..3 {
+            let (ts, body) = (1_700_000_000_000 + i, format!("m{i}"));
+            let h = mesh_message_hash(Some("other"), Some("X"), defaults::text("mesh_write.mtype_direct"), "normal", &body, &ts.to_string(), false);
+            let row = mesh_message_row(Some("other"), Some("X"), false, &body, ts, "normal", &h, false, None);
+            let kind = (i == 2).then(|| defaults::text("mesh_chat.kind_ack"));
+            st.append_mesh_row_with(&row, kind, None, None).unwrap();
+        }
+        assert_eq!(st.reader().rows_of_kind("X", defaults::text("mesh_chat.kind_ack")).unwrap().len(), 1);
+        let sum = compute(&st, &inv_in(&dir), None).unwrap();
+        let w = sum.get("workspaces").and_then(|w| w.get("X")).expect("X is in the summary").clone();
+        let num = |k: &str| match w.get(k) {
+            Some(OVal::Num(x)) => *x as i64,
+            _ => panic!("{k} is no number"),
+        };
+        assert_eq!((num("unread"), num("directUnread")), (3, 2));
+        crate::discard::harmless(std::fs::remove_dir_all(dir)); // keep: test cleanup; an absent directory is the goal state
+    }
+
     fn scratch(tag: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("ah-summary-{tag}-{}", std::process::id()));
+        let dir = crate::testtmp::path(format!("ah-summary-{tag}-{}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&dir)); // keep: cleanup that raced; an absent directory is the goal state
         std::fs::create_dir_all(&dir).unwrap();
         dir
@@ -1189,8 +1284,12 @@ mod tests {
         let dir = scratch("settings");
         let ah = dir.join(defaults::text("mesh_write.dir_anti_hall"));
         std::fs::create_dir_all(&ah).unwrap();
-        // a number past the f64 range: JavaScript reads Infinity, serde refuses
+        // a number past the f64 range (JavaScript reads Infinity) invalidates only its own key (#569): the setting beside it still counts
         std::fs::write(ah.join("settings.json"), r#"{"devswarm":{"requiredGates":"only-this"},"big":1e999}"#).unwrap();
+        let got = csv_setting(&inv_in(&dir), &required_gates_keys()).unwrap();
+        assert_eq!(got, "only-this");
+        // a lone surrogate escape: JavaScript reads it, serde refuses
+        std::fs::write(ah.join("settings.json"), r#"{"devswarm":{"requiredGates":"only-this"},"s":"\ud800"}"#).unwrap();
         let got = csv_setting(&inv_in(&dir), &required_gates_keys()).unwrap();
         assert_eq!(got, required_gates_keys().default, "the engine reads the file as holding no devswarm section and says so");
     }

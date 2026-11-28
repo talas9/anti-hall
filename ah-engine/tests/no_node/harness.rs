@@ -9,7 +9,7 @@ use std::io::Write;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 /// The tag the harness gives its own daemon: a Node start the daemon makes (a scheduled duty) is attributed to it, not to
@@ -30,6 +30,37 @@ pub fn plugin_src() -> PathBuf {
 pub fn cfg() -> toml::Table {
     let text = fs::read_to_string(here().join("harness.toml")).unwrap();
     text.parse::<toml::Table>().unwrap()
+}
+
+/// Make the outcome independent of the machine: the engine also looks for fixed machine locations (the DevSwarm app's own
+/// `hivecontrol`, which execs a Node script) that no scratch HOME or PATH can hide. In the plugin COPY (both the live and the
+/// pristine defaults) each setting named in harness.toml `[absent] settings` gets an empty list, so a machine that has the app
+/// installed behaves like one that has not.
+fn absent_machine_locations(plugin: &Path, cfg: &toml::Table) {
+    for key in cfg_list(cfg, "absent", "settings") {
+        let header = format!("[{key}]");
+        let mut patched = 0;
+        for dir in ["engine/defaults", "engine/defaults.pristine"] {
+            let Ok(rd) = fs::read_dir(plugin.join(dir)) else { continue };
+            for e in rd.flatten() {
+                let p = e.path();
+                if p.extension().is_none_or(|x| x != "toml") {
+                    continue;
+                }
+                let text = fs::read_to_string(&p).unwrap();
+                let Some(at) = text.lines().position(|l| l.trim() == header) else { continue };
+                let mut lines: Vec<String> = text.lines().map(str::to_string).collect();
+                let v = (at + 1..lines.len())
+                    .take_while(|&i| !lines[i].starts_with('['))
+                    .find(|&i| lines[i].starts_with("value ="))
+                    .unwrap_or_else(|| panic!("{key}: no value line in {}", p.display()));
+                lines[v] = "value = []".to_string();
+                fs::write(&p, lines.join("\n") + "\n").unwrap();
+                patched += 1;
+            }
+        }
+        assert!(patched > 0, "harness.toml [absent] names {key}, which no defaults file in the plugin copy has");
+    }
 }
 
 /// A string list at `section.key` of harness.toml.
@@ -77,7 +108,7 @@ pub struct World {
     tools_dir: PathBuf,
     log: PathBuf,
     log_offset: std::cell::Cell<usize>,
-    daemon: Option<Child>,
+    daemon: Option<crate::common::Daemon>,
     /// Every Node start read so far, by the tag of the run that caused it. A run's Node work can outlive it (a detached
     /// background witness), so a start is attributed by its tag, never by when it was logged.
     by_tag: std::cell::RefCell<BTreeMap<String, Vec<Hit>>>,
@@ -89,7 +120,7 @@ pub struct World {
 impl World {
     pub fn new(name: &str) -> World {
         let cfg = cfg();
-        let dir = common::TempDir::at(std::env::temp_dir().join(format!("ah-nonode-{name}-{}", std::process::id())));
+        let dir = common::TempDir::at(crate::common::testtmp::path(format!("ah-nonode-{name}-{}", std::process::id())));
         let root = dir.path().to_path_buf();
         assert!(!root.to_string_lossy().contains(char::is_whitespace), "the scratch path must have no spaces (the shim log splits argv on them)");
         let home = root.join("home");
@@ -112,6 +143,7 @@ impl World {
         let plugin = root.join("plugin");
         let st = Command::new("cp").arg("-R").arg(plugin_src()).arg(&plugin).status().unwrap();
         assert!(st.success(), "copying the plugin failed");
+        absent_machine_locations(&plugin, &cfg);
 
         // the engine and the thin client, installed where the hook command (hooks.json, direct form) looks for them
         let engine_dir = home.join(".anti-hall").join("ah-engine").join("bin");
@@ -145,12 +177,12 @@ impl World {
             assert!(tools_dir.join(x).symlink_metadata().is_err(), "{x} must not be on the harness PATH");
         }
 
-        // the recording shim: logs "<tag>\t<argv>" and fails the way a missing command does
+        // the recording shim: logs "<tag>\t<argv>" on ONE line (a multi-line `node -e` script has its newlines turned into spaces, so it is one start) and fails the way a missing command does
         let log = root.join("node-hits.log");
         fs::write(&log, "").unwrap();
         let shim = shim_dir.join("node");
         let body = format!(
-            "#!/bin/sh\nprintf '%s\\t%s\\n' \"${{AH_NO_NODE_CASE:-unknown}}\" \"$*\" >> '{}'\nprintf '%s\\n' '{}' >&2\nexit {}\n",
+            "#!/bin/sh\nprintf '%s\\t%s\\n' \"${{AH_NO_NODE_CASE:-unknown}}\" \"$(printf '%s' \"$*\" | tr '\\n' ' ')\" >> '{}'\nprintf '%s\\n' '{}' >&2\nexit {}\n",
             log.display(),
             cfg_str(&cfg, "shim", "stderr"),
             cfg_int(&cfg, "shim", "exit")
@@ -253,7 +285,7 @@ impl World {
         let mut c = self.command(&self.engine, DAEMON_TAG);
         c.arg("serve").stdin(Stdio::null()).stdout(Stdio::from(self.out_file("daemon.out"))).stderr(Stdio::from(self.out_file("daemon.err")));
         c.process_group(0);
-        self.daemon = Some(c.spawn().unwrap());
+        self.daemon = Some(crate::common::Daemon::new(c.spawn().unwrap()));
         let ready = Duration::from_secs(cfg_int(&self.cfg, "timeouts", "daemon_ready_s"));
         let sock = ah_engine::paths::socket_in(&self.state);
         let t = Instant::now();
@@ -429,7 +461,15 @@ impl World {
         }
         let (engine, home, state) = (self.engine.clone(), self.home.clone(), self.state.clone());
         common::reap(&state, || {
-            ah_engine::discard::harmless(Command::new(&engine).arg("stop").env_clear().env("HOME", &home).env("AH_ENGINE_DIR", &state).output());
+            ah_engine::discard::harmless(
+                Command::new(&engine)
+                    .arg("stop")
+                    .env_clear()
+                    .env("HOME", &home)
+                    .env("AH_ENGINE_PLUGIN_ROOT", common::plugin_root())
+                    .env("AH_ENGINE_DIR", &state)
+                    .output(),
+            );
         });
         self.current.replace(String::new());
         self.take_hits();

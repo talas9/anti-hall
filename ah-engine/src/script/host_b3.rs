@@ -83,36 +83,108 @@ fn heredoc_at(cmd: &str, i: usize) -> Option<Vec<i64>> {
 /// (a `\r` before a newline goes with the separator, a lone one stays). With `needles`, only the lines that contain at least one of
 /// them (a plain substring, as `indexOf`) come back, in order: a script that skips every other line anyway no longer pulls them
 /// into the interpreter. `None` where `readTail` answers `null`.
-fn tail_lines_matching(path: &str, window: u64, crlf: bool, needles: &[String]) -> Option<Vec<String>> {
-    let text = read_tail(path, window)?;
-    let pieces = text.split('\n').collect::<Vec<_>>();
-    let last = pieces.len().saturating_sub(1);
-    let mut out = Vec::new();
-    for (i, piece) in pieces.into_iter().enumerate() {
-        let line = if crlf && i != last { piece.strip_suffix('\r').unwrap_or(piece) } else { piece };
+pub(super) fn tail_lines_matching(path: &str, window: u64, crlf: bool, needles: &[String]) -> Option<Vec<String>> {
+    use crate::transcript::scan::{Flow, Window};
+    // with needles the lines come from the shared incremental view (#953): only the bytes appended since the last call are read
+    if !needles.is_empty() && needles.iter().all(|n| !n.is_empty()) {
+        let head = format!("any\u{1f}{crlf}");
+        let parts: Vec<&str> = std::iter::once(head.as_str()).chain(needles.iter().map(String::as_str)).collect();
+        let key = crate::transcript::view::key_of(&parts);
+        let wants = |line: &str| Some(needles.iter().any(|n| line.contains(n.as_str())));
+        let q = crate::transcript::view::Query { key: &key, window, crlf, line_max: 0, wants: &wants };
+        return crate::transcript::view::matching(path, &q).ok().flatten().map(|f| f.lines);
+    }
+    let mut w = Window::open(path, window)?;
+    let mut out: Vec<String> = Vec::new();
+    let mut seen = false;
+    w.lines_ex(|piece, last| {
+        seen = true;
+        // the last piece of the split has no newline after it, so no `\r` goes with a separator
+        let piece = if crlf && !last { piece.strip_suffix(b"\r").unwrap_or(piece) } else { piece };
+        let line = String::from_utf8_lossy(piece);
         if needles.is_empty() || needles.iter().any(|n| line.contains(n.as_str())) {
-            out.push(line.to_string());
+            out.push(line.into_owned());
         }
+        Flow::Next
+    })
+    .ok()?;
+    if !seen && (needles.is_empty() || needles.iter().any(|n| n.is_empty())) {
+        // a cut window with no newline in it: `readTail` answers the empty text, which splits into one empty piece
+        out.push(String::new());
+    }
+    Some(out)
+}
+
+/// `tailLinesNewest(path, window, crlf, needles, max)`: the same lines as `tailLines`, newest first, at most `max` of them (`0` = no
+/// cap): a script that only wants the newest line of some kind no longer pulls every matching line of the window into the interpreter.
+/// The window is read backward in blocks and the read stops at the `max`th match. `None` where `readTail` answers `null`.
+pub(super) fn tail_lines_newest(path: &str, window: u64, crlf: bool, needles: &[String], max: usize) -> Option<Vec<String>> {
+    use crate::transcript::scan::{Flow, Window};
+    if crate::metrics::recent_on() {
+        crate::metrics::bump("tail_newest_reads", &[("mode", crate::defaults::text(if max > 0 { "recent_tel.tail_capped" } else { "recent_tel.tail_full" }))]);
+    }
+    let mut w = Window::open(path, window)?;
+    let mut out: Vec<String> = Vec::new();
+    let mut seen = false;
+    w.lines_rev_ex(|piece, last| {
+        seen = true;
+        // the last piece of the split has no newline after it, so no `\r` goes with a separator
+        let piece = if crlf && !last { piece.strip_suffix(b"\r").unwrap_or(piece) } else { piece };
+        let line = String::from_utf8_lossy(piece);
+        if needles.is_empty() || needles.iter().any(|n| line.contains(n.as_str())) {
+            out.push(line.into_owned());
+            if max != 0 && out.len() >= max {
+                return Flow::Stop;
+            }
+        }
+        Flow::Next
+    })
+    .ok()?;
+    if !seen && (needles.is_empty() || needles.iter().any(|n| n.is_empty())) {
+        // a cut window with no newline in it: `readTail` answers the empty text, which splits into one empty piece
+        out.push(String::new());
     }
     Some(out)
 }
 
 /// `tailHasAny(path, window, needles, lowerNeedles)`: `readTail(path, window)` holds one of `needles` (`indexOf`), or
-/// `readTail(...).toLowerCase()` holds one of `lowerNeedles`. `None` where `readTail` answers `null`.
+/// `readTail(...).toLowerCase()` holds one of `lowerNeedles`. Read line by line (a lowercase never reaches across a newline, and a needle
+/// without one cannot either); a needle that holds a newline takes the whole-window read. `None` where `readTail` answers `null`.
 fn tail_has_any(path: &str, window: u64, needles: &[String], lower_needles: &[String]) -> Option<bool> {
-    let text = read_tail(path, window)?;
-    if needles.iter().any(|n| text.contains(n.as_str())) {
+    use crate::transcript::scan::{Flow, Window};
+    if needles.iter().chain(lower_needles).any(|n| n.contains('\n')) {
+        let text = read_tail(path, window)?;
+        if needles.iter().any(|n| text.contains(n.as_str())) {
+            return Some(true);
+        }
+        if lower_needles.is_empty() {
+            return Some(false);
+        }
+        let lower = text.to_lowercase();
+        return Some(lower_needles.iter().any(|n| lower.contains(n.as_str())));
+    }
+    // the text always exists (maybe empty), so an empty needle is held by it
+    let mut w = Window::open(path, window)?;
+    if needles.iter().chain(lower_needles).any(String::is_empty) {
         return Some(true);
     }
-    if lower_needles.is_empty() {
-        return Some(false);
-    }
-    let lower = text.to_lowercase();
-    Some(lower_needles.iter().any(|n| lower.contains(n.as_str())))
+    let mut hit = false;
+    w.lines(|piece| {
+        let line = String::from_utf8_lossy(piece);
+        hit = needles.iter().any(|n| line.contains(n.as_str()))
+            || (!lower_needles.is_empty() && {
+                let lower = line.to_lowercase();
+                lower_needles.iter().any(|n| lower.contains(n.as_str()))
+            });
+        if hit { Flow::Stop } else { Flow::Next }
+    })
+    .ok()?;
+    Some(hit)
 }
 
 pub(super) fn read_tail(path: &str, window: u64) -> Option<String> {
     use std::io::{Read, Seek, SeekFrom};
+    let _turn = crate::transcript::scan::permit();
     let mut f = std::fs::File::open(path).ok()?;
     let size = f.metadata().ok()?.len();
     crate::load::note_scan(size.min(window));
@@ -188,6 +260,9 @@ fn jev_ask(spec: &str) -> rquickjs::Result<Option<String>> {
     req.compare = v.get("compare").and_then(serde_json::Value::as_bool);
     let (home, env) = jev_env()?;
     let home = std::path::Path::new(&home);
+    if let Some(sid) = req.session_id.as_deref() {
+        crate::delivery::note_jev(sid, &req.id, crate::jev::assist::decision_hash(&req), home, &env, req.project.as_deref());
+    }
     let flag = |k: &str| v.get(k).and_then(serde_json::Value::as_bool).unwrap_or(false);
     let shape = |d: &crate::jev::Decision| if flag("full") { decision_json(d) } else { d.outcome.to_string() };
     if flag("relax") {
@@ -307,6 +382,12 @@ pub fn install<'a>(c: &Ctx<'a>, h: &Object<'a>) -> rquickjs::Result<()> {
         Function::new(c.clone(), |p: String, w: f64, crlf: bool, needles: Vec<String>| tail_lines_matching(&p, w.max(0.0) as u64, crlf, &needles))?,
     )?;
     h.set(
+        "tailLinesNewest",
+        Function::new(c.clone(), |p: String, w: f64, crlf: bool, needles: Vec<String>, max: f64| {
+            tail_lines_newest(&p, w.max(0.0) as u64, crlf, &needles, max.max(0.0) as usize)
+        })?,
+    )?;
+    h.set(
         "tailHasAny",
         Function::new(c.clone(), |p: String, w: f64, needles: Vec<String>, lower: Vec<String>| tail_has_any(&p, w.max(0.0) as u64, &needles, &lower))?,
     )?;
@@ -340,7 +421,7 @@ mod tests {
     use super::*;
 
     fn file(tag: &str, bytes: &[u8]) -> String {
-        let p = std::env::temp_dir().join(format!("ah-taillines-{tag}-{}", std::process::id()));
+        let p = crate::testtmp::path(format!("ah-taillines-{tag}-{}", std::process::id()));
         std::fs::write(&p, bytes).unwrap();
         p.to_string_lossy().into_owned()
     }

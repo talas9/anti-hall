@@ -7,6 +7,27 @@
 > pass against OpenAI's own developer docs, and a local check of the installed
 > Codex CLI on this machine.
 
+> **[UPDATE 2026-11-26 - GPT-6.2.]** Codex CLI 0.171.0 catalog (`~/.codex/models_cache.json`, fetched
+> 2026-11-26) lists, by priority: `gpt-6.2-sol` (1, 500k ctx, "Fast, go-to model for coding and everyday
+> work"), `gpt-6.2-astra` (2, 272k, "Our most capable model for complex coding and professional work"),
+> `gpt-6.1-terra` (3, "Efficient model that excels at visual understanding and computer use"),
+> `gpt-6.1-sol`, `gpt-6-astra`, `gpt-6-sol` (previous/legacy), `gpt-6-luna` ("Fast and affordable model for
+> easier tasks"), `gpt-5.6-sol/terra/luna` (legacy); hidden: `gpt-reserve`, `codex-auto-review`. The wording
+> no longer says "frontier"/"workhorse", so `codex-models.js` role patterns moved to
+> `codex-model-roles.json`. API prices (secondary sources, official page
+> https://learn.chatgpt.com/docs/whats-new/gpt-62-astra-sol not machine-read): Astra $8/$40, Sol $2/$10 per 1M.
+>
+> **[UPDATE 2026-11-04 - GPT-5.6 is no longer the newest Codex generation.]** The local Codex CLI
+> (v0.166.0) catalog `~/.codex/models_cache.json`, fetched 2026-11-04, lists: `gpt-6.1-sol` (priority 1,
+> "latest workhorse model for coding and everyday work"), `gpt-6-astra` ("frontier intelligence for the
+> most demanding work"), `gpt-6.1-terra`, `gpt-6-sol` ("previous generation workhorse"), `gpt-6-luna`,
+> and `gpt-5.6-sol/terra/luna` ("older generation"); hidden: `gpt-reserve`, `codex-auto-review`.
+> This is a primary read of the installed catalog. Prices (per 1M tokens, from search extracts of
+> developers.openai.com model pages, not read verbatim): gpt-6-astra $10/$50; gpt-6.1-sol and gpt-6-sol
+> $2/$10; gpt-6.1-terra $1/$5; gpt-6-luna $0.10/$0.50; GPT-5.6 Terra/Luna were cut on 2026-07-30 to
+> $2/$12 and $0.20/$1.20. UNVERIFIED: GPT-6 / 6.1 release dates. gpt-6.1-sol, gpt-6.1-terra and gpt-6-luna are listed on the API models page with API prices; 1.05M is the API context window, 500k/872k are the Codex CLI catalog windows. Routing is unchanged: resolve category to a
+> model from the live catalog (`codex debug models`), never from a slug in this doc.
+
 ## Confidence & provenance
 
 Three confidence bands are used throughout this doc — read them literally, they are

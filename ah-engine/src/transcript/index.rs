@@ -290,6 +290,8 @@ impl Index {
         if self.started && rebuilt.is_none() && size == self.offset + self.pending_len {
             return Ok(Refresh::Unchanged);
         }
+        // the turn is taken before anything is counted: a wait that ends in a bypass must not leave a half-counted refresh behind
+        let _turn = super::scan::permit();
         let (start, windowed) = if !self.started {
             let s = size.saturating_sub(self.lim.initial_window);
             (s, s > 0)
@@ -306,60 +308,74 @@ impl Index {
             self.resync = true;
             self.pending = Acc::default();
         }
-        let mut buf = vec![0u8; (size - start) as usize];
-        let mut got = 0usize;
-        while got < buf.len() {
-            let n = file.read_at(&mut buf[got..], start + got as u64).map_err(|e| self.io(e))?;
-            if n == 0 {
+        // read what is new a block at a time (`transcript::scan`): the lines are folded as they complete, an unfinished last one is kept
+        let block = super::scan::block_bytes();
+        let mut buf = vec![0u8; block];
+        let mut carry: Vec<u8> = Vec::new();
+        let mut got = 0u64;
+        let mut records = 0u64;
+        // a window starts inside a line: that first piece is dropped, as readTail does
+        let mut first_dropped = !(self.resync || windowed);
+        let mut consumed = start;
+        if first_dropped {
+            self.start_reading(&meta);
+        }
+        let mut at = start;
+        while at < size {
+            let n = ((size - at) as usize).min(block);
+            let mut read = 0usize;
+            while read < n {
+                let m = file.read_at(&mut buf[read..n], at + read as u64).map_err(|e| self.io(e))?;
+                if m == 0 {
+                    break;
+                }
+                read += m;
+            }
+            if read == 0 {
                 break;
             }
-            got += n;
-        }
-        buf.truncate(got);
-        let (mut from, mut base) = (0usize, start);
-        if self.resync || windowed {
-            match buf.iter().position(|b| *b == b'\n') {
-                Some(p) => {
-                    from = p + 1;
-                    base = start + from as u64;
+            got += read as u64;
+            at += read as u64;
+            let mut rest = &buf[..read];
+            while let Some(i) = rest.iter().position(|b| *b == b'\n') {
+                let (head, tail) = rest.split_at(i);
+                rest = &tail[1..];
+                let piece_len = (carry.len() + head.len() + 1) as u64;
+                if !first_dropped {
+                    first_dropped = true;
                     self.resync = false;
+                    self.start_reading(&meta);
+                } else {
+                    let line = if carry.is_empty() {
+                        String::from_utf8_lossy(head).into_owned()
+                    } else {
+                        carry.extend_from_slice(head);
+                        String::from_utf8_lossy(&carry).into_owned()
+                    };
+                    if !super::record::js_trim(&line).is_empty() {
+                        self.fold(&line);
+                        records += 1;
+                    }
                 }
-                None => {
-                    // still inside the first line: nothing to fold, and the offset stays at the window start
-                    self.offset = start;
-                    self.resync = true;
-                    self.pending_len = 0;
-                    self.pending = Acc::default();
-                    self.finish(&file, size).map_err(|e| self.io(e))?;
-                    return Ok(self.outcome(rebuilt, got as u64, 0));
-                }
+                carry.clear();
+                consumed += piece_len;
             }
+            carry.extend_from_slice(rest);
         }
-        if !self.started {
-            self.generation += 1;
+        if !first_dropped {
+            // still inside the first line: nothing to fold, and the offset stays at the window start
+            self.offset = start;
+            self.resync = true;
+            self.pending_len = 0;
+            self.pending = Acc::default();
+            self.finish(&file, size).map_err(|e| self.io(e))?;
+            return Ok(self.outcome(rebuilt, got, 0));
         }
-        self.started = true;
-        self.id = Some((meta.dev(), meta.ino()));
-        let mut records = 0u64;
-        let mut consumed = from;
-        let data = &buf[from..];
-        let mut line_start = 0usize;
-        while let Some(rel) = data[line_start..].iter().position(|b| *b == b'\n') {
-            let end = line_start + rel;
-            let line = String::from_utf8_lossy(&data[line_start..end]);
-            if !super::record::js_trim(&line).is_empty() {
-                self.fold(&line);
-                records += 1;
-            }
-            line_start = end + 1;
-            consumed = from + line_start;
-        }
-        self.offset = base + (consumed - from) as u64;
-        let rest = &buf[consumed..];
+        self.offset = consumed;
         self.pending = Acc::default();
-        self.pending_len = rest.len() as u64;
-        if !rest.is_empty() {
-            let line = String::from_utf8_lossy(rest);
+        self.pending_len = carry.len() as u64;
+        if !carry.is_empty() {
+            let line = String::from_utf8_lossy(&carry);
             if !super::record::js_trim(&line).is_empty() {
                 let seq = self.committed.records + 1;
                 let rec = parse_line(&line, seq, self.lim.tool_input_max, self.lim.task_input_max);
@@ -370,7 +386,16 @@ impl Index {
             }
         }
         self.finish(&file, size).map_err(|e| self.io(e))?;
-        Ok(self.outcome(rebuilt, got as u64, records))
+        Ok(self.outcome(rebuilt, got, records))
+    }
+
+    /// The index has begun to follow this file.
+    fn start_reading(&mut self, meta: &std::fs::Metadata) {
+        if !self.started {
+            self.generation += 1;
+        }
+        self.started = true;
+        self.id = Some((meta.dev(), meta.ino()));
     }
 
     fn outcome(&self, rebuilt: Option<Rebuild>, bytes: u64, records: u64) -> Refresh {

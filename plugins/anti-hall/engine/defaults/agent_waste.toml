@@ -6,12 +6,12 @@
 # unavailable. Every weight, threshold, window, word and text is tuned here, never in Rust.
 
 [agent_waste.setting]
-doc = "Where the waste sensor's on/off switch is read from (agents.wasteSense, default on): off, no agent is scored, judged or flagged for waste."
+doc = "Score and flag agent waste. Where the waste sensor's on/off switch is read from (agents.wasteSense, default on): off, no agent is scored, judged or flagged for waste."
 value = { section = "agents", key = "wasteSense", env = "ANTIHALL_AGENT_WASTE_SENSE", aliases = [], option = "", default = true }
 
 [agent_waste.limits]
-doc = """Bounds of one evaluation. window_ms: the rolling window tokens, outcomes and calls are compared over. min_span_ms: the least history in the window before an agent is scored. min_tokens: tokens spent in the window below which nothing is wasted. cache_read_pct: how much a cache-read token counts toward the spend, in percent. readonly_pct: percent taken off the score when every call in the window only looks (scaled by the share that does; see patterns.readonly). eps_pct: the epsilon of the formula, in hundredths of an outcome unit (progress units are those of agent_tracker.weights: commit, step, test, file). judge_cooldown_ms: least time between two judge calls about one agent (a verdict is also trusted for twice this). max_judge_per_tick: judge calls one tracker tick may make, all agents. goal_cap: characters of the goal sent to the judge. call_cap: most recent tool calls summarised for the judge. line_cap: characters of one summarised call. fail_cap: failed commands in the window at which the failing-streak factor is full. min_calls: tool calls in the window below which the ratios are not trusted (they count as zero). evidence_min_tokens: tokens spent in the window below which nothing is waste on the formula alone and no action is ever hard (a silent agent spends nothing: the tracker's hung signal covers it, not the waste sensor)."""
-value = { window_ms = 1800000, min_span_ms = 600000, min_tokens = 300000, cache_read_pct = 10, eps_pct = 100, readonly_pct = 85, judge_cooldown_ms = 1200000, max_judge_per_tick = 2, goal_cap = 300, call_cap = 12, line_cap = 140, fail_cap = 5, min_calls = 6, evidence_min_tokens = 50000 }
+doc = """Bounds of one evaluation. window_ms: the rolling window tokens, outcomes and calls are compared over. min_span_ms: the least history in the window before an agent is scored. min_tokens: tokens spent in the window below which nothing is wasted. cache_read_pct: how much a cache-read token counts toward the spend, in percent. readonly_pct: percent taken off the score when every call in the window only looks (scaled by the share that does; see patterns.readonly). eps_pct: the epsilon of the formula, in hundredths of an outcome unit (progress units are those of agent_tracker.weights: commit, step, test, file). judge_cooldown_ms: least time between two judge calls about one agent (a verdict is also trusted for twice this). max_judge_per_tick: judge calls one tracker tick may make, all agents. goal_cap: characters of the goal sent to the judge. call_cap: most recent tool calls summarised for the judge. line_cap: characters of one summarised call. fail_cap: failed commands in the window at which the failing-streak factor is full. min_calls: tool calls in the window below which the ratios are not trusted (they count as zero). evidence_min_tokens: tokens spent in the window below which nothing is waste on the formula alone and no action is ever hard (a silent agent spends nothing: the tracker's hung signal covers it, not the waste sensor). count_max_age_ms: a waste event (cache_expiry, poke_turn; see below) read from a transcript line older than this is a replay of history and is not counted."""
+value = { window_ms = 1800000, min_span_ms = 600000, min_tokens = 300000, cache_read_pct = 10, eps_pct = 100, readonly_pct = 85, judge_cooldown_ms = 1200000, max_judge_per_tick = 2, goal_cap = 300, call_cap = 12, line_cap = 140, fail_cap = 5, min_calls = 6, evidence_min_tokens = 50000, count_max_age_ms = 3600000 }
 
 [agent_waste.thresholds]
 doc = "Score thresholds, in thousands of tokens per outcome unit after the multipliers: soft (ask the judge, warn if it confirms) and hard (act on the formula alone when the judge is unavailable, and escalate a confirmed verdict). Calibrated so the 2026-10-23 incident pattern (1.5-7.7M tokens in 30 minutes, no commit, many re-reads, queued on a lock) scores far over hard while a productive lane (about 1M tokens, 3 commits, few re-reads) scores far under soft."
@@ -82,11 +82,11 @@ doc = "Reason fragments the stall signals add to the waste reason. Placeholders:
 value = { stalled_fmt = "{label} has run {min} min with {cpu}", quiet_fmt = "no outcome for {min} min", cpu_idle = "near-zero CPU", cpu_unknown = "no CPU reading", stalled_word = "stalled_call", quiet_word = "no_outcome_time", signals_line = "stall signals: {reason}" }
 
 [lock_watch.setting]
-doc = "Where the lock-holder watchdog's on/off switch is read from (agents.lockWatch, default on): off, no lock file is watched."
+doc = "Watch lock holders. Where the lock-holder watchdog's on/off switch is read from (agents.lockWatch, default on): off, no lock file is watched."
 value = { section = "agents", key = "lockWatch", env = "ANTIHALL_AGENT_LOCK_WATCH", aliases = [], option = "", default = true }
 
 [lock_watch.term_setting]
-doc = "Where the watchdog's auto-action switch is read from (agents.lockWatchTerm, default OFF): on, a holder idle for limits.term_after_ms with waiters is sent SIGTERM, by its verified pid (re-checked to still hold the lock right before), never by name."
+doc = "Allow verified idle lock-holder SIGTERM. Where the watchdog's auto-action switch is read from (agents.lockWatchTerm, default OFF): on, a holder idle for limits.term_after_ms with waiters is sent SIGTERM, by its verified pid (re-checked to still hold the lock right before), never by name."
 value = { section = "agents", key = "lockWatchTerm", env = "ANTIHALL_AGENT_LOCK_TERM", aliases = [], option = "", default = false }
 
 [lock_watch.locks]
@@ -112,3 +112,32 @@ value = "lock watch: {lock} is held by pid {pid} ({cmd}) which has used almost n
 [msg.lock_stall_term]
 doc = "Appended to the wake notice when the auto-action sent SIGTERM. Placeholder: {pid}."
 value = " Sent SIGTERM to pid {pid}."
+
+# ---- spent-token waste categories read from the transcript (GH #884) ---------------------------------------------------------------
+# The categories below count tokens that were SPENT, one event per assistant turn, on the series every waste counter feeds
+# (waste_events_total, waste_tokens_total), next to the avoided-advisory categories of #709. They are measured per agent as its
+# transcript is read, and are shown in `ah-engine status` (the waste block).
+
+[agent_waste.categories]
+doc = "The words of the transcript waste categories and their source label on waste_events_total and waste_tokens_total. cache_expiry: an assistant turn that rebuilt its prompt cache after an idle gap above cache_expiry.ttl_ms. poke_turn: a turn woken by the host (see poke.origins) that made no tool call. source: the `source` label of both."
+value = { cache_expiry = "cache_expiry", poke_turn = "poke_turn", source = "transcript" }
+
+[agent_waste.cache_expiry]
+doc = "When a turn counts as a cache expiry. ttl_ms: the idle time between two assistant messages above which the prompt cache has expired (the cache lives about 5 minutes; an hour-long cache is a setting of the host, raise this to match). min_share_pct: cache-creation tokens must be at least this percent of the turn's input side (new input + cache read + cache creation), so a turn that only added a little after a gap is no rebuild. min_tokens: and at least this many cache-creation tokens."
+value = { ttl_ms = 300000, min_share_pct = 50, min_tokens = 5000 }
+
+[agent_waste.poke]
+doc = "What a woken turn is. origins: the origin kinds of a user line (its origin.kind field) the host sends on its own, not the owner (human) and not a tool result: a finished background task, an automatic continuation. A prompt that starts with agent_tracker.wake_prefix (a native wake) is a wake too. A turn they open that ends with no tool call is a poke_turn; its weighted tokens are counted (cache reads at limits.cache_read_pct's share, as every waste figure). min_tokens: a poke turn under this many tokens is not counted. senders (GH #884): who sent the wake, counted against them (poke_turns_by_sender, poke_tokens_by_sender): the first row whose `contains` text the prompt holds names the sender; default_sender when none does (the host's own notifications: a finished background task, an auto-continuation). Bounded words only, never a session or workspace id."
+value = { origins = ["task-notification", "auto-continuation"], min_tokens = 1, default_sender = "host", senders = [{ contains = "[wake-watch] new mesh mail", sender = "mesh_mail" }, { contains = "anti-hall wake:", sender = "native_wake" }, { contains = "[agent-wake]", sender = "agent_wake" }, { contains = "[wake-watch]", sender = "wake_watch" }] }
+
+[metric.poke_turns_by_sender]
+doc = "Woken turns that ended with no tool call (poke_turn, GH #884), by who sent the wake (agent_waste.poke.senders): mesh_mail (the wake-watch line for new mesh mail, i.e. the Primary's or a peer's message), native_wake (an anti-hall native wake of an idle workspace), agent_wake (a tracker reminder or wake row), wake_watch (another wake-watch line), host (a background task or auto-continuation)."
+value = { kind = "counter", unit = "turns", labels = ["sender"] }
+
+[metric.poke_tokens_by_sender]
+doc = "Weighted tokens of the woken turns of poke_turns_by_sender, by the same sender words."
+value = { kind = "counter", unit = "tokens", labels = ["sender"] }
+
+[agent_waste.status_words]
+doc = "The words of the waste block of `ah-engine status`: key (the block's name), events and tokens (the two fields of each category), total (the sum over every category)."
+value = { key = "waste", events = "events", tokens = "tokens", total = "total" }

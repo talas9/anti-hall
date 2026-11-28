@@ -27,7 +27,7 @@ struct Env {
 
 impl Env {
     fn new(name: &str) -> Env {
-        let dir = std::env::temp_dir().join(format!("ahd-pe-{name}-{}", std::process::id()));
+        let dir = crate::common::testtmp::path(format!("ahd-pe-{name}-{}", std::process::id()));
         ah_engine::discard::harmless(std::fs::remove_dir_all(&dir));
         std::fs::create_dir_all(dir.join("home")).unwrap();
         Env { dir }
@@ -60,6 +60,7 @@ impl Env {
             .env("AH_ENGINE_VERSION", "prompt-emit-dispatch")
             .env("AH_ENGINE_DISPATCH_IN_PROCESS", if in_process { "1" } else { "0" })
             .env("CLAUDE_PLUGIN_ROOT", &self.dir)
+            .env("AH_ENGINE_PLUGIN_ROOT", crate::common::plugin_root())
             .current_dir(&self.dir)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -116,6 +117,7 @@ fn check_form(name: &str, check: &str, payload: &str, extra: &[(&str, &str)]) ->
         .env_clear()
         .env("PATH", std::env::var("PATH").unwrap_or_default())
         .env("HOME", e.home())
+        .env("AH_ENGINE_PLUGIN_ROOT", crate::common::plugin_root())
         .env("AH_ENGINE_DIR", e.state())
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -124,67 +126,6 @@ fn check_form(name: &str, check: &str, payload: &str, extra: &[(&str, &str)]) ->
     let mut ch = c.spawn().unwrap();
     ch.stdin.take().unwrap().write_all(payload.as_bytes()).unwrap();
     String::from_utf8_lossy(&ch.wait_with_output().unwrap().stdout).to_string()
-}
-
-/// The task-tracker check answers natively now and would add its directive to every first prompt; these tests are about the other line.
-const NO_TRACKER: (&str, &str) = ("CLAUDE_PLUGIN_OPTION_CONTEXT_TASK_TRACKER", "false");
-
-#[test]
-fn verify_first_through_the_dispatcher_picks_the_line_the_digest_of_the_raw_bytes_picks() {
-    for in_process in [true, false] {
-        let e = Env::new(if in_process { "vf-inproc" } else { "vf-daemon" });
-        let map = e.map("UserPromptSubmit", "verify-first");
-        let args = ["hook", "--event", "UserPromptSubmit", "--fallback-map", map.to_str().unwrap()];
-        // many payloads, so every rotating line is exercised: a digest that were not forwarded would give one line for all
-        let mut seen = std::collections::BTreeSet::new();
-        for i in 0..60 {
-            let p = ups(&format!("s{i}"), &format!("prompt {i}"), None);
-            let (code, out, err) = if in_process { e.run(&args, true, &p, &[NO_TRACKER]) } else { e.until_daemon_answers(&args, &p, &[NO_TRACKER]) };
-            assert_eq!((code, err.as_str()), (0, ""), "{out}");
-            let want = check_form(&format!("vf-check-{in_process}-{i}"), "verify-first", &p, &[]);
-            assert!(!want.is_empty() && want.contains("VERIFY-FIRST: "), "{want}");
-            assert_eq!(out, want, "payload {i}, in_process={in_process}");
-            seen.insert(out);
-        }
-        assert!(seen.len() >= 15, "the rotation must reach most of its lines, got {}", seen.len());
-        e.stop();
-    }
-}
-
-#[test]
-fn verify_first_answers_a_devswarm_primary_itself_and_defers_only_without_a_working_directory() {
-    let e = Env::new("vf-primary");
-    // the Primary's own prompt hook (it says its override reminder once per session) is switched off: this test is about the other line
-    std::fs::create_dir_all(e.home().join(".anti-hall")).unwrap();
-    std::fs::write(e.home().join(".anti-hall/settings.json"), r#"{"devswarm":{"parentInbox":false}}"#).unwrap();
-    let map = e.map("UserPromptSubmit", "verify-first");
-    let args = ["hook", "--event", "UserPromptSubmit", "--fallback-map", map.to_str().unwrap()];
-    let p = ups("sp", "x", None);
-    let (code, out, _) = e.run(&args, true, &p, &[("DEVSWARM_REPO_ID", "r1")]);
-    assert_eq!(code, 0);
-    assert!(out.contains("DEVSWARM PRIMARY") && !out.contains("NODE-RAN"), "a Primary is answered by the engine: {out}");
-    let nocwd = serde_json::json!({"session_id": "sq", "hook_event_name": "UserPromptSubmit", "prompt": "x"}).to_string();
-    let (code, out, _) = e.run(&args, true, &nocwd, &[("DEVSWARM_REPO_ID", "r1")]);
-    assert_eq!(code, 0);
-    // no Node hook is launched any more: the engine answers a prompt without a working directory itself (the Primary's text may
-    // be shorter than Node's; it is context, never a block)
-    assert!(out.contains("VERIFY-FIRST: ") && !out.contains("NODE-RAN"), "without a working directory the engine answers itself: {out}");
-    let (_, out, _) = e.run(&args, true, &p, &[("DEVSWARM_REPO_ID", "r1"), ("DEVSWARM_SOURCE_BRANCH", "feature")]);
-    assert!(out.contains("VERIFY-FIRST: ") && !out.contains("NODE-RAN"), "a child workspace is answered by the engine: {out}");
-    assert!(e.home().join(".anti-hall/emit-dedupe/dedupe-sp.json").exists());
-}
-
-#[test]
-fn a_deferred_verify_first_wrote_no_state_before_deferring() {
-    let e = Env::new("vf-nostate");
-    let map = e.map("UserPromptSubmit", "verify-first");
-    let args = ["hook", "--event", "UserPromptSubmit", "--fallback-map", map.to_str().unwrap()];
-    // a relative transcript path was something only Node resolved; the engine answers it itself now
-    let p = serde_json::json!({"session_id": "ns", "cwd": "/tmp", "hook_event_name": "UserPromptSubmit", "prompt": "x", "transcript_path": "rel/t.jsonl"})
-        .to_string();
-    let (code, out, _) = e.run(&args, true, &p, &[]);
-    assert_eq!(code, 0);
-    assert!(out.contains("VERIFY-FIRST: ") && !out.contains("NODE-RAN"), "the engine answers a relative transcript path itself: {out}");
 }
 
 #[test]
@@ -230,7 +171,7 @@ fn idle_agent_sweep_through_the_dispatcher_reads_the_request_environment() {
     let transcript = e.dir.join("t.jsonl");
     let lines = [
         serde_json::json!({"type":"assistant","timestamp":iso(spawn_at - 1000),"message":{"content":[{"type":"tool_use","id":"toolu_1","name":"Agent","input":{}}]}}),
-        serde_json::json!({"type":"user","timestamp":iso(spawn_at),"toolUseResult":{"status":"teammate_spawned","name":"zed","agent_id":"zed@team"},"message":{"content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"s"}]}}),
+        serde_json::json!({"type":"user","timestamp":iso(spawn_at),"toolUseResult":{"status":"teammate_spawned","name":"zed","agent_id":"azed-4e73c1cee12244e6","teammate_id":"zed@team"},"message":{"content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"s"}]}}),
         serde_json::json!({"type":"user","timestamp":iso(idle_at),"message":{"content":format!("Another Claude session sent a message:\n<teammate-message teammate_id=\"zed\">\n{{\"type\":\"idle_notification\",\"from\":\"zed\",\"timestamp\":\"{}\",\"idleReason\":\"available\"}}\n</teammate-message>", iso(idle_at))}}),
     ];
     std::fs::write(&transcript, lines.iter().map(|l| format!("{l}\n")).collect::<String>()).unwrap();
@@ -238,24 +179,353 @@ fn idle_agent_sweep_through_the_dispatcher_reads_the_request_environment() {
     let args = ["hook", "--event", "UserPromptSubmit", "--fallback-map", map.to_str().unwrap()];
     let p = ups("is", "go on", Some(&transcript));
     let now = t0.to_string();
-    let extra = [("ANTIHALL_TEST_ISOLATION", "1"), ("ANTIHALL_TEST_NOW_MS", now.as_str())];
+    // the prompt digest (inject_gate) folds the tracker, sweep and verify-first lines into headlines in importance order, and only when it is
+    // shorter than the whole (which the rotating verify-first line decides): this test is about the join order and the request clock, so it is off
+    // the idle order (GH #744, on by default) owns teammates idle 30 min and more: this test is about the plain advisory
+    let extra = [("ANTIHALL_TEST_ISOLATION", "1"), ("ANTIHALL_TEST_NOW_MS", now.as_str()), ("ANTIHALL_PROMPT_DIGEST", "0"), ("ANTIHALL_IDLE_ORDER", "0")];
     let (code, out, err) = e.run(&args, true, &p, &extra);
     assert_eq!((code, err.as_str()), (0, ""));
     assert!(out.contains("1 finished agent is idle and not stopped: zed (30m)") && !out.contains("NODE-RAN"), "{out}");
     // the request environment carries the clock: without it the same transcript is 'long ago' in a different way
-    // the dispatcher joins the verify-first line and the sweep advisory in table order, as the host joins two hooks
+    // the dispatcher joins the hooks' lines in table order, as the host joins two hooks: the sweep advisory comes last
     let want = check_form("idle-check", "idle-agent-sweep", &p, &extra);
     let advisory: serde_json::Value = serde_json::from_str(want.trim_end()).unwrap();
     let advisory = advisory["hookSpecificOutput"]["additionalContext"].as_str().unwrap();
     let joined: serde_json::Value = serde_json::from_str(out.trim_end()).unwrap();
     let joined = joined["hookSpecificOutput"]["additionalContext"].as_str().unwrap();
-    assert!(joined.starts_with("VERIFY-FIRST: ") && joined.ends_with(&format!("\n\n{advisory}")), "{joined}");
+    assert!(joined.ends_with(&format!("\n\n{advisory}")) || joined == advisory, "{joined}");
     // the same prompt again is the same block, still undelivered: both are suppressed
     let (_, again, _) = e.run(&args, true, &p, &extra);
     assert_eq!(ctx(&again), "", "the dedupe state of the first call must hold");
     // two days on, the same agent is stale (long gone), not idle: it drops out of the advisory
     let later = (t0 + 2 * 86_400_000).to_string();
-    let extra = [("ANTIHALL_TEST_ISOLATION", "1"), ("ANTIHALL_TEST_NOW_MS", later.as_str())];
+    let extra = [("ANTIHALL_TEST_ISOLATION", "1"), ("ANTIHALL_TEST_NOW_MS", later.as_str()), ("ANTIHALL_PROMPT_DIGEST", "0")];
     let (_, stale, _) = e.run(&args, true, &ups("is-stale", "go on", Some(&transcript)), &extra);
     assert!(!ctx(&stale).contains("finished agent"), "a stale agent must not be listed: {stale}");
+}
+
+fn session_start(source: &str) -> String {
+    serde_json::json!({"session_id": "os", "cwd": "/tmp", "hook_event_name": "SessionStart", "source": source}).to_string()
+}
+
+/// Emit on change, not every start: a DevSwarm Primary gets the whole orchestration rules once; every later compaction or resume
+/// gets the short form, within the configured byte budget, and a plain repeated start one line.
+#[test]
+fn orchestration_rules_are_sent_whole_once_then_short_after_compaction() {
+    let e = Env::new("orch-once");
+    let map = e.map("SessionStart", "none");
+    let args = ["hook", "--event", "SessionStart", "--fallback-map", map.to_str().unwrap()];
+    let plugin = concat!(env!("CARGO_MANIFEST_DIR"), "/../plugins/anti-hall"); // an external target dir cannot find the checkout by ancestry
+    let env = [("DEVSWARM_REPO_ID", "r1"), ("AH_ENGINE_PLUGIN_ROOT", plugin)];
+    let mut sizes = Vec::new();
+    let mut outs = Vec::new();
+    for source in ["startup", "compact", "compact", "resume", "other"] {
+        let (code, out, err) = e.run(&args, true, &session_start(source), &env);
+        assert_eq!(code, 0, "{out} {err}");
+        let c = ctx(&out);
+        sizes.push(c.len());
+        outs.push(c);
+    }
+    println!("orchestration SessionStart chars per start (startup, compact, compact, resume, other): {sizes:?}");
+    assert!(outs[0].contains("ORCHESTRATION DISCIPLINE") && outs[0].contains("DEVSWARM PRIMARY"), "the first start carries the whole rules");
+    for (i, o) in outs.iter().enumerate().skip(1) {
+        assert!(!o.contains("ORCHESTRATION DISCIPLINE"), "start {i} must not re-send the whole rules: {o}");
+        assert!(o.contains("PROTOCOL.md#orchestration"), "start {i} keeps the pointer: {o}");
+    }
+    assert!(outs[1].contains("W. DEVSWARM PRIMARY"), "{}", outs[1]);
+    assert!(sizes[1] < sizes[0] && sizes[4] < sizes[1], "short forms are shorter: {sizes:?}");
+    // the switch keeps the whole text every time
+    let e2 = Env::new("orch-once-off");
+    let map2 = e2.map("SessionStart", "none");
+    let args2 = ["hook", "--event", "SessionStart", "--fallback-map", map2.to_str().unwrap()];
+    let off = [("DEVSWARM_REPO_ID", "r1"), ("ANTIHALL_PROTOCOL_ONCE", "0"), ("AH_ENGINE_PLUGIN_ROOT", plugin)];
+    for source in ["startup", "compact"] {
+        let (_, out, _) = e2.run(&args2, true, &session_start(source), &off);
+        assert!(ctx(&out).contains("ORCHESTRATION DISCIPLINE"), "protocolOnce=false sends the whole rules at {source}");
+    }
+}
+
+/// Twenty consecutive prompts of one session: the recurring context blocks are sent on the first and not again (the model already
+/// holds them); the total injected chars of the sequence are printed against the every-turn baseline (`ANTIHALL_EMIT_DEDUPE=0`).
+#[test]
+fn twenty_consecutive_prompts_inject_the_recurring_blocks_once() {
+    let plugin = concat!(env!("CARGO_MANIFEST_DIR"), "/../plugins/anti-hall");
+    let run = |dedupe_off: bool| -> Vec<usize> {
+        let e = Env::new(if dedupe_off { "twenty-off" } else { "twenty-on" });
+        let map = e.map("UserPromptSubmit", "none");
+        let args = ["hook", "--event", "UserPromptSubmit", "--fallback-map", map.to_str().unwrap()];
+        let mut env = vec![("DEVSWARM_REPO_ID", "r1"), ("AH_ENGINE_PLUGIN_ROOT", plugin)];
+        if dedupe_off {
+            env.push(("ANTIHALL_EMIT_DEDUPE", "0"));
+            env.push(("ANTIHALL_INJECT_GATE", "0"));
+            env.push(("ANTIHALL_VERIFY_FIRST_REPEAT_EVERY", "0"));
+        }
+        let mut sizes: Vec<usize> = (0..20)
+            .map(|i| {
+                let (code, out, err) = e.run(&args, true, &ups("tw", &format!("prompt {i}"), None), &env);
+                assert_eq!(code, 0, "{out} {err}");
+                ctx(&out).len()
+            })
+            .collect();
+        // a compaction loses the blocks: the next prompt re-sends them
+        let smap = e.map("SessionStart", "none");
+        let sargs = ["hook", "--event", "SessionStart", "--fallback-map", smap.to_str().unwrap()];
+        let sp = serde_json::json!({"session_id": "tw", "cwd": "/tmp", "hook_event_name": "SessionStart", "source": "compact"}).to_string();
+        e.run(&sargs, true, &sp, &env);
+        let (_, out, _) = e.run(&args, true, &ups("tw", "after compaction", None), &env);
+        sizes.push(ctx(&out).len());
+        sizes
+    };
+    let on = run(false);
+    let off = run(true);
+    println!("twenty prompts, chars per turn with emit-on-change: {on:?} (total {})", on.iter().sum::<usize>());
+    println!("twenty prompts, chars per turn every turn:          {off:?} (total {})", off.iter().sum::<usize>());
+    assert!(on[0] > 0, "the first prompt carries the blocks");
+    assert!(on[1..20].iter().all(|n| *n == 0), "the second to twentieth prompt re-send nothing while the state is unchanged: {on:?}");
+    assert!(on[20] > 0, "a compaction (changed state) re-sends the blocks: {on:?}");
+    assert!(on.iter().sum::<usize>() < off.iter().sum::<usize>(), "emit-on-change injects less than every turn");
+}
+
+/// The ISO form of a Unix time in ms (civil-from-days of the proleptic Gregorian calendar).
+fn iso_of(ms: u64) -> String {
+    let (days, sod) = ((ms / 86_400_000) as i64, (ms % 86_400_000) / 1000);
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z.rem_euclid(146_097);
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = yoe + era * 400 + i64::from(m <= 2);
+    format!("{y:04}-{m:02}-{d:02}T{:02}:{:02}:{:02}.{:03}Z", sod / 3600, sod % 3600 / 60, sod % 60, ms % 1000)
+}
+
+fn real_ms() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis() as u64
+}
+
+/// #709: a turn the host's scheduler delivered (a cron tick) does not count toward the keepalive that re-shows an unchanged block
+/// (`guards.keepaliveCountsScheduled`, default off). The block here is the idle-agents advisory (one finished agent, never changing),
+/// with the repeat interval set to 2 turns. Scheduled turns: no re-send however many pass inside the wall-clock floor; the user's own
+/// turns count as before; the floor (`guards.injectionRepeatMinS`) re-sends it once it has passed; the switch on restores the old rule
+/// (the third scheduled turn re-sends it). The dedupe store reads the real clock, so the user records carry real times; the sweep's
+/// own clock (the idle age of the agent) is the injected one.
+#[test]
+fn scheduled_turns_do_not_count_toward_the_keepalive_but_the_users_do() {
+    let t0 = 1_790_000_000_000u64; // the sweep's injected clock
+    let iso = |ms: u64| {
+        let s = ms / 1000;
+        let (days, sod) = (s / 86400, s % 86400);
+        format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.000Z", 2026, 9, 1 + (days - 20_697), sod / 3600, sod % 3600 / 60, sod % 60)
+    };
+    // runs `scenario` with a `turn(origin)` that makes one turn of that origin and returns the advisory the hook sent ("" = none), and an
+    // `age(secs)` that makes the last emit that old
+    type Scenario = dyn Fn(&mut dyn FnMut(&str) -> String, &dyn Fn(u64));
+    let run = |counts_scheduled: bool, scenario: &Scenario| {
+        let e = Env::new(if counts_scheduled { "ka-on" } else { "ka-off" });
+        let transcript = e.dir.join("t.jsonl");
+        let (spawn_at, idle_at) = (t0 - 40 * 60_000, t0 - 30 * 60_000);
+        let lines = std::cell::RefCell::new(vec![
+            serde_json::json!({"type":"assistant","timestamp":iso(spawn_at - 1000),"message":{"content":[{"type":"tool_use","id":"toolu_1","name":"Agent","input":{}}]}}).to_string(),
+            serde_json::json!({"type":"user","timestamp":iso(spawn_at),"toolUseResult":{"status":"teammate_spawned","name":"zed","agent_id":"azed-4e73c1cee12244e6","teammate_id":"zed@team"},"message":{"content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"s"}]}}).to_string(),
+            serde_json::json!({"type":"user","timestamp":iso(idle_at),"message":{"content":format!("Another Claude session sent a message:\n<teammate-message teammate_id=\"zed\">\n{{\"type\":\"idle_notification\",\"from\":\"zed\",\"timestamp\":\"{}\",\"idleReason\":\"available\"}}\n</teammate-message>", iso(idle_at))}}).to_string(),
+        ]);
+        let map = e.map("UserPromptSubmit", "idle-agent-sweep");
+        let args = ["hook", "--event", "UserPromptSubmit", "--fallback-map", map.to_str().unwrap()];
+        let state_file = e.home().join(".anti-hall/emit-dedupe/dedupe-ka.json");
+        let mut turn = |origin: &str| -> String {
+            std::thread::sleep(std::time::Duration::from_millis(30)); // strictly increasing real times
+            lines.borrow_mut().push(
+                serde_json::json!({"type":"user","timestamp":iso_of(real_ms()),"turnOrigin":origin,"message":{"role":"user","content":"go on"}}).to_string(),
+            );
+            std::fs::write(&transcript, lines.borrow().iter().map(|l| format!("{l}\n")).collect::<String>()).unwrap();
+            let now = t0.to_string();
+            let mut extra = vec![
+                ("ANTIHALL_TEST_ISOLATION", "1"),
+                ("ANTIHALL_TEST_NOW_MS", now.as_str()),
+                ("ANTIHALL_PROMPT_DIGEST", "0"),
+                ("ANTIHALL_INJECTION_REPEAT_EVERY", "2"),
+                ("ANTIHALL_VERIFY_FIRST_REPEAT_EVERY", "0"),
+                ("ANTIHALL_IDLE_ORDER", "0"), // the plain advisory is what the keepalive counts here
+            ];
+            if counts_scheduled {
+                extra.push(("ANTIHALL_KEEPALIVE_COUNTS_SCHEDULED", "1"));
+            }
+            let (code, out, err) = e.run(&args, true, &ups("ka", "go on", Some(&transcript)), &extra);
+            assert_eq!((code, err.as_str()), (0, ""));
+            let c = ctx(&out);
+            let adv = c.split("\n\n").find(|s| s.contains("finished agent")).unwrap_or("").to_string();
+            // the delivery the transcript shows: what the hooks sent, or a filler attachment of another hook (there is one each turn)
+            let shown = if adv.is_empty() { "other hook text".to_string() } else { adv.clone() };
+            lines.borrow_mut().push(serde_json::json!({"type":"attachment","timestamp":iso_of(real_ms()),"attachment":{"type":"hook_additional_context","hookEvent":"UserPromptSubmit","content":[shown]}}).to_string());
+            adv
+        };
+        let age = |secs: u64| {
+            let mut st: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(&state_file).unwrap()).unwrap();
+            let k = &mut st["idle-agent-sweep"]["lastEmittedAt"];
+            *k = (k.as_u64().unwrap() - secs * 1000).into();
+            std::fs::write(&state_file, st.to_string()).unwrap();
+        };
+        scenario(&mut turn, &age)
+    };
+    // switch OFF (the default)
+    run(false, &|turn, age| {
+        assert!(turn("human").contains("finished agent"), "the first turn sends the advisory");
+        for i in 1..=5 {
+            assert_eq!(turn("scheduled"), "", "scheduled tick {i} must not re-send an unchanged advisory");
+        }
+        // the user's own turns count: with an interval of 2, the third one re-sends it
+        assert_eq!(turn("human"), "");
+        assert_eq!(turn("human"), "");
+        assert!(turn("human").contains("finished agent"), "the user's third turn re-sends it");
+        // scheduled ticks past the wall-clock floor (2 h since the last emit) re-send it once
+        assert_eq!(turn("scheduled"), "");
+        age(3 * 3600);
+        assert!(turn("scheduled").contains("finished agent"), "the floor re-sends it");
+        assert_eq!(turn("scheduled"), "", "and then it is quiet again");
+    });
+    // switch ON: the old rule, every delivered turn counts: the third tick re-sends it
+    run(true, &|turn, _| {
+        assert!(turn("human").contains("finished agent"));
+        let sent: Vec<bool> = (1..=3).map(|_| turn("scheduled").contains("finished agent")).collect();
+        assert_eq!(sent, vec![false, false, true], "with the switch on a scheduled tick counts like any turn");
+    });
+}
+
+/// #709 (review of PR-A2): a scheduled-only session never moves the keepalive turn counter, so the savings counter must not hang on it:
+/// every evaluation that passed over a scheduled turn and suppressed the unchanged block counts once (`waste_events_total`,
+/// source `keepalive_scheduled`). The counter lives in the daemon, so this goes through it. Emit behaviour is the one the test above pins.
+#[test]
+fn each_suppressed_scheduled_evaluation_is_counted_once() {
+    let e = Env::new("ka-count");
+    let transcript = e.dir.join("t.jsonl");
+    let t0 = 1_790_000_000_000u64;
+    let iso = |ms: u64| {
+        let s = ms / 1000;
+        let (days, sod) = (s / 86400, s % 86400);
+        format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.000Z", 2026, 9, 1 + (days - 20_697), sod / 3600, sod % 3600 / 60, sod % 60)
+    };
+    let (spawn_at, idle_at) = (t0 - 40 * 60_000, t0 - 30 * 60_000);
+    let mut lines = vec![
+        serde_json::json!({"type":"assistant","timestamp":iso(spawn_at - 1000),"message":{"content":[{"type":"tool_use","id":"toolu_1","name":"Agent","input":{}}]}}).to_string(),
+        serde_json::json!({"type":"user","timestamp":iso(spawn_at),"toolUseResult":{"status":"teammate_spawned","name":"zed","agent_id":"azed-4e73c1cee12244e6","teammate_id":"zed@team"},"message":{"content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"s"}]}}).to_string(),
+        serde_json::json!({"type":"user","timestamp":iso(idle_at),"message":{"content":format!("Another Claude session sent a message:\n<teammate-message teammate_id=\"zed\">\n{{\"type\":\"idle_notification\",\"from\":\"zed\",\"timestamp\":\"{}\",\"idleReason\":\"available\"}}\n</teammate-message>", iso(idle_at))}}).to_string(),
+    ];
+    let map = e.map("UserPromptSubmit", "idle-agent-sweep");
+    let args = ["hook", "--event", "UserPromptSubmit", "--fallback-map", map.to_str().unwrap()];
+    let now = t0.to_string();
+    let extra = [
+        ("ANTIHALL_TEST_ISOLATION", "1"),
+        ("ANTIHALL_TEST_NOW_MS", now.as_str()),
+        ("ANTIHALL_PROMPT_DIGEST", "0"),
+        ("ANTIHALL_INJECTION_REPEAT_EVERY", "2"),
+        ("ANTIHALL_VERIFY_FIRST_REPEAT_EVERY", "0"),
+        ("ANTIHALL_IDLE_ORDER", "0"), // the plain advisory is what the keepalive counts here
+    ];
+    let mut turn = |origin: &str, first: bool| -> String {
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        lines
+            .push(serde_json::json!({"type":"user","timestamp":iso_of(real_ms()),"turnOrigin":origin,"message":{"role":"user","content":"go on"}}).to_string());
+        std::fs::write(&transcript, lines.iter().map(|l| format!("{l}\n")).collect::<String>()).unwrap();
+        let payload = ups("kac", "go on", Some(&transcript));
+        // the first call starts the daemon: ask until the daemon, not the stand-in Node hook, answers
+        let (code, out, err) = if first { e.until_daemon_answers(&args, &payload, &extra) } else { e.run(&args, false, &payload, &extra) };
+        assert_eq!((code, err.as_str()), (0, ""));
+        let adv = ctx(&out).split("\n\n").find(|s| s.contains("finished agent")).unwrap_or("").to_string();
+        let shown = if adv.is_empty() { "other hook text".to_string() } else { adv.clone() };
+        lines.push(serde_json::json!({"type":"attachment","timestamp":iso_of(real_ms()),"attachment":{"type":"hook_additional_context","hookEvent":"UserPromptSubmit","content":[shown]}}).to_string());
+        adv
+    };
+    let count = |e: &Env| -> u64 {
+        let o = Command::new(env!("CARGO_BIN_EXE_ah-engine"))
+            .args(["ctl", "metrics"])
+            .env_clear()
+            .env("PATH", std::env::var("PATH").unwrap_or_default())
+            .env("HOME", e.home())
+            .env("AH_ENGINE_PLUGIN_ROOT", crate::common::plugin_root())
+            .env("AH_ENGINE_DIR", e.state())
+            .output()
+            .unwrap();
+        let v: serde_json::Value = serde_json::from_slice(&o.stdout).unwrap();
+        v["metrics"]["counters"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|c| c["name"] == "waste_events_total" && c["labels"]["source"] == "keepalive_scheduled")
+            .map(|c| c["value"].as_u64().unwrap())
+            .sum()
+    };
+    assert!(turn("human", true).contains("finished agent"), "the first turn sends the advisory");
+    assert_eq!(count(&e), 0, "nothing is saved yet");
+    for i in 1..=10u64 {
+        assert_eq!(turn("scheduled", false), "", "scheduled tick {i} stays quiet");
+        assert_eq!(count(&e), i, "tick {i}: one more saved repeat");
+    }
+}
+
+/// GH #744 (review round 2): the teammate idle order is given only from a COMPLETE read of the session's task store. A readable completed
+/// sibling must not license a stop when another task file (possibly the teammate's own open task) was dropped as unreadable.
+#[test]
+fn teammate_idle_order_needs_a_complete_task_store() {
+    let order_for = |name: &str, extra_file: Option<&str>, after: &dyn Fn(&std::path::Path)| -> String {
+        let e = Env::new(name);
+        let t0 = 1_790_000_000_000u64;
+        let iso = |ms: u64| {
+            let s = ms / 1000;
+            let (days, sod) = (s / 86400, s % 86400);
+            format!("{:04}-{:02}-{:02}T{:02}:{:02}:{:02}.000Z", 2026, 9, 1 + (days - 20_697), sod / 3600, sod % 3600 / 60, sod % 60)
+        };
+        let (spawn_at, idle_at) = (t0 - 3_600_000, t0 - 1_800_000);
+        let transcript = e.dir.join("t.jsonl");
+        let lines = [
+            serde_json::json!({"type":"assistant","timestamp":iso(spawn_at - 1000),"message":{"content":[{"type":"tool_use","id":"toolu_1","name":"Agent","input":{}}]}}),
+            serde_json::json!({"type":"user","timestamp":iso(spawn_at),"toolUseResult":{"status":"teammate_spawned","name":"zed","agent_id":"azed-4e73c1cee12244e6","teammate_id":"zed@team"},"message":{"content":[{"type":"tool_result","tool_use_id":"toolu_1","content":"s"}]}}),
+            serde_json::json!({"type":"user","timestamp":iso(idle_at),"message":{"content":format!("Another Claude session sent a message:\n<teammate-message teammate_id=\"zed\">\n{{\"type\":\"idle_notification\",\"from\":\"zed\",\"timestamp\":\"{}\",\"idleReason\":\"available\"}}\n</teammate-message>", iso(idle_at))}}),
+        ];
+        std::fs::write(&transcript, lines.iter().map(|l| format!("{l}\n")).collect::<String>()).unwrap();
+        // the session's task store: one readable completed task, plus (optionally) a file the read cannot use
+        let store = e.home().join(".claude/tasks/session-sess0001");
+        std::fs::create_dir_all(&store).unwrap();
+        std::fs::write(store.join("1.json"), r#"{"id":"1","subject":"done","status":"completed","owner":"other"}"#).unwrap();
+        if let Some(body) = extra_file {
+            std::fs::write(store.join("2.json"), body).unwrap();
+        }
+        after(&store);
+        let map = e.map("UserPromptSubmit", "none");
+        let args = ["hook", "--event", "UserPromptSubmit", "--fallback-map", map.to_str().unwrap()];
+        let plugin = concat!(env!("CARGO_MANIFEST_DIR"), "/../plugins/anti-hall");
+        let now = t0.to_string();
+        let extra =
+            [("ANTIHALL_TEST_ISOLATION", "1"), ("ANTIHALL_TEST_NOW_MS", now.as_str()), ("ANTIHALL_PROMPT_DIGEST", "0"), ("AH_ENGINE_PLUGIN_ROOT", plugin)];
+        let (code, out, err) = e.run(&args, true, &ups("sess0001-x", "go on", Some(&transcript)), &extra);
+        {
+            use std::os::unix::fs::PermissionsExt;
+            // so the scratch dir can be removed
+            if let Err(e) = std::fs::set_permissions(&store, std::fs::Permissions::from_mode(0o755)) {
+                eprintln!("restore perms: {e}");
+            }
+        }
+        assert_eq!((code, err.as_str()), (0, ""));
+        ctx(&out)
+    };
+    let control = order_for("idle-store-ok", None, &|_| {});
+    assert!(control.contains("TaskStop"), "control: a complete store with no open task owned by the teammate gets the order, got: {control}");
+    for (name, body) in [("idle-store-bad-json", "{not json"), ("idle-store-bad-shape", r#"{"id":"2","subject":"mine"}"#)] {
+        let out = order_for(name, Some(body), &|_| {});
+        assert!(!out.contains("TaskStop"), "{name}: a dropped task file makes the state unknown, no order, got: {out}");
+    }
+    // a task directory that exists but cannot be listed (permission denied) is an unknown state, not "this session has no store"
+    let denied = order_for("idle-store-denied", None, &|d| {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(d, std::fs::Permissions::from_mode(0o000)).unwrap();
+    });
+    assert!(!denied.contains("TaskStop"), "an unlistable task directory is an unknown state, no order, got: {denied}");
+    // a directory over the host's listing cap (script.readdir_max, 10000) is listed as null: the same unknown state
+    let huge = order_for("idle-store-huge", None, &|d| {
+        for i in 0..10_001 {
+            std::fs::write(d.join(format!("{i}.dat")), "").unwrap();
+        }
+    });
+    assert!(!huge.contains("TaskStop"), "a task directory the host refuses to list is an unknown state, no order, got: {huge}");
 }

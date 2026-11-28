@@ -11,7 +11,7 @@ It fights four failure modes common to coding assistants:
 4. **Fake completion** — claiming work is done, fixed, or passing without running the check.
 
 What it ships: always-on hooks run by the Rust engine (mechanical guards such as `git-guard`, `api-guard`,
-`command-guard`, `edit-guard`, `swarm-guard`, `task-guard`), a rotating verify-first nudge,
+`command-guard`, `edit-guard`, `swarm-guard`, `task-guard`), the verify-first protocol at session and subagent start,
 skills you call as `/anti-hall:<name>` (`root-cause`, `deadly-loop`, `ship-it`, `doctor`,
 `handover`, `settings`, and more), legacy statusline cleanup, and optional DevSwarm and
 Jev integrations.
@@ -26,7 +26,7 @@ Jev integrations.
 The hooks apply globally once enabled. To try it without installing:
 `claude --plugin-dir /path/to/anti-hall`. The old anti-hall statusline installer is retired; use uninstall-statusline only to clean up older installs.
 
-**No Node.js needed.** Every hook runs the `ah-hook` client and the `ah-engine` binary (macOS and Linux). If the engine
+**No Node.js needed.** Every hook runs the `ah-hook` client and the `ah-engine` binary (macOS on Apple silicon; Linux, Apple Intel and native Windows are coming soon). If the engine
 is missing or cannot answer, hooks let the call through and print one notice per session.
 
 ### Enable Jev
@@ -46,8 +46,8 @@ a small Rust binary that hands the event to the `ah-engine` binary. Both are dow
 only if their sha256 equals the one pinned in `ah-engine.lock`; the plugin's one shell file, `hooks/install.sh`, does that on first
 install. No Node and no other script runs on a hook path. If the engine is missing, broken or unreachable, hooks let the call
 through and print one notice per session. Commands call the engine directly: `ah-engine <verb>`. Its rules,
-settings and texts are plain files in `engine/`, hot-reloaded with fallbacks (edited, last-known-good, pristine). macOS and
-Linux; Windows is not supported yet. Details:
+settings and texts are plain files in `engine/`, hot-reloaded with fallbacks (edited, last-known-good, pristine). macOS on
+Apple silicon; Linux, Apple Intel and native Windows are coming soon. Details:
 [AH-ENGINE.md](https://github.com/talas9/anti-hall/blob/main/docs/AH-ENGINE.md).
 
 ## Binary download and verification
@@ -96,3 +96,10 @@ This README uses absolute GitHub URLs because it ships inside the plugin cache, 
 ## License
 
 MIT © Mohammed Talas. See [LICENSE](https://github.com/talas9/anti-hall/blob/main/LICENSE).
+
+Quiet scheduled maintenance ticks use `idle_gate.toml` and the existing parent-inbox logic on Claude/OMC and Codex/OMX.
+`guards.idleGateMode` defaults to `one_line`; block mode is opt-in and its host call suppression is unproven.
+See [Quiet scheduled ticks](../../docs/AH-ENGINE.md#quiet-scheduled-ticks-709-pr-c) for eligibility and the no-Rust limitations.
+
+Actionable open tasks, unhandled transcript notifications/attachments, corrupt baselines, unknown sibling freshness,
+and tick output reporting unread mail keep these turns running normally on both hosts.

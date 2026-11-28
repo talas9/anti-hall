@@ -103,6 +103,72 @@ fn write_state(home: &Path, now: i64) {
     crate::discard::harmless(crate::atomic::write(&p, json!({"lastRunAt": now}).to_string())); // keep: rate limiting is best effort
 }
 
+/// Move stale workspace heartbeats out of the watched heartbeats directory (GH #912: 974 beats, 876 of them over a week old, each
+/// one more file for the state watcher and a leak of its own). A beat moves to `devswarm_sup.hk_beat_retired_dir` (never deleted)
+/// only when it is older than `devswarm_sup.hk_beat_retire_ms` AND its workspace has no descriptor in the workspaces directory
+/// (an active workspace's beat always stays, however old); a staged temp file is never touched; at most
+/// `devswarm_sup.hk_beat_retire_max` move per pass. A name already in the retired directory gets the time appended, so nothing
+/// is overwritten.
+pub fn retire_beats(root: &Path, now: i64) -> Vec<Value> {
+    let t = defaults::text;
+    let (dir, to) = (root.join(t("mesh_write.dir_heartbeats")), root.join(t("devswarm_sup.hk_beat_retired_dir")));
+    let (suffix, tmp) = (t("mesh_write.json_suffix"), t("mesh_write.tmp_suffix"));
+    let max_age = defaults::num("devswarm_sup.hk_beat_retire_ms") as f64;
+    let max = defaults::num("devswarm_sup.hk_beat_retire_max") as usize;
+    let workspaces = root.join(t("mesh_write.dir_workspaces"));
+    let Ok(rd) = std::fs::read_dir(&dir) else { return Vec::new() }; // no heartbeats directory: nothing to retire
+    let mut out = Vec::new();
+    for e in rd.flatten() {
+        if out.len() >= max {
+            break;
+        }
+        let name = e.file_name();
+        let n = name.to_string_lossy();
+        let Some(id) = n.strip_suffix(suffix) else { continue };
+        if n.contains(tmp) || id.is_empty() {
+            continue;
+        }
+        let Ok(md) = std::fs::symlink_metadata(e.path()) else { continue }; // vanished mid-sweep
+        if !md.is_file() {
+            continue;
+        }
+        let age = now as f64 - mtime_ms(&md);
+        if age <= max_age || workspaces.join(&*n).exists() {
+            continue; // fresh, or the workspace is active: its beat stays
+        }
+        if let Err(err) = std::fs::create_dir_all(&to) {
+            out.push(row(
+                &e.path(),
+                age,
+                t("devswarm_sup.hk_status_failed"),
+                defaults::render("devswarm_sup.hk_msg_retire_failed", &[("file", &e.path().display()), ("err", &err)]),
+            ));
+            break;
+        }
+        let mut dst = to.join(&name);
+        if dst.exists() {
+            dst = to.join(format!("{n}.{now}"));
+        }
+        let days = (age / defaults::num("devswarm_sup.hk_day_ms") as f64).round() as i64;
+        match std::fs::rename(e.path(), &dst) {
+            Ok(()) => out.push(row(
+                &e.path(),
+                age,
+                t("devswarm_sup.hk_status_fixed"),
+                defaults::render("devswarm_sup.hk_msg_retired", &[("file", &e.path().display()), ("to", &dst.display()), ("days", &days)]),
+            )),
+            Err(err) => out.push(row(
+                &e.path(),
+                age,
+                t("devswarm_sup.hk_status_failed"),
+                defaults::render("devswarm_sup.hk_msg_retire_failed", &[("file", &e.path().display()), ("err", &err)]),
+            )),
+        }
+    }
+    crate::threads::tally(t("devswarm_sup.hk_beat_counter"), out.iter().filter(|r| r["status"] == t("devswarm_sup.hk_status_fixed")).count() as u64);
+    out
+}
+
 /// One housekeeping pass. The caller (the tick) has already applied the duty's gate (switch and cool-down), so this runs the
 /// sweeps: state first, then each sweep of `devswarm_sup.hk_sweeps` in order. Returns Node's `{ran, results}`.
 pub fn run(ctx: &Ctx) -> Value {
@@ -114,5 +180,53 @@ pub fn run(ctx: &Ctx) -> Value {
         let rows = sweep_aged(&root.join(sweep.str_field("dir")), sweep.str_field("suffix"), window, ctx.now);
         results.insert(sweep.str_field("name").to_string(), Value::Array(rows));
     }
+    results.insert(defaults::text("devswarm_sup.hk_beat_result").to_string(), Value::Array(retire_beats(&root, ctx.now)));
     json!({"ran": true, "results": Value::Object(results)})
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// GH #912: stale beats leave the watched heartbeats directory (moved, never deleted); an active workspace's beat, a fresh
+    /// beat and a staged temp file stay; a name already retired is not overwritten.
+    #[test]
+    fn stale_heartbeats_are_moved_out_and_active_or_fresh_ones_stay() {
+        let root = std::env::temp_dir().join(format!("ah-hk-beats-{}", std::process::id()));
+        crate::discard::harmless(std::fs::remove_dir_all(&root)); // our own scratch directory
+        let t = defaults::text;
+        let (beats, ws, retired) =
+            (root.join(t("mesh_write.dir_heartbeats")), root.join(t("mesh_write.dir_workspaces")), root.join(t("devswarm_sup.hk_beat_retired_dir")));
+        for d in [&beats, &ws, &retired] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        let now = crate::health::now_ms() as i64;
+        let old = std::time::SystemTime::now() - std::time::Duration::from_millis(defaults::num("devswarm_sup.hk_beat_retire_ms") + 86_400_000);
+        let put = |name: &str, aged: bool| {
+            let p = beats.join(name);
+            std::fs::write(&p, "{}").unwrap();
+            if aged {
+                std::fs::File::options().write(true).open(&p).unwrap().set_modified(old).unwrap();
+            }
+        };
+        let staged = format!("gone-2.json{}", t("mesh_write.tmp_suffix"));
+        put("gone-1.json", true);
+        put("gone-2.json", true);
+        put("active.json", true);
+        put("fresh.json", false);
+        put(&staged, true);
+        std::fs::write(ws.join("active.json"), "{}").unwrap();
+        std::fs::write(retired.join("gone-2.json"), "earlier").unwrap();
+        let rows = retire_beats(&root, now);
+        assert_eq!(rows.len(), 2, "{rows:?}");
+        assert!(rows.iter().all(|r| r["status"] == t("devswarm_sup.hk_status_fixed")), "{rows:?}");
+        assert!(retired.join("gone-1.json").exists() && !beats.join("gone-1.json").exists());
+        assert_eq!(std::fs::read_to_string(retired.join("gone-2.json")).unwrap(), "earlier", "an earlier retired beat is never overwritten");
+        assert!(retired.join(format!("gone-2.json.{now}")).exists() && !beats.join("gone-2.json").exists());
+        for stays in ["active.json", "fresh.json", staged.as_str()] {
+            assert!(beats.join(stays).exists(), "{stays} must stay");
+        }
+        assert!(retire_beats(&root, now).is_empty(), "a second pass has nothing left to move");
+        crate::discard::harmless(std::fs::remove_dir_all(&root)); // our own scratch directory
+    }
 }

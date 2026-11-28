@@ -11,7 +11,8 @@ use crate::defaults;
 use serde_json::{Map, Value, json};
 use std::collections::BTreeMap;
 
-/// A latency histogram with the fixed buckets from `telemetry.latency_buckets_us`.
+/// A latency histogram with the fixed buckets from `telemetry.latency_buckets_us`, plus (for a metric in `telemetry.hdr_metrics`,
+/// when `telemetry.hdr_sigfig` is above 0) an HdrHistogram that gives its percentiles within that many significant digits.
 #[derive(Debug, Clone, Default)]
 struct Hist {
     /// Count per bucket; the last entry counts values above the largest bound.
@@ -19,24 +20,65 @@ struct Hist {
     count: u64,
     sum: u64,
     max: u64,
+    /// The exact-percentile histogram; `None` for a metric not in `telemetry.hdr_metrics` or with the setting off.
+    hdr: Option<Box<hdrhistogram::Histogram<u32>>>,
+}
+
+/// A new HdrHistogram with the configured bounds (`telemetry.hdr_lowest_us`, `.hdr_highest_us`) and precision
+/// (`telemetry.hdr_sigfig`); `None` when the setting is off (0) or the bounds are invalid.
+fn new_hdr() -> Option<Box<hdrhistogram::Histogram<u32>>> {
+    let sig = defaults::num("telemetry.hdr_sigfig");
+    if sig == 0 {
+        return None;
+    }
+    let low = defaults::num("telemetry.hdr_lowest_us").max(1);
+    let high = defaults::num("telemetry.hdr_highest_us").max(low.saturating_mul(2));
+    hdrhistogram::Histogram::<u32>::new_with_bounds(low, high, sig.min(5) as u8).ok().map(Box::new)
+}
+
+/// True when the histogram `name` keeps an HdrHistogram (`telemetry.hdr_metrics`; never a byte metric).
+fn keeps_hdr(name: &str) -> bool {
+    !is_byte_metric(name) && defaults::list("telemetry.hdr_metrics").contains(&name)
+}
+
+/// Record `n` values of `v` in `h`, clamped into its range (the exact maximum is kept apart, in `Hist::max`).
+fn hdr_record(h: &mut hdrhistogram::Histogram<u32>, v: u64, n: u64) {
+    let v = v.clamp(h.low(), h.high());
+    h.saturating_record_n(v, u32::try_from(n).unwrap_or(u32::MAX));
 }
 
 impl Hist {
-    fn observe(&mut self, bounds: &[u64], v: u64) {
+    fn observe(&mut self, bounds: &[u64], v: u64, exact: bool) {
         if self.buckets.is_empty() {
             self.buckets = vec![0; bounds.len() + 1];
+            if exact {
+                self.hdr = new_hdr();
+            }
         }
         let i = bounds.iter().position(|b| v <= *b).unwrap_or(bounds.len());
         self.buckets[i] += 1;
         self.count += 1;
         self.sum += v;
         self.max = self.max.max(v);
+        if let Some(h) = self.hdr.as_mut() {
+            hdr_record(h, v, 1);
+        }
     }
 
-    /// Upper bound of the bucket holding rank `q` (0..1); values above the last bound report the observed maximum.
+    /// How many observations the HdrHistogram holds (`None` without one): the sample its percentiles come from, which may be
+    /// fewer than `count` (a series restored from a snapshot without one, or with `telemetry.hdr_persist` off).
+    fn exact_count(&self) -> Option<u64> {
+        self.hdr.as_ref().map(|h| h.len())
+    }
+
+    /// The value at rank `q` (0..1): from the HdrHistogram when it holds observations (within its precision, never above the
+    /// observed maximum), else the upper bound of the bucket holding that rank (values above the last bound report the observed maximum).
     fn quantile(&self, bounds: &[u64], q: f64) -> u64 {
         if self.count == 0 {
             return 0;
+        }
+        if let Some(h) = self.hdr.as_ref().filter(|h| !h.is_empty()) {
+            return h.value_at_quantile(q).min(self.max);
         }
         let rank = ((self.count as f64) * q).ceil().max(1.0) as u64;
         let mut seen = 0;
@@ -47,6 +89,26 @@ impl Hist {
             }
         }
         self.max
+    }
+
+    /// The HdrHistogram as `[[value, count], ...]` (each recorded value's bucket and its count), for a snapshot.
+    fn hdr_pairs(&self) -> Option<Value> {
+        let h = self.hdr.as_ref()?;
+        Some(Value::Array(h.iter_recorded().map(|v| json!([v.value_iterated_to(), v.count_at_value()])).collect()))
+    }
+
+    /// Rebuild the HdrHistogram of a series loaded from a snapshot from its stored pairs. A snapshot without them (written before
+    /// it existed, or with `telemetry.hdr_persist` off) starts it empty: its buckets keep the old counts, and its percentiles stay
+    /// the bucket bounds until this process has observed values of its own. Seeding the old counts at their bucket bounds would
+    /// report coarse bounds under the exact label for as long as the old counts outweigh the new ones.
+    fn hdr_load(&mut self, pairs: Option<&Value>) {
+        let Some(mut h) = new_hdr() else { return };
+        for p in pairs.and_then(Value::as_array).into_iter().flatten() {
+            if let (Some(v), Some(n)) = (p.get(0).and_then(Value::as_u64), p.get(1).and_then(Value::as_u64)) {
+                hdr_record(&mut h, v, n);
+            }
+        }
+        self.hdr = Some(h);
     }
 }
 
@@ -101,21 +163,164 @@ pub fn is_registered(name: &str) -> bool {
 
 /// Counts bumped by code that holds no `Metrics` (resolvers, discovery): series key -> (name, labels, count). The daemon moves them
 /// into its registry whenever it reads or snapshots the metrics ([`drain_pending`]).
-type Pending = BTreeMap<String, (String, Vec<(String, String)>, u64)>;
+type PendingRow = (String, Vec<(String, String)>, u64);
+type Pending = BTreeMap<String, PendingRow>;
 static PENDING: std::sync::Mutex<Pending> = std::sync::Mutex::new(BTreeMap::new());
+
+/// The counts a scheduled subprocess action bumped, same shape and bounds as [`PENDING`]; written to its counts file at exit
+/// ([`crate::telemetry::emit::write_child_counts`]).
+static CHILD: std::sync::Mutex<Pending> = std::sync::Mutex::new(BTreeMap::new());
+
+/// The counts file the daemon named for this process, when it started it as a scheduled job: the variable `schedule.child_counts_env`
+/// holds `<daemon pid>:<path>` and is accepted only while the parent is that pid, so a grandchild that inherited it ignores it.
+///
+/// This never loads or initialises the settings: the variable's name lives in them, so a process whose settings are not loaded yet has
+/// no marker (answered `None` without remembering it) and nothing to flush. Once they are loaded the answer is resolved once and kept.
+pub fn child_counts() -> Option<&'static std::path::Path> {
+    static MARK: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();
+    if let Some(m) = MARK.get() {
+        return m.as_deref();
+    }
+    if !defaults::is_loaded() {
+        return None;
+    }
+    MARK.get_or_init(|| {
+        let v = std::env::var(defaults::text("schedule.child_counts_env")).ok()?;
+        // SAFETY: `getppid` takes no arguments and cannot fail.
+        parse_marker(&v, i64::from(unsafe { libc::getppid() }))
+    })
+    .as_deref()
+}
+
+/// The path in a marker `<pid>:<path>` when `pid` is `parent`.
+fn parse_marker(value: &str, parent: i64) -> Option<std::path::PathBuf> {
+    let (pid, path) = value.split_once(':')?;
+    (pid.parse::<i64>().ok()? == parent && !path.is_empty()).then(|| std::path::PathBuf::from(path))
+}
+
+/// Take the counts of a scheduled child out of its table. Only ever try-locked: it is read on the exit path, where nothing else is
+/// meant to hold it, and a busy table (or one a dead thread poisoned while holding it) is skipped rather than waited on.
+pub fn take_child() -> Vec<PendingRow> {
+    match CHILD.try_lock() {
+        Ok(mut g) => std::mem::take(&mut *g),
+        Err(std::sync::TryLockError::Poisoned(e)) => std::mem::take(&mut *e.into_inner()),
+        Err(std::sync::TryLockError::WouldBlock) => return Vec::new(),
+    }
+    .into_values()
+    .collect()
+}
+
+/// Add one `counter` event read from a child's counts file to this process's table ([`bump_by`]; in the daemon, [`PENDING`], which
+/// [`drain_pending`] moves into the registry). False when the metric is not registered or the label values do not fit it.
+pub fn bump_from_event(name: &str, values: &str, by: u64) -> bool {
+    let Some(pairs) = event_labels(name, values) else { return false };
+    let labels: Vec<(&str, &str)> = pairs.iter().map(|(n, v)| (n.as_str(), *v)).collect();
+    bump_by(name, &labels, by);
+    true
+}
+
+#[cfg(test)]
+thread_local! {
+    static THIS_THREAD: std::sync::Mutex<BTreeMap<String, u64>> = const { std::sync::Mutex::new(BTreeMap::new()) };
+}
+
+/// Test only: what the calling thread bumped for one series (the process-wide pending table is shared by parallel tests).
+#[cfg(test)]
+pub(crate) fn bumped_on_this_thread(name: &str, labels: &[(&str, &str)]) -> u64 {
+    THIS_THREAD.with(|t| t.lock().unwrap_or_else(|e| e.into_inner()).get(&series(name, labels)).copied().unwrap_or(0))
+}
+
+/// Test only: forget what the calling thread bumped (a test that checks several rounds one by one).
+#[cfg(test)]
+pub(crate) fn reset_this_thread() {
+    THIS_THREAD.with(|t| t.lock().unwrap_or_else(|e| e.into_inner()).clear());
+}
 
 /// Add one to the counter `name` from code that has no `Metrics` at hand. A name nobody registered is ignored (a test catches it),
 /// and so is a new series once `telemetry.max_series` are waiting, so the table stays bounded between two drains.
 pub fn bump(name: &str, labels: &[(&str, &str)]) {
-    if !is_registered(name) {
+    bump_by(name, labels, 1);
+}
+
+/// Add `by` to the counter `name` from code that has no `Metrics` at hand ([`bump`] with a count; the same bounds); `0` adds nothing.
+pub fn bump_by(name: &str, labels: &[(&str, &str)], by: u64) {
+    if by == 0 || !is_registered(name) {
         return;
     }
+    // a scheduled subprocess action (it carries the daemon's marker) keeps its counts apart: the daemon reads them from the file it named
+    if !crate::telemetry::emit::in_daemon() && child_counts().is_some() {
+        let mut g = CHILD.lock().unwrap_or_else(|e| e.into_inner());
+        add_bounded(&mut g, name, labels, by);
+        return;
+    }
+    #[cfg(test)]
+    THIS_THREAD.with(|t| *t.lock().unwrap_or_else(|e| e.into_inner()).entry(series(name, labels)).or_insert(0) += by);
+    add_bounded(&mut PENDING.lock().unwrap_or_else(|e| e.into_inner()), name, labels, by);
+}
+
+/// Add `by` to the series in `g`, dropping a new series once the table is at its cap (`telemetry.max_series`, or the metric's own
+/// `max_series_by_metric`), so a table stays bounded between two drains.
+fn add_bounded(g: &mut Pending, name: &str, labels: &[(&str, &str)], by: u64) {
     let key = series(name, labels);
-    let mut g = PENDING.lock().unwrap_or_else(|e| e.into_inner());
-    if !g.contains_key(&key) && g.len() >= defaults::num("telemetry.max_series") as usize {
+    // a metric with its own series cap may fill the table up to it (its counts are not dropped at the global cap)
+    let room = defaults::raw("telemetry.max_series_by_metric").get(name).and_then(defaults::V::as_integer).map_or(0, |c| c.max(0) as usize);
+    if !g.contains_key(&key) && g.len() >= (defaults::num("telemetry.max_series") as usize).max(room) {
         return;
     }
-    g.entry(key).or_insert_with(|| (name.to_string(), labels.iter().map(|(l, v)| (l.to_string(), v.to_string())).collect(), 0)).2 += 1;
+    g.entry(key).or_insert_with(|| (name.to_string(), labels.iter().map(|(l, v)| (l.to_string(), v.to_string())).collect(), 0)).2 += by;
+}
+
+/// [`bump_by`] for code that runs in the hook dispatcher as well as in the daemon. The dispatcher is a short-lived process of its own
+/// (`PENDING` dies with it, and the daemon's snapshots drain the daemon's table), so there the count goes to the telemetry inbox as a
+/// `counter` event and the daemon adds it to its registry when it reads the inbox ([`add_from_event`]). In the daemon it is [`bump_by`].
+pub fn bump_by_shared(name: &str, labels: &[(&str, &str)], by: u64) {
+    if crate::telemetry::emit::in_daemon() {
+        return bump_by(name, labels, by);
+    }
+    if by == 0 || !is_registered(name) {
+        return;
+    }
+    if child_counts().is_some() {
+        return bump_by(name, labels, by); // a scheduled child: its table, written to the daemon's file at exit (`emit::queue`'s batch is never flushed there)
+    }
+    #[cfg(test)]
+    THIS_THREAD.with(|t| *t.lock().unwrap_or_else(|e| e.into_inner()).entry(series(name, labels)).or_insert(0) += by);
+    // the event carries the values in the order the metric registers its labels, whatever order the call site named them in
+    let registered = defaults::raw(&format!("metric.{name}")).get("labels").map(defaults::V::strings).unwrap_or_default();
+    let ordered: Vec<(&str, &str)> = registered.iter().filter_map(|l| labels.iter().find(|(n, _)| n == l).copied()).collect();
+    let labels = if ordered.len() == registered.len() { &ordered[..] } else { labels };
+    crate::telemetry::emit::queue(crate::telemetry::emit::counter(name, labels, by));
+}
+
+/// [`bump_by_shared`] with a count of one.
+pub fn bump_shared(name: &str, labels: &[(&str, &str)]) {
+    bump_by_shared(name, labels, 1);
+}
+
+/// Add the counts of a `counter` event (`emit::counter`) to `m`: `values` are the label values joined by `/`. False when the metric is
+/// not registered or the number of values differs from its labels (the event is refused and nothing is added).
+pub fn add_from_event(m: &mut Metrics, name: &str, values: &str, by: u64) -> bool {
+    let Some(pairs) = event_labels(name, values) else { return false };
+    let labels: Vec<(&str, &str)> = pairs.iter().map(|(n, v)| (n.as_str(), *v)).collect();
+    m.add(name, &labels, by);
+    true
+}
+
+/// The label names of the registered metric `name` paired with the `/`-joined `values` of an event; None when the metric is not
+/// registered or the number of values differs from its labels.
+fn event_labels<'a>(name: &str, values: &'a str) -> Option<Vec<(String, &'a str)>> {
+    let key = format!("metric.{name}");
+    if !defaults::has(&key) {
+        return None;
+    }
+    let names = defaults::raw(&key).get("labels").map(defaults::V::strings).unwrap_or_default();
+    let vals: Vec<&str> = if names.is_empty() { Vec::new() } else { values.split('/').collect() };
+    (vals.len() == names.len()).then(|| names.into_iter().map(str::to_string).zip(vals).collect())
+}
+
+/// Whether the telemetry of the recent fixes (config cache, newest-tail reads, served requests, SIGINT drains) is on (`recent_tel.enabled`).
+pub fn recent_on() -> bool {
+    defaults::num("recent_tel.enabled") != 0
 }
 
 /// Move the counts [`bump`] gathered into `m`.
@@ -134,9 +339,19 @@ impl Metrics {
         if exists || labels.is_empty() {
             return k;
         }
+        let cap = defaults::raw("telemetry.max_series_by_metric")
+            .get(name)
+            .and_then(defaults::V::as_integer)
+            .map_or(defaults::num("telemetry.max_series") as usize, |c| c.max(1) as usize);
         let n = self.series_per_metric.entry(name.to_string()).or_insert(0);
-        if *n >= defaults::num("telemetry.max_series") as usize {
+        if *n >= cap {
             let over = defaults::text("telemetry.overflow_label");
+            // a metric with its own keep list (`telemetry.overflow_keep_by_metric`) folds only the labels outside it, whatever the count of
+            // series that keep a value: those are bounded by checks x stage words, and no count of the metric may be lost
+            if let Some(own) = defaults::raw("telemetry.overflow_keep_by_metric").get(name).map(defaults::V::strings) {
+                let partial: Vec<(&str, &str)> = labels.iter().map(|(l, v)| (*l, if own.contains(l) { *v } else { over })).collect();
+                return series(name, &partial);
+            }
             // past the cap the labels that name WHO (`telemetry.overflow_keep_labels`, e.g. the check) stay and the others collapse, so
             // a per-check cost stays visible; those series are bounded in turn by `telemetry.max_series_kept`
             let keep = defaults::list("telemetry.overflow_keep_labels");
@@ -181,7 +396,7 @@ impl Metrics {
         let bounds: Vec<u64> = bounds_for(name);
         let exists = self.hists.contains_key(&series(name, labels));
         let k = self.key(name, labels, exists);
-        self.hists.entry(k).or_default().observe(&bounds, micros);
+        self.hists.entry(k).or_default().observe(&bounds, micros, keeps_hdr(name));
     }
 
     /// Record one observation (bytes) in a histogram registered with unit `bytes` (the same as [`Metrics::observe`]; the name picks
@@ -203,8 +418,28 @@ impl Metrics {
 
     /// The counters and histograms as JSON, for a snapshot in storage (D51). Gauges are live readings and are not kept.
     pub fn export(&self) -> Value {
+        self.export_with(false)
+    }
+
+    /// [`Metrics::export`] for the stored snapshot: with `telemetry.hdr_persist` on, each HdrHistogram's recorded (value, count)
+    /// pairs go with it, so its exact percentiles survive a restart. Off (the default) a restart starts them empty: a busy
+    /// series holds a couple of thousand pairs (about 25 KB of JSON), written every `telemetry.snapshot_ms`.
+    pub fn export_persisted(&self) -> Value {
+        self.export_with(defaults::raw("telemetry.hdr_persist").as_bool().unwrap_or(false))
+    }
+
+    fn export_with(&self, hdr: bool) -> Value {
         let hists: Map<String, Value> =
-            self.hists.iter().map(|(k, h)| (k.clone(), json!({"buckets": h.buckets, "count": h.count, "sum": h.sum, "max": h.max}))).collect();
+            self.hists
+                .iter()
+                .map(|(k, h)| {
+                    let mut v = json!({"buckets": h.buckets, "count": h.count, "sum": h.sum, "max": h.max});
+                    if let Some(p) = h.hdr_pairs().filter(|_| hdr) {
+                        v["hdr"] = p;
+                    }
+                    (k.clone(), v)
+                })
+                .collect();
         json!({"counters": self.counters, "histograms": hists})
     }
 
@@ -222,12 +457,18 @@ impl Metrics {
         if let Some(h) = v.get("histograms").and_then(Value::as_object) {
             for (k, x) in h {
                 let buckets: Vec<u64> = x.get("buckets").and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_u64).collect()).unwrap_or_default();
-                if buckets.len() != bounds_for(k.split('|').next().unwrap_or("")).len() + 1 {
+                let name = k.split('|').next().unwrap_or("");
+                let bounds = bounds_for(name);
+                if buckets.len() != bounds.len() + 1 {
                     continue;
                 }
                 let n = |f: &str| x.get(f).and_then(Value::as_u64).unwrap_or(0);
                 self.track(k);
-                self.hists.insert(k.clone(), Hist { buckets, count: n("count"), sum: n("sum"), max: n("max") });
+                let mut h = Hist { buckets, count: n("count"), sum: n("sum"), max: n("max"), hdr: None };
+                if keeps_hdr(name) {
+                    h.hdr_load(x.get("hdr"));
+                }
+                self.hists.insert(k.clone(), h);
             }
         }
     }
@@ -274,11 +515,17 @@ impl Metrics {
                         "quantile_note": defaults::text("msg.metrics_quantile_note"),
                     });
                 }
-                json!({
+                let exact = h.exact_count().filter(|n| *n > 0);
+                let note = if exact.is_some() { "msg.metrics_quantile_note_hdr" } else { "msg.metrics_quantile_note" };
+                let mut row = json!({
                     "name": name, "labels": labels, "count": h.count, "mean_us": mean, "max_us": h.max,
                     "p50_us": h.quantile(&bounds, 0.50), "p95_us": h.quantile(&bounds, 0.95), "p99_us": h.quantile(&bounds, 0.99),
-                    "quantile_note": defaults::text("msg.metrics_quantile_note"),
-                })
+                    "quantile_note": defaults::text(note),
+                });
+                if let Some(n) = h.exact_count() {
+                    row["exact_count"] = json!(n);
+                }
+                row
             })
             .collect();
         json!({"counters": counters, "gauges": gauges, "histograms": histograms})
@@ -288,6 +535,38 @@ impl Metrics {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_marker_is_accepted_only_for_the_parent_it_names() {
+        assert_eq!(parse_marker("42:/s/counts.jsonl", 42), Some(std::path::PathBuf::from("/s/counts.jsonl")));
+        assert_eq!(parse_marker("42:/s/counts.jsonl", 43), None, "another parent");
+        assert_eq!(parse_marker("x:/s/c", 42), None);
+        assert_eq!(parse_marker("42:", 42), None);
+        assert_eq!(parse_marker("42", 42), None);
+        assert_eq!(parse_marker("42:/a:b", 42), Some(std::path::PathBuf::from("/a:b")), "split at the first colon only");
+    }
+
+    #[test]
+    fn taking_the_child_table_never_waits_on_a_lock_someone_holds() {
+        let held = CHILD.lock().unwrap_or_else(|e| e.into_inner());
+        let t = std::time::Instant::now();
+        assert!(take_child().is_empty(), "a busy table is skipped");
+        assert!(t.elapsed() < std::time::Duration::from_secs(5));
+        drop(held);
+    }
+
+    #[test]
+    fn a_shared_count_carries_its_labels_in_the_registered_order() {
+        use crate::telemetry::emit;
+        emit::take_queued();
+        // delivery_funnel registers check, model, project, stage; the call site names them in another order
+        bump_shared("delivery_funnel", &[("stage", "sent"), ("project", "p"), ("model", "m"), ("check", "c")]);
+        let evs = emit::take_queued();
+        assert_eq!(evs.len(), 1, "{evs:?}");
+        let mut m = Metrics::default();
+        assert!(add_from_event(&mut m, evs[0].h.as_str(), evs[0].e.as_str(), evs[0].ib));
+        assert_eq!(m.counter("delivery_funnel", &[("check", "c"), ("model", "m"), ("project", "p"), ("stage", "sent")]), 1);
+    }
 
     #[test]
     fn counters_labels_and_totals() {
@@ -300,8 +579,14 @@ mod tests {
         assert_eq!(m.counter("check_calls", &[("check", "none")]), 0);
     }
 
+    /// #969 hardening: a latency histogram reports the value at each rank within telemetry.hdr_sigfig significant digits, not
+    /// the upper bound of a coarse bucket (which jumped from 100 ms to 1 s and gave no p95 past the last bound).
     #[test]
-    fn histogram_quantiles_are_bucket_upper_bounds() {
+    fn latency_quantiles_are_exact_within_the_configured_precision() {
+        let near = |got: &Value, want: u64| {
+            let g = got.as_u64().unwrap();
+            assert!(g.abs_diff(want) * 100 <= want, "{g} is not within 1% of {want}");
+        };
         let mut m = Metrics::default();
         for v in [50, 60, 70, 80, 90, 120, 130, 140, 150, 9000] {
             m.observe("check_latency_us", &[("check", "git")], v);
@@ -309,10 +594,77 @@ mod tests {
         let s = m.snapshot("");
         let h = &s["histograms"][0];
         assert_eq!(h["count"], 10);
-        assert_eq!(h["p50_us"], 100, "the fifth of ten values (90us) sits in the <=100 bucket");
-        assert_eq!(h["p95_us"], 10000, "the tenth value (9000us) sits in the <=10000 bucket");
-        assert_eq!(h["p99_us"], 10000);
+        near(&h["p50_us"], 90);
+        near(&h["p95_us"], 9000);
+        near(&h["p99_us"], 9000);
         assert_eq!(h["max_us"], 9000);
+        assert_eq!(h["quantile_note"], defaults::text("msg.metrics_quantile_note_hdr"));
+        // past the last bucket bound (1 s): 200 calls between 1.0 and 3.0 s give a real p95/p99, not the overflow
+        let mut m = Metrics::default();
+        for i in 0..200u64 {
+            m.observe("hook_latency_us", &[("event", "Stop")], 1_000_000 + i * 10_000);
+        }
+        let h = m.snapshot("")["histograms"][0].clone();
+        near(&h["p50_us"], 1_990_000);
+        near(&h["p95_us"], 2_890_000);
+        near(&h["p99_us"], 2_970_000);
+        assert_eq!(h["max_us"], 2_990_000);
+        // a round trip through a stored snapshot keeps the exact percentiles when telemetry.hdr_persist is on
+        defaults::set_overlay(&[("telemetry.hdr_persist", json!(true))]);
+        let mut back = Metrics::default();
+        back.import(&m.export_persisted());
+        defaults::set_overlay(&[]);
+        assert_eq!(back.snapshot("")["histograms"][0], h);
+    }
+
+    /// A snapshot without HdrHistogram pairs (written before it existed, or with telemetry.hdr_persist off) still loads with its
+    /// counts; its percentiles stay the bucket bounds (with the bucket note) until this process observes values, and are never
+    /// seeded from the old buckets, which would put coarse bounds under the exact label.
+    #[test]
+    fn a_bucket_only_snapshot_keeps_its_counts_and_is_never_reported_as_exact() {
+        let bounds = bucket_bounds();
+        let mut buckets = vec![0u64; bounds.len() + 1];
+        buckets[0] = 9;
+        *buckets.last_mut().unwrap() = 1;
+        let old = json!({"counters": {}, "histograms": {"check_latency_us|check=git": {"buckets": buckets, "count": 10, "sum": 5_000_000, "max": 4_000_000}}});
+        let mut m = Metrics::default();
+        m.import(&old);
+        let h = m.snapshot("")["histograms"][0].clone();
+        assert_eq!((h["count"].as_u64(), h["max_us"].as_u64(), h["exact_count"].as_u64()), (Some(10), Some(4_000_000), Some(0)));
+        assert_eq!(h["p50_us"].as_u64(), Some(bounds[0]), "the old counts report their bucket bound");
+        assert_eq!(h["quantile_note"], defaults::text("msg.metrics_quantile_note"), "and say so");
+        for _ in 0..3 {
+            m.observe("check_latency_us", &[("check", "git")], 2_345_678);
+        }
+        let h = m.snapshot("")["histograms"][0].clone();
+        assert_eq!((h["count"].as_u64(), h["exact_count"].as_u64()), (Some(13), Some(3)));
+        assert!(h["p50_us"].as_u64().unwrap().abs_diff(2_345_678) * 100 <= 2_345_678, "new observations alone give the exact figure: {h}");
+        assert_eq!(h["quantile_note"], defaults::text("msg.metrics_quantile_note_hdr"));
+        // the plain export (the funnel and delivery reports read it) never carries the pairs
+        assert!(m.export()["histograms"]["check_latency_us|check=git"].get("hdr").is_none());
+    }
+
+    /// A metric not listed in telemetry.hdr_metrics keeps buckets only (the per-size split would otherwise double the memory).
+    #[test]
+    fn only_the_listed_metrics_keep_an_hdr_histogram() {
+        let mut m = Metrics::default();
+        m.observe("check_latency_by_size_us", &[("check", "git"), ("size", "s")], 90);
+        let h = m.snapshot("")["histograms"][0].clone();
+        assert!(h.get("exact_count").is_none(), "{h}");
+        assert!(keeps_hdr("check_latency_us") && keeps_hdr("hook_latency_us") && keeps_hdr("hook_phase_us"));
+    }
+
+    /// A histogram without an HdrHistogram (a byte metric, or telemetry.hdr_sigfig = 0) reports bucket bounds, and the shipped
+    /// bounds keep one HdrHistogram small (the engine keeps a few hundred latency series).
+    #[test]
+    fn the_hdr_histogram_is_bounded_and_optional() {
+        let h = new_hdr().expect("on by default");
+        let bytes = h.len() as usize * std::mem::size_of::<u32>();
+        assert!(bytes <= 64 * 1024, "one latency histogram holds {bytes} bytes of counts");
+        let mut x = Hist::default();
+        x.observe(&bucket_bounds(), 90, false);
+        assert!(x.hdr.is_none());
+        assert_eq!(x.quantile(&bucket_bounds(), 0.5), bucket_bounds()[0], "no hdr: the bucket bound");
     }
 
     #[test]
@@ -327,8 +679,11 @@ mod tests {
         assert_eq!((h["count"].as_u64(), h["max_bytes"].as_u64()), (Some(3), Some(3 * 1024 * 1024)));
         assert_eq!(h["p50_bytes"], 16384, "5000 B sits in the <=16384 byte bucket");
         assert_eq!(h["p99_bytes"], 4194304, "3 MiB sits in the <=4 MiB bucket");
+        // stored with the HdrHistogram pairs (telemetry.hdr_persist on), so the latency one comes back exact too
+        defaults::set_overlay(&[("telemetry.hdr_persist", json!(true))]);
         let mut back = Metrics::default();
-        back.import(&m.export());
+        back.import(&m.export_persisted());
+        defaults::set_overlay(&[]);
         assert_eq!(back.snapshot(""), s, "both histogram families come back from storage with their own bucket counts");
     }
 

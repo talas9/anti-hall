@@ -251,7 +251,7 @@ fn the_guard_catches_a_planted_violation() {
     assert!(scan_text("planted.rs", &format!("fn f() {{}}\n#[cfg(test)]\nmod tests {{\n{bare}}}\n")).is_empty());
     assert!(scan_text("mem/cache.rs", bare).is_empty());
     // and through the file system, the way the real test walks the tree
-    let dir = std::env::temp_dir().join(format!("ah-mem-guard-{}-{:?}", std::process::id(), std::time::SystemTime::now()));
+    let dir = crate::common::testtmp::path(format!("ah-mem-guard-{}-{:?}", std::process::id(), std::time::SystemTime::now()));
     fs::create_dir_all(dir.join("mem")).unwrap();
     fs::write(dir.join("planted.rs"), bare).unwrap();
     fs::write(dir.join("mem/ok.rs"), bare).unwrap();

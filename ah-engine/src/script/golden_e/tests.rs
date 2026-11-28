@@ -23,7 +23,7 @@ mod claim_ledger_jev {
     use std::path::Path;
 
     fn home(tag: &str) -> std::path::PathBuf {
-        let d = std::env::temp_dir().join(format!("ah-cl-jev-{tag}-{}", std::process::id()));
+        let d = crate::testtmp::path(format!("ah-cl-jev-{tag}-{}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&d)); // keep: cleanup that raced; an absent dir is the goal state
         std::fs::create_dir_all(&d).unwrap();
         d
@@ -137,4 +137,49 @@ fn gh_rt_rules_script_matches_the_compiled_rules() {
     }
     assert!(bad.is_empty(), "{} of {} cases differ, first:\n{}", bad.len(), cases.len(), bad.iter().take(8).cloned().collect::<Vec<_>>().join("\n"));
     assert_eq!(kinds.len(), 10, "every rule is in the corpus: {kinds:?}");
+}
+
+/// #972 wave 2 (item 7): the devswarm-comms label for the coordinator address ("main") is shown once per session and agent, not on
+/// every message, and without the banned tip icon; a block for a workspace target is never deduplicated (true positive).
+mod devswarm_comms_label_once {
+    use crate::script::golden;
+    use serde_json::{Value, json};
+
+    fn case(to: &str, repeat: u64, agent: Option<&str>) -> Value {
+        let mut payload = json!({"hook_event_name": "PreToolUse", "session_id": "s1", "tool_name": "SendMessage", "tool_input": {"to": to, "message": "m"}});
+        if let Some(a) = agent {
+            payload["agent_id"] = json!(a);
+        }
+        json!({
+            "env": {"DEVSWARM_REPO_ID": "r1", "HOME": "{HOME}"}, "event": "PreToolUse", "n": "972-w2-7", "repeat": repeat,
+            "files": {".claude/sessions/100.json": "{\"cwd\":\"{HOME}/.devswarm/repos/r/ws1\",\"name\":\"worker\",\"sessionId\":\"x\"}"},
+            "opts": {"plugin_root": "{PLUGIN}"}, "payload": payload, "expect": {"v": "allow"}
+        })
+    }
+
+    fn run(c: &Value) -> Value {
+        let l = golden::lay(c);
+        let got = golden::run_case("devswarm-comms-guard", &l, golden::repeat_of(c)).expect("shipped script");
+        golden::verdict_json(&got, &l)
+    }
+
+    #[test]
+    fn the_main_label_shows_once_per_session_and_agent_without_the_tip_icon() {
+        let first = run(&case("main", 1, None));
+        assert_eq!(first["v"], "advisory", "the first message to main is labelled: {first}");
+        let t = first["text"].as_str().unwrap_or_default();
+        assert!(t.contains("points back to this session") && !t.contains('\u{1F4A1}'), "label text without the tip icon: {t}");
+        assert_eq!(run(&case("main", 2, None)), json!({"v": "allow"}), "the second message to main in the same session is not labelled");
+        // a teammate of the same session is another agent: it gets the label once too
+        assert_eq!(run(&case("main", 1, Some("a1"))).get("v").and_then(Value::as_str), Some("advisory"), "first message of the teammate");
+        assert_eq!(run(&case("main", 2, Some("a1"))), json!({"v": "allow"}), "second message of the teammate");
+    }
+
+    #[test]
+    fn a_workspace_target_is_blocked_every_time() {
+        for r in [1, 3] {
+            let got = run(&case("worker", r, None));
+            assert_eq!(got["v"], "exact", "run {r}: the workspace block is never deduplicated: {got}");
+        }
+    }
 }

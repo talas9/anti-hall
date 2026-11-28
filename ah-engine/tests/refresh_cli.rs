@@ -6,6 +6,9 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 #![allow(clippy::panic, clippy::unreachable)] // integration tests: a panic is the failure report; production crates deny these in Cargo.toml
 
+#[path = "common/testtmp.rs"]
+mod testtmp;
+
 use serde_json::Value;
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
@@ -25,7 +28,7 @@ impl Drop for Scratch {
 
 impl Scratch {
     fn new(tag: &str) -> Scratch {
-        let root = std::env::temp_dir().join(format!("ah-refresh-it-{tag}-{}", std::process::id()));
+        let root = testtmp::path(format!("ah-refresh-it-{tag}-{}", std::process::id()));
         std::fs::remove_dir_all(&root).ok();
         std::fs::create_dir_all(root.join("home")).unwrap();
         std::fs::create_dir_all(root.join("bin")).unwrap();

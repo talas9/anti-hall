@@ -63,12 +63,45 @@ function gitBuildTables() {
   t.generated = new RegExp('^[ \\t]*[^A-Za-z0-9 \\t]{0,2}[ \\t]*' + gitEsc(c('self_credit_generated_prefix')) + '\\[?(' +
     c('credit_generated_alts').map(gitEsc).join('|') + ')\\b', 'im');
   t.ghBody = new RegExp(c('gh_body_markers').map(gitEsc).join('|'), 'i');
+  // GH #457: a session trailer key (any value) and a session link on a line of its own or behind a trailer key
+  t.sessionKey = new RegExp('^[ \\t]*(?:' + c('credit_session_keys').map(gitEsc).join('|') + ')[ \\t]*[:=]', 'im');
+  t.sessionUrl = new RegExp('^[ \\t]*(?:[A-Za-z][A-Za-z -]*[ \\t]*[:=][ \\t]*)?(?:https?://)?(?:' + c('credit_url_markers').map(gitEsc).join('|') + ')', 'im');
+  // the patterns are matched sticky at index k of the whole text, so one that looks BEFORE k (a lookbehind, \b / \B, a `^` anywhere)
+  // would see text it must not. A bad pattern never throws (the git guard is fail-closed, so a throw would block every Bash call):
+  // it is dropped and named once per session in an advisory (S.badExpansion), and the rest keep working. The look-back tokens are
+  // found left to right with escapes (a literal `\\b` is a backslash and a `b`) and character classes (`[^a]`, `[\b]`) skipped over.
+  t.badExpansion = [];
+  t.expansionSticky = [];
+  const lookBack = /(\\[bB]|\(\?<[=!]|\^)|\\[\s\S]|\[(?:\\[\s\S]|[^\]\\])*\]/g;
+  for (const p of c('commit_expansion_patterns')) {
+    let re = null;
+    lookBack.lastIndex = 0;
+    let m = lookBack.exec(p);
+    while (m !== null && m[1] === undefined) m = lookBack.exec(p);
+    if (m === null) { try { re = new RegExp('(?:' + p + ')', 'y'); } catch (e) { re = null; } }
+    if (re === null) t.badExpansion.push(p); else t.expansionSticky.push(re);
+  }
+  if (t.badExpansion.length) { try { ah.metric('git_expansion_pattern_dropped', []); } catch (e) { /* counting never fails a hook */ } }
+  t.expansionAllow = c('commit_expansion_allow').map((p) => new RegExp(p));
+  t.pushSkipOpts = set(c('push_skip_opts'));
+  t.sameCallSubs = set(c('push_same_call_subs'));
+  t.sameCallAlways = set(c('push_same_call_always'));
+  t.sameCallNeedMsg = set(c('push_same_call_need_message'));
+  t.sameCallOpts = c('push_same_call_opts').map((p) => new RegExp(p));
+  t.sameCallNoCommitOpts = c('push_same_call_no_commit_opts').map((p) => new RegExp(p));
+  t.sameCallNoEditSubs = set(c('push_same_call_no_edit_subs'));
+  t.sameCallNoEditOpt = c('push_same_call_no_edit_opt');
+  t.scriptRunVerbs = set(c('script_run_verbs'));
+  t.scriptInertLine = new RegExp(c('script_inert_line_re'));
+  t.sameCallHeredoc = new RegExp(c('push_same_call_quoted_heredoc'));
+  t.sameCallHereString = new RegExp(c('push_same_call_here_string'));
   t.trailerKeys = c('self_credit_trailer_keys');
   t.forwardEnvRe = new RegExp('^(?:GIT_CONFIG_(?:' + c('forward_config_names').concat(c('forward_config_indexed').map((p) => gitEsc(p) + '\\d+')).join('|') + ')|' +
     c('forward_env_names').map(gitEsc).join('|') + ')$');
   t.fileWriteHeredoc = c('re_file_write_heredoc'); t.fileWriteRedirect = c('re_file_write_redirect');
   t.fileWriteTee = c('re_file_write_tee'); t.fileWriteEcho = c('re_file_write_echo');
   t.maxRecursion = c('max_recursion'); t.aliasDepth = c('alias_depth'); t.launcherHops = c('launcher_hops');
+  t.inlineDepth = c('inline_depth'); t.heredocLevels = c('heredoc_levels'); t.varHops = c('var_hops');
   t.cdMaxChars = c('cd_max_chars'); t.cdMaxSegments = c('cd_max_segments'); t.maxChain = c('max_chain');
   t.pathArgMaxChars = c('path_arg_max_chars'); t.shown = c('shown_hits'); t.handoverAddsMax = c('handover_adds_max');
   t.commitHashLen = c('commit_hash_len'); t.commitHashShort = c('commit_hash_short');
@@ -93,7 +126,7 @@ function gitFreshState(raw, cwd, session) {
     launcherFsBudget: ah.cfg('git.budget_launcher_fs'), launcherCmdText: '',
     handoverQueryBudget: ah.cfg('git.budget_handover_queries'), handoverSkipped: 0, handoverEvalBudget: ah.cfg('git.budget_handover_evals'),
     handoverQueryCache: new Map(), handoverAdds: [], handoverOn: null,
-    creditCache: new Map(), jevMemo: new Map(), jevSpentMs: 0,
+    keyOf: new Map(), pushChecks: new Map(), pushUnchecked: false, scriptUnchecked: null, creditCache: new Map(), jevMemo: new Map(), jevSpentMs: 0,
     quotedLiteralsCache: null, stdinCandidateCache: null, hdOn: null, aliasOn: null, reuseOn: null,
     gitCache: new Map(), aliasCache: new Map(), shellDefsCache: new Map(), depthGuard: 0,
   };
@@ -109,7 +142,9 @@ function gm(o) {
 // a configured message table ({what, why, instead, override}) rendered with {name} arguments
 function gmKey(key, args) {
   const m = ah.cfg('git.' + key), r = (s) => (s === undefined ? '' : text.render(s, args || {}));
-  return gm({ what: r(m.what), why: r(m.why), instead: r(m.instead), override: r(m.override) });
+  const out = gm({ what: r(m.what), why: r(m.why), instead: r(m.instead), override: r(m.override) });
+  if (S) S.keyOf.set(out, key);
+  return out;
 }
 function skipCmd(k) {
   return text.render(ah.cfg('git.skip_command'), { key: k });
@@ -131,12 +166,12 @@ function tokenize(segment) {
 }
 function tokenizeUncached(segment) {
   const tokens = [];
-  let cur = '', curHasUnquoted = false, started = false, tokStart = -1, i = 0;
+  let cur = [], curHasUnquoted = false, started = false, tokStart = -1, i = 0;
   const n = segment.length;
   const ESC = { n: '\n', t: '\t', r: '\r', a: '\x07', b: '\b', f: '\f', v: '\v', e: '\x1b', '\\': '\\', "'": "'", '"': '"', '0': '\0' };
   function pushToken() {
-    if (started) tokens.push({ text: cur, quotedOnly: !curHasUnquoted, raw: segment.slice(tokStart, i) });
-    cur = ''; curHasUnquoted = false; started = false; tokStart = -1;
+    if (started) tokens.push({ text: cur.join(''), quotedOnly: !curHasUnquoted, raw: segment.slice(tokStart, i) });
+    cur = []; curHasUnquoted = false; started = false; tokStart = -1;
   }
   while (i < n) {
     const c = segment[i];
@@ -149,16 +184,16 @@ function tokenizeUncached(segment) {
       while (i < n && segment[i] !== "'") {
         if (segment[i] === '\\' && i + 1 < n) {
           const nx = segment[i + 1];
-          cur += Object.prototype.hasOwnProperty.call(ESC, nx) ? ESC[nx] : nx;
+          cur.push(Object.prototype.hasOwnProperty.call(ESC, nx) ? ESC[nx] : nx);
           i += 2;
-        } else { cur += segment[i]; i++; }
+        } else { cur.push(segment[i]); i++; }
       }
       i++;
       continue;
     }
     if (c === "'") {
       started = true; i++;
-      while (i < n && segment[i] !== "'") { cur += segment[i]; i++; }
+      while (i < n && segment[i] !== "'") { cur.push(segment[i]); i++; }
       i++;
       continue;
     }
@@ -168,24 +203,25 @@ function tokenizeUncached(segment) {
         if (segment[i] === '\\' && i + 1 < n) {
           const nx = segment[i + 1];
           // inside double quotes a backslash escapes only $ ` " \ and newline; before anything else it is literal
-          if (nx === '$' || nx === '`' || nx === '"' || nx === '\\' || nx === '\n') cur += nx; else cur += '\\' + nx;
+          if (nx === '$' || nx === '`' || nx === '"' || nx === '\\' || nx === '\n') cur.push(nx); else cur.push('\\' + nx);
           i += 2;
-        } else { cur += segment[i]; i++; }
+        } else { cur.push(segment[i]); i++; }
       }
       i++;
       continue;
     }
-    if (c === '\\' && i + 1 < n) { started = true; curHasUnquoted = true; cur += segment[i + 1]; i += 2; continue; }
-    started = true; curHasUnquoted = true; cur += c; i++;
+    if (c === '\\' && i + 1 < n) { started = true; curHasUnquoted = true; cur.push(segment[i + 1]); i += 2; continue; }
+    started = true; curHasUnquoted = true; cur.push(c); i++;
   }
   pushToken();
   return tokens;
 }
 
 // true when the `{`/`}` at the current scan position is the reserved word (see hooks/git-guard.js isBraceGroupWord)
-function isBraceGroupWord(cur, c, c2) {
-  if (c2 !== '' && !/\s/.test(c2)) return c === '}' && cur.trim() === '' && /[;&|<>)]/.test(c2);
-  return c === '}' ? cur.trim() === '' : (cur === '' || /\s$/.test(cur));
+function isBraceGroupWord(blank, empty, endsWs, c, c2) {
+  // blank: the segment so far is empty or only whitespace; empty: it is empty; endsWs: its last character is whitespace
+  if (c2 !== '' && !/\s/.test(c2)) return c === '}' && blank && /[;&|<>)]/.test(c2);
+  return c === '}' ? blank : (empty || endsWs);
 }
 
 function splitSegments(cmd) {
@@ -195,10 +231,31 @@ function splitSegments(cmd) {
 }
 function splitSegmentsUncached(cmd) {
   const segments = [];
-  let cur = '', i = 0, inSingle = false, inDouble = false;
+  let cp = [], curLen = 0, curBlank = true, lastCh = '', run = 0, bsBefore = 0, i = 0, inSingle = false, inDouble = false;
   const n = cmd.length;
-  function flush() { if (cur.trim().length) segments.push(cur); cur = ''; }
-  function flushWithSubst() { cur += ' ' + CMDSUBST_SENTINEL + ' '; flush(); }
+  // GH #591 comment lexing. A `#` is a shell comment only at the start of a word: `lastBreak` is the index just past the last
+  // UNESCAPED, UNQUOTED word break (space, tab, newline, `;` `&` `|` `(`) the scan consumed, so an escaped break (`a\ #`, `a\;#`)
+  // or a vertical tab / carriage return never counts. `ansi` marks an open `$'...'` (backslash escapes a quote there), `braceDepth`
+  // an open `${...}` (a `#` in it is text), `btOpen` an open backtick body (its comment ends at the closing backtick, not the line),
+  // `unsure` a construct this scan only approximates (`$(`, a backtick, `${` or `$((` inside double quotes, `$((`): from there on no
+  // `#` hides anything. Every doubt keeps the text live.
+  let lastBreak = 0, ansi = false, dollarEnd = -1, braceDepth = 0, btOpen = false, unsure = false, arithDepth = 0;
+  // `arithDepth`: open parens of an unquoted `((..))` / `$((..))` (bash reads its body as arithmetic text, never as a comment). `unsure`
+  // is dropped at an unquoted newline once nothing is open, so one `"${x}"` earlier in a wrapper does not keep every later comment live.
+  // `cur` is built as chunks (`cp`), joined once per segment in flush(): appending to one growing string reallocates it for every
+  // character, and joining at every read (`{`, `}`, `|`, `&`) brings the cost back. The reads need only a few facts about the text so
+  // far, kept up to date by put(): its length, whether it is blank, its last character and the backslash run before that character.
+  function put(s) {
+    cp.push(s);
+    for (let q = 0; q < s.length; q++) {
+      const ch = s[q];
+      bsBefore = run; run = ch === '\\' ? run + 1 : 0; lastCh = ch;
+      if (curBlank && !/\s/.test(ch)) curBlank = false;
+    }
+    curLen += s.length;
+  }
+  function flush() { const cur = cp.join(''); if (cur.trim().length) segments.push(cur); cp = []; curLen = 0; curBlank = true; lastCh = ''; run = 0; bsBefore = 0; }
+  function flushWithSubst() { put(' ' + CMDSUBST_SENTINEL + ' '); flush(); }
   // the pending heredoc whose body starts after its opener line: the body is text for its consumer, never a command of this chain
   // (a shell reading it is scanned by stdinScriptVerdict, a git message by the heredoc-body scans); same walk as the command check
   let heredoc = null;
@@ -206,6 +263,7 @@ function splitSegmentsUncached(cmd) {
     if (heredoc && i >= heredoc.lineEnd) {
       flush();
       i = Math.max(i, heredoc.end);
+      lastBreak = i;
       heredoc = null;
       inSingle = false;
       inDouble = false;
@@ -213,57 +271,88 @@ function splitSegmentsUncached(cmd) {
     }
     const c = cmd[i];
     const c2 = i + 1 < n ? cmd[i + 1] : '';
-    if (inSingle) { cur += c; if (c === "'") inSingle = false; i++; continue; }
+    if (inSingle) {
+      if (ansi && c === '\\' && c2) { put(c + c2); i += 2; continue; }
+      put(c);
+      if (c === "'") inSingle = false;
+      i++;
+      continue;
+    }
     if (inDouble) {
-      if (c === '\\' && c2) { cur += c + c2; i += 2; continue; }
-      if ((c === '$' && c2 === '(') || c === '`') { cur += ' ' + CMDSUBST_SENTINEL + ' '; i += (c === '$') ? 2 : 1; continue; }
-      cur += c;
+      if (c === '\\' && c2) { put(c + c2); i += 2; continue; }
+      if ((c === '$' && c2 === '(') || c === '`' || (c === '$' && c2 === '{')) unsure = true;
+      if ((c === '$' && c2 === '(') || c === '`') { put(' ' + CMDSUBST_SENTINEL + ' '); i += (c === '$') ? 2 : 1; continue; }
+      put(c);
       if (c === '"') inDouble = false;
       i++;
       continue;
     }
-    if (c === "'") { inSingle = true; cur += c; i++; continue; }
-    if (c === '"') { inDouble = true; cur += c; i++; continue; }
-    // backslash-newline line continuation outside quotes: one logical command
-    if (c === '\\' && (c2 === '\n' || (c2 === '\r' && cmd[i + 2] === '\n'))) { cur += ' '; i += (c2 === '\r') ? 3 : 2; continue; }
+    if (c === "'") { inSingle = true; ansi = dollarEnd === i; put(c); i++; continue; }
+    if (c === '"') { inDouble = true; put(c); i++; continue; }
+    // GH #591: a `#` at the start of a word (lastBreak: right after an unescaped unquoted break) comments out the rest of its line, so an
+    // operator or quote inside the comment never opens a segment or quote. Any other `#` (`a#b`, `$#`, `a\ #`, `)#`, `>#`) stays text.
+    if (c === '#' && i === lastBreak && !unsure && !btOpen && braceDepth === 0 && arithDepth === 0) {
+      const nl = cmd.indexOf('\n', i);
+      i = nl < 0 ? n : nl;
+      continue;
+    }
+    if (c === ' ' || c === '\t') { put(c); i++; lastBreak = i; continue; }
+    // backslash-newline line continuation outside quotes: one logical command (a break before it stays a break after it)
+    if (c === '\\' && (c2 === '\n' || (c2 === '\r' && cmd[i + 2] === '\n'))) {
+      const wasBreak = lastBreak === i;
+      put(' ');
+      i += (c2 === '\r') ? 3 : 2;
+      if (wasBreak) lastBreak = i;
+      continue;
+    }
     // a backslash outside quotes makes the NEXT character literal: never an operator boundary
-    if (c === '\\' && c2) { cur += c + c2; i += 2; continue; }
+    if (c === '\\' && c2) { put(c + c2); i += 2; continue; }
     // the operator word stays on the current segment and the rest of the opener line is split as usual (`cat <<EOF | git commit -F -`
     // is two segments); a second `<<` on the same line is left as text, so its body is still scanned
     if (c === '<' && c2 === '<' && !heredoc) {
       const parsed = shellScan.parseHeredocAt(cmd, i);
       if (parsed) {
-        cur += cmd.slice(i, parsed.openerEnd);
+        put(cmd.slice(i, parsed.openerEnd));
         i = parsed.openerEnd;
         if (parsed.lineEnd !== undefined) heredoc = parsed;
         continue;
       }
     }
-    if (c === '&' && c2 === '&') { flush(); i += 2; continue; }
-    if (c === '|' && c2 === '|') { flush(); i += 2; continue; }
+    if (c === '&' && c2 === '&') { flush(); i += 2; lastBreak = i; continue; }
+    if (c === '|' && c2 === '|') { flush(); i += 2; lastBreak = i; continue; }
     if (c === '|') {
-      const prev = cur.length ? cur[cur.length - 1] : '';
-      let precedingBackslashes = 0;
-      if (prev === '>') for (let k = cur.length - 2; k >= 0 && cur[k] === '\\'; k--) precedingBackslashes++;
-      if (prev === '>' && precedingBackslashes % 2 === 0) { cur += c; i++; continue; } // `>|` clobber redirect
-      flush(); i++; continue;
+      const prev = lastCh;
+      const precedingBackslashes = prev === '>' ? bsBefore : 0;
+      if (prev === '>' && precedingBackslashes % 2 === 0) { put(c); i++; continue; } // `>|` clobber redirect
+      flush(); i++; lastBreak = i; continue;
     }
-    if (c === ';') { flush(); i++; continue; }
-    if (c === '&' && c2 === '>') { cur += c; i++; continue; } // `&>` redirect-both
+    if (c === ';') { flush(); i++; lastBreak = i; continue; }
+    if (c === '&' && c2 === '>') { put(c); i++; continue; } // `&>` redirect-both
     if (c === '&') {
-      const prev = cur.length ? cur[cur.length - 1] : '';
-      let precedingBackslashes = 0;
-      if (prev === '>' || prev === '<') for (let k = cur.length - 2; k >= 0 && cur[k] === '\\'; k--) precedingBackslashes++;
-      if ((prev === '>' || prev === '<') && precedingBackslashes % 2 === 0) { cur += c; i++; continue; } // `2>&1`, `>&2`
-      flush(); i++; continue;
+      const prev = lastCh;
+      const precedingBackslashes = prev === '>' || prev === '<' ? bsBefore : 0;
+      if ((prev === '>' || prev === '<') && precedingBackslashes % 2 === 0) { put(c); i++; continue; } // `2>&1`, `>&2`
+      flush(); i++; lastBreak = i; continue;
     }
-    if (c === '\n') { flush(); i++; continue; }
-    if (c === ')') { flush(); i++; continue; }
-    if ((c === '{' || c === '}') && isBraceGroupWord(cur, c, c2)) { flush(); i++; continue; }
-    if (c === '(') { flush(); i++; continue; }
-    if (c === '$' && c2 === '(') { flushWithSubst(); i += 2; continue; }
-    if (c === '`') { flushWithSubst(); i++; continue; }
-    cur += c;
+    if (c === '\n') { flush(); i++; lastBreak = i; if (arithDepth === 0 && !btOpen && braceDepth === 0) unsure = false; continue; }
+    if (c === ')') { if (arithDepth > 0) arithDepth--; flush(); i++; continue; }
+    if (c === '}' && braceDepth > 0) { braceDepth--; put(c); i++; continue; }
+    if ((c === '{' || c === '}') && isBraceGroupWord(curBlank, curLen === 0, lastCh !== '' && /\s/.test(lastCh), c, c2)) { flush(); i++; continue; }
+    if (c === '(') {
+      if (arithDepth > 0) arithDepth++;
+      else if (c2 === '(') { arithDepth = 2; flush(); i += 2; continue; }
+      flush(); i++; lastBreak = i; continue;
+    }
+    if (c === '$' && c2 === '(') {
+      if (arithDepth > 0) arithDepth++;
+      else if (cmd[i + 2] === '(') { arithDepth = 2; flushWithSubst(); i += 3; continue; }
+      flushWithSubst(); i += 2; continue;
+    }
+    if (c === '$' && c2 === '$') { put('$$'); i += 2; continue; } // the pid parameter: its 2nd `$` must not arm an ANSI-C `$'`
+    if (c === '$' && c2 === '{') { braceDepth++; put('${'); i += 2; continue; }
+    if (c === '`') { btOpen = !btOpen; flushWithSubst(); i++; continue; }
+    if (c === '$') dollarEnd = i + 1;
+    put(c);
     i++;
   }
   flush();
@@ -370,7 +459,7 @@ function effectiveVerb(tokens) {
   if (idx >= tokens.length) return null;
   const verbTok = tokens[idx];
   if (verbTok.quotedOnly) return null; // a fully-quoted token is data, not a verb
-  return { verb: shellScan.basename(verbTok.text), args: tokens.slice(idx + 1) };
+  return { verb: shellScan.basename(verbTok.text), args: tokens.slice(idx + 1), verbTok: verbTok };
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -485,7 +574,7 @@ function hasCmdSubstArg(rest) {
 // ---------------------------------------------------------------------------------------------------------------------
 // self-credit
 
-function creditRegexes(t) { return TB.coauthor.test(t) || TB.generated.test(t); }
+function creditRegexes(t) { return TB.coauthor.test(t) || TB.generated.test(t) || TB.sessionKey.test(t) || TB.sessionUrl.test(t); }
 
 function normEscapes(s) { return s.replace(/\\n/g, '\n').replace(/\\r/g, '\r').replace(/\\t/g, '\t'); }
 
@@ -555,6 +644,143 @@ function inlineCommitMessages(rest) {
     }
   }
   return msgs;
+}
+
+// the argument tokens that carry an inline commit message (or trailer), with their source text
+function inlineCommitMessageToks(rest) {
+  const toks = [];
+  for (let i = 0; i < rest.length; i++) {
+    const w = rest[i].text;
+    if (w === '--message' || w === '--trailer' || /^-[A-Za-z]*m$/.test(w)) {
+      if (i + 1 < rest.length) { toks.push(rest[i + 1]); i++; }
+    } else if (w.startsWith('--message=') || w.startsWith('--trailer=')) {
+      toks.push({ raw: rest[i].raw.slice(rest[i].raw.indexOf('=') + 1) });
+    } else if (/^-[A-Za-z]*m./.test(w)) {
+      toks.push({ raw: rest[i].raw.replace(/^-[A-Za-z]*?m/, '') });
+    }
+  }
+  return toks;
+}
+
+// GH #457: the first shell expansion still live in the source text of an argument ('...' is literal, "..." and bare text expand,
+// a backslash protects the next character), or null. An expansion the guard already reads (config) ends the scan of the argument.
+// Every expansion in the argument is read (P1 of PR #469): an allowed form is skipped and the scan goes on after it.
+function unresolvedExpansion(raw0) {
+  // the segment splitter swapped a substitution opener inside double quotes for the sentinel: put an opener back
+  const raw = raw0.split(' ' + CMDSUBST_SENTINEL + ' ').join('$(').split(CMDSUBST_SENTINEL).join('$(');
+  const r = scanExpansionWord(raw, 0, 0, false);
+  // the splitter cut the argument where a heredoc substitution's own lines start: it is read on in the whole command
+  return r.cut ? heredocSubstsInCommand() : r.shown;
+}
+
+function expansionShown(tail) { return tail.split(/\s/)[0].slice(0, ah.cfg('git.expansion_shown_chars')); }
+
+// true when a commit expansion pattern matches at index `k` of `s` (the text from `k` on starts with an expansion)
+function expansionAt(s, k) {
+  for (const re of TB.expansionSticky) { re.lastIndex = k; if (re.test(s)) return true; }
+  return false;
+}
+
+// the allowed form `tail` starts with (the matched text), or null
+function expansionAllowMatch(tail) {
+  for (const re of TB.expansionAllow) { const m = re.exec(tail); if (m) return m[0]; }
+  return null;
+}
+
+// One shell word of `s` read from `i` in quote mode `mode` (0 bare, 1 single-quoted, 2 double-quoted): { shown } for the first live
+// expansion, { cut } when an allowed heredoc substitution cannot be followed inside `s`, and `end` where the word stops.
+// `whole` is true when `s` is the whole command (a heredoc substitution is then followed to its closing parenthesis).
+function scanExpansionWord(s, i, mode, whole) {
+  let first = null; // in the whole command the word is read to its end, so the caller knows where the next one starts
+  const hit = (shown, at) => { if (!whole) return { shown: shown, end: at }; if (first === null) first = shown; return null; };
+  for (; i < s.length; i++) {
+    const ch = s.charAt(i);
+    if (mode === 1) { if (ch === "'") mode = 0; continue; }
+    if (mode === 0 && whole && /[ \t\r\n;&|()<>]/.test(ch)) return { shown: first, end: i };
+    if (ch === '\\') { i++; continue; }
+    if (ch === "'" && mode === 0) { mode = 1; continue; }
+    if (ch === '"') { mode = mode === 2 ? 0 : 2; continue; }
+    if (!expansionAt(s, i)) continue;
+    const tail = s.slice(i);
+    const m = expansionAllowMatch(tail);
+    if (m === null) {
+      if (!whole && /^\$\([ \t]*$/.test(tail)) return { cut: true, end: s.length };
+      const r = hit(expansionShown(tail), i);
+      if (r) return r;
+      continue;
+    }
+    if (m.indexOf('<<') < 0) { i += m.length - 1; continue; }
+    const close = heredocSubstClose(s, i, m);
+    if (close.at < 0 && !whole) return { cut: true, end: s.length };
+    if (close.shown !== null || close.at < 0) {
+      const r = hit(close.shown !== null ? close.shown : expansionShown(tail), i);
+      if (r) return r;
+    }
+    if (close.at < 0) return { shown: first, end: s.length };
+    i = close.at;
+  }
+  return { shown: first, end: s.length };
+}
+
+// The allowed heredoc substitution at `at` in `s` (matched text `m`): { at } of its closing parenthesis, -1 when it does not close
+// inside `s`, and `shown` (or null) for a live expansion in an unquoted heredoc body (that body expands, so it is part of the message).
+function heredocSubstClose(s, at, m) {
+  const h = shellScan.parseHeredocAt(s, at + m.lastIndexOf('<<'));
+  if (!h || !h.terminated) return { at: -1, shown: null };
+  let shown = null;
+  if (!h.quoted) {
+    const body = h.body;
+    for (let k = 0; k < body.length && shown === null; k++) {
+      if (body.charAt(k) === '\\') { k++; continue; }
+      if (expansionAt(body, k)) shown = expansionShown(body.slice(k));
+    }
+  }
+  let k = h.end;
+  while (k < s.length && /[ \t\r\n]/.test(s.charAt(k))) k++;
+  return { at: s.charAt(k) === ')' ? k : -1, shown: shown };
+}
+
+// the quote mode at `pos` of the whole command (heredoc bodies skipped)
+function quoteModeAt(s, pos) {
+  let mode = 0;
+  for (let i = 0; i < pos; i++) {
+    const ch = s.charAt(i);
+    if (mode === 1) { if (ch === "'") mode = 0; continue; }
+    if (ch === '\\') { i++; continue; }
+    if (ch === "'" && mode === 0) { mode = 1; continue; }
+    if (ch === '"') { mode = mode === 2 ? 0 : 2; continue; }
+    if (ch === '<' && s.charAt(i + 1) === '<') {
+      const h = shellScan.parseHeredocAt(s, i);
+      if (h && h.terminated && h.end <= pos) { i = h.end - 1; continue; }
+    }
+  }
+  return mode;
+}
+
+// Each allowed heredoc substitution of the whole command is followed past its closing parenthesis: the rest of its word and every
+// later message argument of the same command are read. The first live expansion, or the substitution itself when it cannot be followed.
+function heredocSubstsInCommand() {
+  const s = S.raw;
+  let found = false;
+  for (let at = s.indexOf('$('); at >= 0; at = s.indexOf('$(', at + 1)) {
+    const m = expansionAllowMatch(s.slice(at));
+    if (m === null || m.indexOf('<<') < 0) continue;
+    found = true;
+    const r = scanExpansionWord(s, at, quoteModeAt(s, at), true);
+    if (r.shown) return r.shown;
+    let i = r.end, msgNext = false;
+    while (i < s.length) {
+      while (i < s.length && /[ \t]/.test(s.charAt(i))) i++;
+      if (i >= s.length || /[;&|()<>\r\n]/.test(s.charAt(i))) break;
+      const w = scanExpansionWord(s, i, 0, true);
+      const word = s.slice(i, Math.max(w.end, i + 1));
+      // a word that is a message option's value, or carries one (--message=..., -m...), holds message text
+      if (w.shown && (msgNext || /^(?:--message=|--trailer=|-[A-Za-z]*m.)/.test(word))) return w.shown;
+      msgNext = word === '--message' || word === '--trailer' || /^-[A-Za-z]*m$/.test(word);
+      i = Math.max(w.end, i + 1);
+    }
+  }
+  return found ? null : expansionShown('$(');
 }
 
 function fileCommitMessages(rest) {
@@ -648,7 +874,7 @@ function ghSelfCreditMessage(args) {
   if (hasSelfCredit(S.raw)) vals.push(S.raw);
   for (const v of vals) {
     for (const t of [v, normEscapes(v)]) {
-      if (TB.coauthor.test(t) || TB.generated.test(t) || TB.ghBody.test(t)) {
+      if (creditRegexes(t) || TB.ghBody.test(t)) {
         const elsewhere = v === S.raw ? creditElsewhereLabel('gh') : null;
         if (elsewhere) return gmKey('msg_gh_credit_elsewhere', { elsewhere: elsewhere });
         return gmKey('msg_gh_credit');
@@ -794,7 +1020,7 @@ function parallelVerdict(ev, d, cmd, heredocBodies, cwd, useJev) {
     }
     if (hit) return hit;
   }
-  if (!certain && d < 3) {
+  if (!certain && d < TB.inlineDepth) {
     for (const t of inputs) {
       const hit = scanCommand(t.text, d + 1, cwd);
       if (hit) return hit;
@@ -837,7 +1063,7 @@ function dropRedirects(args) {
 }
 
 function stdinScriptVerdict(cmd, d, cwd) {
-  if (d >= 3) return null;
+  if (d >= TB.inlineDepth) return null;
   const texts = [];
   const re = /'([^']*)'|"((?:[^"\\]|\\[\s\S])*)"/g;
   let m;
@@ -890,7 +1116,7 @@ function runnerVerdictIn(cmdTokens, runner, d, cmd, heredocBodies, cwd, useJev) 
   if (innerEv.verb === 'xargs') return xargsGitVerdict(innerEv, d, cmd, heredocBodies, cwd, useJev);
   if (innerEv.verb === 'find') return findExecVerdict(innerEv, d, cmd, heredocBodies, cwd, useJev);
   if (innerEv.verb === 'parallel') return parallelVerdict(innerEv, d, cmd, heredocBodies, cwd, useJev);
-  if (d < 3 && (innerEv.verb === 'eval' || TB.shellVerbs.has(innerEv.verb.toLowerCase()))) {
+  if (d < TB.inlineDepth && (innerEv.verb === 'eval' || TB.shellVerbs.has(innerEv.verb.toLowerCase()))) {
     if (shellScriptIsInput(cmdTokens, S.repls)) {
       const sv = stdinScriptVerdict(cmd, d, cwd);
       if (sv) return sv;
@@ -1102,7 +1328,7 @@ function hdSubstEnd(s, i, closer) {
 
 function hdSkeleton(cmd) {
   const docs = [];
-  let out = '', i = 0;
+  let out = [], i = 0;
   const n = cmd.length;
   const stack = [];
   let pending = null, wordStart = true;
@@ -1111,7 +1337,7 @@ function hdSkeleton(cmd) {
     const top = stack[stack.length - 1];
     if (c === '\n') {
       if (top === 'D') return null;
-      out += c; i++; wordStart = true;
+      out.push(c); i++; wordStart = true;
       if (pending) {
         if (pending.lineEnd !== i - 1) return null;
         docs.push(pending);
@@ -1121,38 +1347,38 @@ function hdSkeleton(cmd) {
       continue;
     }
     if (top === 'D') {
-      if (c === '\\') { out += cmd.slice(i, i + 2); i += 2; continue; }
-      if (c === '"') { stack.pop(); out += c; i++; continue; }
-      if (c === '$' && cmd[i + 1] === '(') { stack.push('C'); out += '$('; i += 2; wordStart = true; continue; }
-      if (c === '`') { stack.push('B'); out += c; i++; wordStart = true; continue; }
-      out += c; i++;
+      if (c === '\\') { out.push(cmd.slice(i, i + 2)); i += 2; continue; }
+      if (c === '"') { stack.pop(); out.push(c); i++; continue; }
+      if (c === '$' && cmd[i + 1] === '(') { stack.push('C'); out.push('$('); i += 2; wordStart = true; continue; }
+      if (c === '`') { stack.push('B'); out.push(c); i++; wordStart = true; continue; }
+      out.push(c); i++;
       continue;
     }
-    if (c === '\\') { if (cmd[i + 1] === '\n') return null; out += cmd.slice(i, i + 2); i += 2; wordStart = false; continue; }
+    if (c === '\\') { if (cmd[i + 1] === '\n') return null; out.push(cmd.slice(i, i + 2)); i += 2; wordStart = false; continue; }
     if (c === "'") {
       const j = cmd.indexOf("'", i + 1);
       if (j < 0 || cmd.slice(i, j).indexOf('\n') >= 0) return null;
-      out += cmd.slice(i, j + 1); i = j + 1; wordStart = false;
+      out.push(cmd.slice(i, j + 1)); i = j + 1; wordStart = false;
       continue;
     }
-    if (c === '"') { stack.push('D'); out += c; i++; wordStart = false; continue; }
+    if (c === '"') { stack.push('D'); out.push(c); i++; wordStart = false; continue; }
     if (c === '#' && wordStart) {
       const nl = cmd.indexOf('\n', i);
       const end = nl < 0 ? n : nl;
       if (cmd.slice(i, end).indexOf('<<') >= 0 && pending) return null;
-      out += cmd.slice(i, end); i = end;
+      out.push(cmd.slice(i, end)); i = end;
       continue;
     }
-    if (c === '$' && cmd[i + 1] === '(') { stack.push('C'); out += '$('; i += 2; wordStart = true; continue; }
+    if (c === '$' && cmd[i + 1] === '(') { stack.push('C'); out.push('$('); i += 2; wordStart = true; continue; }
     if (c === '`') {
       if (top === 'B') stack.pop(); else stack.push('B');
-      out += c; i++; wordStart = true;
+      out.push(c); i++; wordStart = true;
       continue;
     }
-    if (c === '(') { stack.push('P'); out += c; i++; wordStart = true; continue; }
+    if (c === '(') { stack.push('P'); out.push(c); i++; wordStart = true; continue; }
     if (c === ')') {
       if (top === 'C' || top === 'P') stack.pop(); else return null;
-      out += c; i++; wordStart = true;
+      out.push(c); i++; wordStart = true;
       continue;
     }
     if (c === '<' && cmd[i + 1] === '<' && cmd[i + 2] !== '<' && cmd[i - 1] !== '<') {
@@ -1167,32 +1393,32 @@ function hdSkeleton(cmd) {
       if (!p.quoted && /\$\(|`|\$\[|\\\n/.test(p.body)) return null;
       const id = docs.length;
       pending = { id: id, word: p.word, quoted: p.quoted, lineEnd: p.lineEnd, end: p.end };
-      out += ' __AHDOC' + id + '__ ';
+      out.push(' __AHDOC' + id + '__ ');
       i = p.openerEnd;
       wordStart = false;
       continue;
     }
     wordStart = /[\s;&|<>]/.test(c);
-    out += c;
+    out.push(c);
     i++;
   }
   if (pending || stack.length) return null;
-  return { skeleton: out, docs: docs };
+  return { skeleton: out.join(''), docs: docs };
 }
 
 function hdLevels(text, out, depth, ownId) {
-  if (depth > 6) return false;
-  let flat = '', i = 0;
+  if (depth > TB.heredocLevels) return false;
+  let flat = [], i = 0;
   const inner = [];
   const lift = (start, end) => {
     const id = out.nextId++;
     inner.push({ text: text.slice(start, end), id: id });
-    flat += ' __AHSUB' + id + '__ ';
+    flat.push(' __AHSUB' + id + '__ ');
   };
   while (i < text.length) {
     const c = text[i];
-    if (c === '\\') { flat += text.slice(i, i + 2); i += 2; continue; }
-    if (c === "'") { const j = text.indexOf("'", i + 1); if (j < 0) return false; flat += text.slice(i, j + 1); i = j + 1; continue; }
+    if (c === '\\') { flat.push(text.slice(i, i + 2)); i += 2; continue; }
+    if (c === "'") { const j = text.indexOf("'", i + 1); if (j < 0) return false; flat.push(text.slice(i, j + 1)); i = j + 1; continue; }
     if (c === '$' && text[i + 1] === '(') {
       const e = hdSubstEnd(text, i + 2, ')');
       if (e < 0) return false;
@@ -1206,10 +1432,10 @@ function hdLevels(text, out, depth, ownId) {
       continue;
     }
     if (c === '"') {
-      flat += c; i++;
+      flat.push(c); i++;
       while (i < text.length && text[i] !== '"') {
         const d = text[i];
-        if (d === '\\') { flat += text.slice(i, i + 2); i += 2; continue; }
+        if (d === '\\') { flat.push(text.slice(i, i + 2)); i += 2; continue; }
         if (d === '$' && text[i + 1] === '(') {
           const e = hdSubstEnd(text, i + 2, ')');
           if (e < 0) return false;
@@ -1222,15 +1448,15 @@ function hdLevels(text, out, depth, ownId) {
           lift(i + 1, e); i = e + 1;
           continue;
         }
-        flat += d; i++;
+        flat.push(d); i++;
       }
       if (i >= text.length) return false;
-      flat += '"'; i++;
+      flat.push('"'); i++;
       continue;
     }
-    flat += c; i++;
+    flat.push(c); i++;
   }
-  out.levels.push({ text: flat, id: ownId });
+  out.levels.push({ text: flat.join(''), id: ownId });
   for (const t of inner) if (!hdLevels(t.text, out, depth + 1, t.id)) return false;
   return true;
 }
@@ -1417,14 +1643,14 @@ function stdinCandidateTextCached(cmd, heredocBodies) {
   if (heredocBodies.length) candidates.push(...heredocBodies.map((h) => h.body));
   candidates.push(...extractQuotedLiteralsCached(cmd));
   const text = candidates.length ? candidates.join('\n') : null;
-  const credit = text !== null && (TB.coauthor.test(text) || TB.generated.test(text));
+  const credit = text !== null && creditRegexes(text);
   S.stdinCandidateCache = { cmd: cmd, heredocBodies: heredocBodies, text: text, hasSelfCredit: credit };
   return S.stdinCandidateCache;
 }
 
 // command-valued config/env: git runs some values as commands
 function scanCommandValue(v, d) {
-  if (d >= 3 || !/push/.test(v)) return null;
+  if (d >= TB.inlineDepth || !/push/.test(v)) return null;
   const s = v.trim();
   const cands = [s];
   const kv = /^'?[A-Za-z_][\w.-]*=([\s\S]*?)'?$/.exec(s);
@@ -1556,23 +1782,23 @@ function redirectWords(raw) {
     if (raw[i] === '>' || raw[i] === '|') i++;
     if (raw[i] === '&' || raw[i] === '(') continue;
     while (raw[i] === ' ' || raw[i] === '\t') i++;
-    let w = '';
+    let w = [];
     while (i < n) {
       const c = raw[i];
       if (c === '"' || c === "'") {
         let j = i + 1;
         while (j < n && raw[j] !== c) j += (c === '"' && raw[j] === '\\') ? 2 : 1;
         if (j >= n) { i = n; break; }
-        w += raw.slice(i + 1, j);
+        w.push(raw.slice(i + 1, j));
         i = j + 1;
       } else if (/[\s;&|<>()]/.test(c)) {
         break;
       } else if (c === '\\' && i + 1 < n) {
-        w += raw[i + 1];
+        w.push(raw[i + 1]);
         i += 2;
-      } else { w += c; i++; }
+      } else { w.push(c); i++; }
     }
-    if (w) out.push(w);
+    if (w.join('')) out.push(w.join(''));
   }
   return out;
 }
@@ -1587,28 +1813,28 @@ function globCouldHitLauncher(p, cdDir) {
   const segs = norm.split('/').filter(Boolean);
   if (segs.length <= want.length) return false;
   return want.every((w, i) => {
-    let re = '';
+    let re = [];
     const g = segs[i];
     for (let k = 0; k < g.length; k++) {
       const c = g[k];
-      if (c === '*') re += '[^/]*';
-      else if (c === '?') re += '[^/]';
+      if (c === '*') re.push('[^/]*');
+      else if (c === '?') re.push('[^/]');
       else if (c === '[') {
         const end = g.indexOf(']', k + 2);
-        if (end < 0) { re += '\\['; continue; }
+        if (end < 0) { re.push('\\['); continue; }
         let cls = g.slice(k + 1, end).replace(/\\/g, '\\\\');
         if (cls[0] === '!') cls = '^' + cls.slice(1);
-        re += '[' + cls + ']';
+        re.push('[' + cls + ']');
         k = end;
-      } else re += c.replace(/[.+^${}()|\\\]]/g, '\\$&');
+      } else re.push(c.replace(/[.+^${}()|\\\]]/g, '\\$&'));
     }
-    try { return new RegExp('^' + re + '$', 'i').test(w); } catch (e) { return true; }
+    try { return new RegExp('^' + re.join('') + '$', 'i').test(w); } catch (e) { return true; }
   });
 }
 
 function varTargetHitsLauncher(p, cdDir, hops) {
   const m = /^\$(?:\{([A-Za-z_]\w*)\}|([A-Za-z_]\w*))(.*)$/s.exec(p);
-  if (!m || !S.launcherCmdText || (hops || 0) > 4) return false;
+  if (!m || !S.launcherCmdText || (hops || 0) > TB.varHops) return false;
   const name = m[1] || m[2], suffix = m[3];
   const re = new RegExp('(?:^|[\\s;&|(])(?:(?:export|local|declare|typeset)[ \\t]+(?:-\\w+[ \\t]+)*)?' + name +
     '=("[^"\\n]*"|\'[^\'\\n]*\'|[^\\s;&|)]*)', 'g');
@@ -1808,6 +2034,629 @@ function committedHandovers(ev, lastCdDir) {
   return hits;
 }
 
+// GH #457 / PR #469 / GH #506: a push is refused while a local commit it sends that no remote has carries an AI credit. Only a
+// push whose sent revisions the command line names and the configuration cannot widen is narrowed (pushScope, pushConfigNarrow);
+// any other form (every branch, a mirror, a glob, -c, a configured push refspec) counts every unpushed commit of the repository,
+// so no form of the push routes around the check. One scan per repository and call (S.pushChecks: commits, annotated tags, submodules); a git query that
+// cannot run, fails or times out lets the push go with an advisory (S.pushUnchecked). Names the hashes and the fix; never rewrites anything.
+function pushCreditVerdict(ev, lastCdDir) {
+  try {
+    if (!gitSettingOn('git.setting_push_credit')) return null;
+    if (gitSubcommand(ev.args).rest.some((t) => TB.pushSkipOpts.has(t.text))) return null;
+    let dir = lastCdDir || S.procCwd;
+    const scopeOn = gitSettingOn('git.setting_push_credit_scope');
+    const proven = scopeOn && pushNarrowProven(S.raw);
+    // a proven chain names its own directory, so the call-time pass and the backstop pass judge the same repository
+    if (proven) dir = pushNarrowDir(S.raw, S.procCwd) || dir;
+    const repo = [];
+    const repoOpts = ah.cfg('git.push_repo_opts');
+    if (ev.dynEnv && ev.dynEnv.length) return gmKey('msg_push_dynamic_repo', { arg: ev.dynEnv[0] });
+    for (let k = 0; k < ev.args.length; k++) {
+      const t = ev.args[k].text;
+      const eq = t.indexOf('=');
+      const opt = repoOpts.includes(t) ? t : (t.startsWith('--') && eq > 0 && repoOpts.includes(t.slice(0, eq)) ? t.slice(0, eq) : null);
+      if (opt !== null) {
+        const sep = opt === t;
+        if (sep && k + 1 >= ev.args.length) break;
+        const tok = sep ? ev.args[k + 1] : ev.args[k];
+        const raw = String(tok.raw === undefined ? tok.text : tok.raw);
+        const rawVal = sep ? raw : raw.slice(raw.indexOf('=') + 1);
+        if (dynamicRepoPath(rawVal) || /[$`]/.test(tok.text) || tok.text.indexOf(CMDSUBST_SENTINEL) !== -1) return gmKey('msg_push_dynamic_repo', { arg: opt + ' ' + rawVal });
+        const val = homePath(sep ? tok.text : t.slice(eq + 1));
+        if (opt === '-C') dir = posix.resolveIn(S.procCwd, [dir, val]);
+        else repo.push(opt + '=' + val);
+        if (sep) k++;
+        continue;
+      }
+      if (t === '-c' || t === '--namespace' || t === '--config-env') { k++; continue; }
+      if (t.startsWith('-')) continue;
+      break;
+    }
+    // a cd or pushd whose target the shell expands at run time (cd -, cd '-', cd "$X", a bare cd) leaves the directory unknown
+    if (scopeOn) {
+      const wordRe = new RegExp(ah.cfg('git.push_cd_word_re'), 'g');
+      const litRe = new RegExp(ah.cfg('git.push_cd_literal_re'));
+      let dm;
+      while ((dm = wordRe.exec(S.raw)) !== null) {
+        if (dm[0].length === 0) { wordRe.lastIndex++; continue; }
+        if (!litRe.test(dm[1] || '')) return gmKey('msg_push_dynamic_repo', { arg: dm[0].replace(/^[\s;&|(){}`'"]+/, '').trim() });
+      }
+    }
+    const key = [dir].concat(repo).join('\n');
+    const scope = proven ? pushScope(ev) : null;
+    const recurse = scope ? pushRecursesByFlag(ev) : false;
+    const ckey = key + '\n' + (scope ? scope.join('\u0001') : '') + (recurse ? '\nrecurse' : '');
+    if (!S.pushChecks.has(ckey)) {
+      const fresh = unpushedCredit(dir, repo, ev.env, scope, recurse);
+      if (fresh.scoped) ah.metric('git_push_scoped', []);
+      if (scopeOn && !proven) ah.metric('git_push_narrow_unproven', []);
+      if (scopeOn && !fresh.scoped) ah.metric('git_push_unscoped', ['reason', !proven ? ah.cfg('git.unscoped_reason_unproven') : scope === null ? ah.cfg('git.unscoped_reason_form') : fresh.why || ah.cfg('git.unscoped_reason_query')]);
+      S.pushChecks.set(ckey, fresh);
+    }
+    const r = S.pushChecks.get(ckey);
+    if (r.tags.length) return gmKey('msg_push_tag_credit', { tags: r.tags.slice(0, TB.shown).join(', ') + (r.tags.length > TB.shown ? ah.cfg('git.more_marker') : '') });
+    const left = r.hits.length ? pushAck(ckey, r.hits) : r.hits;
+    if (left.length) return gmKey('msg_push_credit', { shown: hitList(left) });
+    // more unpushed commits than the cap: a credit past it cannot be ruled out, so the push is refused, never allowed unread
+    if (r.over) return gmKey('msg_push_over_cap', { cap: ah.cfg('git.push_max_commits'), repo: dir, count: r.count });
+    if (r.unchecked) S.pushUnchecked = true;
+    return null;
+  } catch (e) {
+    if (gitFatal(e)) throw e;
+    S.pushUnchecked = true;
+    return null; // fail open, with the advisory
+  }
+}
+
+function hitList(hits) {
+  return hits.slice(0, TB.shown).map(hitText).join(', ') + (hits.length > TB.shown ? ah.cfg('git.more_marker') : '');
+}
+
+// PR #469 round 6: a public commit whose remote-tracking ref was pruned looks unpushed, and offline nothing tells it from a new
+// one. A push blocked on credited commits records them (with the command text and directory) in a per-session stamp; the
+// identical push retried unchanged acknowledges them, and an acknowledged commit gets git.push_ack_advisory instead of a block
+// for the rest of the session. A commit not yet blocked once still blocks. Bounded by git.push_ack_max_shas (0: off, the default); no session
+// id: never acknowledged; a stamp that cannot be written lets the commits through with the advisory. Returns the hits to block.
+function pushAck(key, hits) {
+  const max = ah.cfg('git.push_ack_max_shas');
+  if (!max || !S.session) return hits;
+  if (!S.pushAck) S.pushAck = new Map();
+  if (S.pushAck.has(key)) return S.pushAck.get(key);
+  const name = ah.cfg('git.push_ack_state_prefix') + S.session.replace(/[^A-Za-z0-9_.-]/g, '_') + ah.cfg('replykit.json_ext');
+  const rel = ah.cfg('replykit.state_dir') + '/' + name;
+  let st = null;
+  try { st = JSON.parse(ah.state.readText(rel) || 'null'); } catch (e) { st = null; }
+  if (!st || typeof st !== 'object' || !Array.isArray(st.acked)) st = { acked: [], last: null };
+  const push = ah.sha1(S.raw + '\n' + key);
+  const lastIds = st.last && st.last.push === push && Array.isArray(st.last.ids) ? st.last.ids : [];
+  const acked = st.acked.filter((x) => typeof x === 'string');
+  const idOf = (h) => (h.sub || '') + ':' + h.sha;
+  let left = [];
+  const passed = [];
+  for (const h of hits) {
+    const id = idOf(h);
+    if (acked.includes(id)) passed.push(h);
+    else if (lastIds.includes(id)) { acked.push(id); passed.push(h); }
+    else left.push(h);
+  }
+  let ok = false;
+  try { ok = ah.state.writeAtomic(rel, JSON.stringify({ acked: acked.slice(-max), last: left.length ? { push: push, ids: left.map(idOf) } : null })) === true; } catch (e) { ok = false; }
+  if (ok) { try { ah.state.prune(ah.cfg('git.push_ack_state_prefix'), name); } catch (e) { /* retention only */ } }
+  else { passed.push(...left); left = []; } // fails toward the advisory
+  if (passed.length) { try { ah.metric('git_push_ack_downgraded', []); } catch (e) { /* counting never fails a hook */ } }
+  if (passed.length) S.pushAckNote = text.render(ah.cfg('git.push_ack_advisory'), { shown: hitList(passed) });
+  S.pushAck.set(key, left);
+  return left;
+}
+
+// `~` and `~/x` are the agent's own home; anything else is used as written
+function homePath(p) {
+  if (S.home && (p === '~' || p.startsWith('~/'))) return posix.join(S.home, p.slice(1));
+  return p;
+}
+
+// true when a repository path as written (raw shell text) expands at run time: a live $ or backtick, or git.push_dynamic_path_res
+function dynamicRepoPath(raw) {
+  if (unresolvedExpansion(raw)) return true;
+  if (!S.pushDynRes) S.pushDynRes = ah.cfg('git.push_dynamic_path_res').map((x) => new RegExp(x));
+  return S.pushDynRes.some((re) => re.test(raw));
+}
+
+// "sha on branch, branch" for the block (git.push_hit_format); the lookup is bounded by push_timeout_ms and never decides the verdict
+function hitText(h) {
+  const where = h.sub ? ah.cfg('git.push_hit_where_format').split('{path}').join(h.sub) : '';
+  const argv = fillPushArgv(ah.cfg('git.push_argv_branch_contains'), h.dir, h.repo, 0).map((a) => a.split('{sha}').join(h.sha));
+  const r = ah.exec(ah.cfg('git.git_binary'), argv, { env: h.env, timeoutMs: ah.cfg('git.push_timeout_ms') });
+  const br = r !== null && r.status === 0 ? String(r.stdout || '').split('\n').map((x) => x.trim()).filter(Boolean) : [];
+  if (!br.length) return ah.cfg('git.push_hit_no_branch_format').split('{sha}').join(h.sha).split('{where}').join(where);
+  const list = br.slice(0, TB.shown).join(', ') + (br.length > TB.shown ? ah.cfg('git.more_marker') : '');
+  return ah.cfg('git.push_hit_format').split('{sha}').join(h.sha).split('{branches}').join(list).split('{where}').join(where);
+}
+
+function fillPushArgv(tpl, dir, repo, n, revs) {
+  const argv = [];
+  for (const a of tpl) {
+    if (a === '{repo}') argv.push(...repo);
+    else if (a === '{revs}') argv.push(...(revs || []));
+    else argv.push(a.split('{dir}').join(dir).split('{n}').join(String(n)));
+  }
+  return argv;
+}
+
+// The unpushed commits of one repository and of each checked-out submodule (git.push_argv_log), plus the newest local annotated
+// tags (git.push_argv_tags): { hits } ({ sha, dir, repo, sub }), { tags } (names with a credit), { over } (past the cap or output
+// cut short), { unchecked } (a git query could not run, failed or timed out: the push goes on with the advisory).
+// GH #506: the revisions a push sends, read from its command line: its refspec sources, or HEAD for a bare push or a push naming
+// only a remote. null = the commits cannot be read from the command line (every branch, a mirror, a glob, a bare `:`, a changed
+// configuration), so the push is judged on every unpushed commit of the repository.
+// The push option table (git.push_value_opts + git.push_flag_opts): every name with its negated `--no-` form (which takes no
+// value), as { name (the positive form), spelled, value, negated }.
+function pushLongOptTable(valueOpts, flagOpts) {
+  const out = [];
+  for (const [list, value] of [[valueOpts, true], [flagOpts, false]]) {
+    for (const n of list) {
+      out.push({ name: n, spelled: n, value: value, negated: false });
+      if (n.startsWith('--') && !n.startsWith('--no-') && !list.includes('--no-' + n.slice(2))) out.push({ name: n, spelled: '--no-' + n.slice(2), value: false, negated: true });
+    }
+  }
+  return out;
+}
+
+// git's long-option lookup: an exact spelling wins, else the one entry the word is a prefix of; none or several = null.
+function resolvePushLongOpt(table, word) {
+  const exact = table.find((o) => o.spelled === word);
+  if (exact) return exact;
+  if (word.length <= 2) return null;
+  const hits = table.filter((o) => o.spelled.startsWith('--') && o.spelled.startsWith(word));
+  return hits.length === 1 ? hits[0] : null;
+}
+
+// GH #506 / PR #524 review: the narrowed scan reads git configuration and HEAD when the push is checked, BEFORE the call has run
+// anything, so it is valid only on positive proof that nothing in the same Bash call runs before the push and changes what it
+// publishes. Proof (all of it patterns in plugin TOML, git.push_narrow_*): no character that chains or substitutes commands,
+// every `&&` segment before the push matches the non-mutating allowlist (so none of them is a git command), and the last segment is
+// the one and only git command, the push itself, with no env prefix and no option before `push` (but -C <plain path>).
+// Anything else is read whole, as before #506: at worst the old false positive, never a credit leak.
+function pushNarrowProven(cmd) {
+  if (typeof cmd !== 'string') return false;
+  const flags = ah.cfg('git.push_narrow_re_flags');
+  // a harmless output tail (2>&1, | tail -5) on the push changes nothing it publishes: it is cut off before the rest is proven
+  cmd = cmd.replace(new RegExp(ah.cfg('git.push_narrow_tail_re')), '');
+  if (new RegExp(ah.cfg('git.push_narrow_forbidden_re')).test(cmd)) return false;
+  const segs = cmd.split(ah.cfg('git.push_narrow_separator'));
+  const last = segs.pop();
+  const pm = new RegExp(ah.cfg('git.push_narrow_push_re'), flags).exec(last);
+  if (!pm) return false;
+  // plain NAME=value assignments before the push leave it narrowed, unless a name can change what git reads or runs
+  const deny = new RegExp(ah.cfg('git.push_narrow_env_deny_re'));
+  const names = (pm[1] || '').match(new RegExp(ah.cfg('git.push_narrow_env_name_re'), 'g')) || [];
+  if (names.some((n) => deny.test(n))) return false;
+  const allow = ah.cfg('git.push_narrow_before_res').map((r) => new RegExp(r, flags));
+  return segs.every((sg) => allow.some((re) => re.test(sg)));
+}
+
+// The directory a proven chain pushes from: each `cd` segment before the push (they all matched git.push_narrow_before_res, whose
+// capture group 1 is the target) applied in order from the call's directory (S.procCwd), the way scanCommand tracks it.
+function pushNarrowDir(cmd, dir) {
+  const segs = cmd.split(ah.cfg('git.push_narrow_separator'));
+  segs.pop();
+  const flags = ah.cfg('git.push_narrow_re_flags');
+  const res = ah.cfg('git.push_narrow_before_res').map((r) => new RegExp(r, flags));
+  let at = dir;
+  for (const sg of segs) {
+    for (const re of res) {
+      const m = re.exec(sg);
+      const tgt = m ? m[m.length - 1] : null; // the target is the last capture group (an optional opening quote and its closing twin come before it)
+      if (tgt) { at = normalizeGuardPath(tgt, at) || tgt; break; }
+    }
+  }
+  return at;
+}
+
+function pushScope(ev) {
+  const globals = ah.cfg('git.push_unscoped_globals');
+  for (const a of ev.args) {
+    if (globals.some((g) => a.text === g || a.text.startsWith(g + '='))) return null;
+  }
+  const envPrefixes = ah.cfg('git.push_unscoped_env_prefixes');
+  if (ev.env && Object.keys(ev.env).some((n) => envPrefixes.some((pre) => n.startsWith(pre)))) return null;
+  const unscoped = ah.cfg('git.push_unscoped_opts'), valueOpts = ah.cfg('git.push_value_opts');
+  const longOpts = pushLongOptTable(valueOpts, ah.cfg('git.push_flag_opts'));
+  const refRe = new RegExp(ah.cfg('git.push_refspec_unscoped_re'));
+  const pos = [];
+  // the only redirect a proven push carries is the output tail (push_narrow_tail_re): it names no ref
+  const redirRe = new RegExp(ah.cfg('git.push_scope_redirect_re'));
+  const rest = gitSubcommand(ev.args).rest.filter((t) => !redirRe.test(t.text));
+  for (let i = 0; i < rest.length; i++) {
+    const t = rest[i].text;
+    if (t === '--') { for (let j = i + 1; j < rest.length; j++) pos.push(rest[j].text); break; }
+    if (t.startsWith('--')) {
+      // resolved the way git does: an exact name, else a unique prefix; none or several = not understood, read whole
+      const eq = t.indexOf('=');
+      const o = resolvePushLongOpt(longOpts, eq < 0 ? t : t.slice(0, eq));
+      if (o === null) return null;
+      if (!o.negated && unscoped.includes(o.name)) return null;
+      if (o.value && eq < 0) i++;
+      continue;
+    }
+    if (t.startsWith('-') && t.length > 1) {
+      // a short cluster (-fu, -oX, -qo X): a value option takes the rest of the cluster, else the next word
+      for (let c = 1; c < t.length; c++) {
+        const s = '-' + t[c];
+        if (valueOpts.includes(s)) { if (c === t.length - 1) i++; break; }
+        if (!longOpts.some((x) => x.name === s)) return null;
+      }
+      continue;
+    }
+    pos.push(t);
+  }
+  if (pos.length <= 1) return [ah.cfg('git.push_bare_rev')];
+  const revs = [];
+  for (const spec of pos.slice(1)) {
+    const body = spec.replace(/^\+/, '');
+    if (body.startsWith(':') && body.length > 1) continue; // a deletion sends no commit
+    const src = body.split(':')[0];
+    if (!src || refRe.test(src)) return null;
+    if (!revs.includes(src)) revs.push(src);
+  }
+  if (!revs.length) return null;
+  revs.explicit = true; // the command line names the refspec: git ignores push.default and remote.<name>.push then (pushConfigNarrow)
+  return revs;
+}
+
+// GH #506: true when the repository's configuration cannot make a push send more than the refs its command line names. Git itself
+// reads and interprets the configuration (every spelling of a boolean, included files, includeIf); a query that fails, is cut
+// short or returns a line this code cannot read counts as "may send more" (the blocking side), never as "sends only HEAD".
+function pushConfigQuery(tplKey, pattern, dir, repo, env) {
+  const tpl = ah.cfg(tplKey).map((a) => a.split('{pattern}').join(pattern));
+  const r = ah.exec(ah.cfg('git.git_binary'), fillPushArgv(tpl, dir, repo, 0), { env: env, timeoutMs: ah.cfg('git.push_timeout_ms') });
+  if (r === null || r.truncated === true) return null;
+  const out = String(r.stdout || '');
+  if (r.status === 1 && out.trim() === '') return []; // no key matched
+  if (r.status !== 0) return null;
+  return out.split('\n').map((l) => l.trim()).filter(Boolean);
+}
+
+function pushConfigNarrow(dir, repo, env, explicit) {
+  for (const p of ah.cfg('git.push_scope_bool_patterns')) {
+    const lines = pushConfigQuery('git.push_argv_config_bool', p, dir, repo, env);
+    if (lines === null) return false;
+    if (lines.some((l) => !/ false$/.test(l))) return false; // true, or anything git did not report as false
+  }
+  // GH #593: a refspec on the command line overrides remote.<name>.push and push.default (git reads both only when none is named),
+  // so neither can widen a push that names its refspec; the boolean widening above (mirror, followTags) holds either way
+  if (explicit) return true;
+  for (const p of ah.cfg('git.push_scope_any_patterns')) {
+    const lines = pushConfigQuery('git.push_argv_config_raw', p, dir, repo, env);
+    if (lines === null || lines.length) return false;
+  }
+  const defaults = pushConfigQuery('git.push_argv_config_raw', ah.cfg('git.push_scope_default_pattern'), dir, repo, env);
+  if (defaults === null) return false;
+  const narrow = ah.cfg('git.push_default_narrow');
+  return defaults.every((l) => narrow.includes(l.slice(l.indexOf(' ') + 1).trim().toLowerCase()));
+}
+
+// GH #506: true when the push command line may publish submodule commits: an option starting with git.push_recurse_flag_prefix
+// (--recurse-submodules or anything it may abbreviate) whose value, `=value` or the next word, is not one of git.push_recurse_off_values.
+function pushRecursesByFlag(ev) {
+  const prefix = ah.cfg('git.push_recurse_flag_prefix'), off = ah.cfg('git.push_recurse_off_values');
+  const rest = gitSubcommand(ev.args).rest;
+  for (let i = 0; i < rest.length; i++) {
+    const t = rest[i].text;
+    if (!t.startsWith(prefix)) continue;
+    const eq = t.indexOf('=');
+    const val = eq >= 0 ? t.slice(eq + 1) : (i + 1 < rest.length ? rest[i + 1].text : '');
+    if (!off.includes(val.toLowerCase())) return true;
+  }
+  return false;
+}
+
+// GH #506: true when the repository's configuration makes a push publish submodule commits; a query that fails counts as recursing
+function pushRecursesByConfig(dir, repo, env) {
+  const lines = pushConfigQuery('git.push_argv_config_raw', ah.cfg('git.push_recurse_config_pattern'), dir, repo, env);
+  if (lines === null) return true;
+  const off = ah.cfg('git.push_recurse_off_values');
+  return lines.some((l) => !off.includes(l.slice(l.indexOf(' ') + 1).trim().toLowerCase()));
+}
+
+// GH #506: the submodule gitlinks the pushed commits change, as Map(path -> new commit ids), or null when the listing cannot be
+// read (the caller then reads every submodule, never fewer).
+function pushedGitlinks(dir, repo, env, scope, cap) {
+  const r = ah.exec(ah.cfg('git.git_binary'), fillPushArgv(ah.cfg('git.push_argv_gitlinks'), dir, repo, cap + 1, scope), { env: env, timeoutMs: ah.cfg('git.push_timeout_ms') });
+  if (r === null || r.status !== 0 || r.truncated === true) return null;
+  const re = new RegExp(ah.cfg('git.push_gitlink_line_re'));
+  const mode = ah.cfg('git.push_gitlink_mode');
+  const out = new Map();
+  for (const l of String(r.stdout || '').split('\n')) {
+    if (!l.trim()) continue;
+    const m = re.exec(l);
+    if (!m) return null;
+    if (m[1] !== mode && m[2] !== mode) continue;
+    if (m[5].startsWith('"')) return null; // a quoted path: not read here
+    if (m[2] !== mode || /^0+$/.test(m[4])) continue; // a removed gitlink publishes no submodule commit
+    if (!out.has(m[5])) out.set(m[5], []);
+    if (!out.get(m[5]).includes(m[4])) out.get(m[5]).push(m[4]);
+  }
+  return out;
+}
+
+function unpushedCredit(dir, repo, env, scope, recurse) {
+  const cap = ah.cfg('git.push_max_commits');
+  const out = { unchecked: false, hits: [], tags: [], over: false, scoped: false, count: 0 };
+  const unpushed = new Set(); // full hashes of the repository's own unpushed commits: the tags in scope point at one
+  const execEnv = env && Object.keys(env).length ? env : undefined;
+  const run = (argv, e) => {
+    const r = ah.exec(ah.cfg('git.git_binary'), argv, { env: e, timeoutMs: ah.cfg('git.push_timeout_ms') });
+    if (r === null || r.status !== 0) { out.unchecked = true; return null; }
+    if (r.truncated === true) out.over = true;
+    return String(r.stdout || '');
+  };
+  const rs = ah.cfg('git_audit.record_sep'), us = ah.cfg('git_audit.field_sep');
+  let count = 0;
+  const scan = (d, rp, e, sub, revs) => {
+    const txt = run(fillPushArgv(ah.cfg(revs ? 'git.push_argv_log_scoped' : 'git.push_argv_log'), d, rp, cap + 1 - count, revs), e);
+    if (txt === null) return;
+    for (const rec of txt.split(rs)) {
+      const f = rec.replace(/^\n/, '').split(us);
+      const sha = (f[0] || '').trim();
+      if (!sha) continue;
+      count++;
+      if (sub === null) unpushed.add(sha);
+      if (count <= cap && f[1] && hasSelfCredit(f[1])) out.hits.push({ sha: sha.slice(0, TB.commitHashShort), dir: d, repo: rp, env: e, sub: sub });
+    }
+  };
+  // GH #506: a push the command line and the configuration narrow reads only the commits it sends (its refspec sources, or HEAD,
+  // not on any remote), so unpushed work on other branches or worktrees neither blocks it nor fills the cap. A scoped query that
+  // fails (an unknown revision, a timeout) falls back to every unpushed commit of the repository, never to fewer.
+  if (scope && gitSettingOn('git.setting_push_credit_scope')) {
+    if (!pushConfigNarrow(dir, repo, execEnv, scope.explicit === true)) out.why = ah.cfg('git.unscoped_reason_config');
+    else {
+      scan(dir, repo, execEnv, null, scope);
+      if (out.unchecked) { out.unchecked = false; out.over = false; out.hits = []; count = 0; unpushed.clear(); out.why = ah.cfg('git.unscoped_reason_query'); }
+      else out.scoped = true;
+    }
+  }
+  if (!out.scoped) scan(dir, repo, execEnv, null);
+  out.over = out.over || count > cap;
+  out.count = count;
+  if (out.unchecked || out.over) return out;
+  // annotated tags: the newest {n}, and only those on an unpushed commit (one on a commit a remote has is public, a fetched tag
+  // included); lightweight tags are commits (scanned above)
+  const tagTxt = unpushed.size ? run(fillPushArgv(ah.cfg('git.push_argv_tags'), dir, repo, cap + 1), execEnv) : null;
+  if (tagTxt !== null) {
+    for (const rec of tagTxt.split(rs)) {
+      const f = rec.replace(/^\n/, '').split(us);
+      if ((f[0] || '').trim() === ah.cfg('git.push_tag_object_type') && unpushed.has((f[2] || '').trim()) && f[3] && hasSelfCredit(f[3])) out.tags.push(f[1]);
+    }
+  }
+  // submodules: each checked-out one is scanned the same way, inside the same commit cap. A narrowed push that does not recurse
+  // publishes only the submodule commits its gitlinks name, so only those are read (and only from the new gitlink back).
+  let gitlinks = null;
+  if (out.scoped && !recurse && !pushRecursesByConfig(dir, repo, execEnv)) {
+    gitlinks = pushedGitlinks(dir, repo, execEnv, scope, cap);
+    if (gitlinks !== null && gitlinks.size === 0) return out;
+  }
+  const cdup =run(fillPushArgv(ah.cfg('git.push_argv_cdup'), dir, repo, 0), execEnv);
+  if (cdup === null) return out;
+  const top = posix.resolveIn(S.procCwd, [dir, cdup.trim() || '.']);
+  if (ah.fs.realpath(posix.join(top, ah.cfg('git.push_gitmodules_file'))) === null) return out;
+  const subs = run(fillPushArgv(ah.cfg('git.push_argv_submodules'), dir, repo, 0), execEnv);
+  if (subs === null) return out;
+  let subEnv;
+  if (execEnv) {
+    subEnv = Object.assign({}, execEnv);
+    for (const n of ah.cfg('git.push_repo_env_names')) delete subEnv[n];
+  }
+  for (const p of subs.split('\n').map((x) => x.trim()).filter(Boolean)) {
+    if (count > cap || out.unchecked) break;
+    // git prints real paths; the top directory may be spelled through a symlink (/tmp), so try both spellings
+    let rel = p.startsWith(top + '/') ? p.slice(top.length + 1) : p;
+    if (gitlinks !== null && rel === p) { const realTop = ah.fs.realpath(top); if (realTop && p.startsWith(realTop + '/')) rel = p.slice(realTop.length + 1); }
+    const subEnvArg = subEnv && Object.keys(subEnv).length ? subEnv : undefined;
+    if (gitlinks === null || rel === p) scan(p, [], subEnvArg, rel); // a path not under the top directory cannot be matched: read it whole
+    else if (gitlinks.has(rel)) scan(p, [], subEnvArg, rel, gitlinks.get(rel));
+  }
+  out.over = out.over || count > cap;
+  return out;
+}
+
+// Every git command of a Bash call with the directory it runs in: `cd` is followed, eval and `sh -c` payloads are read (up to
+// git_audit.max_depth). visit(ev, sub, rest, dir, seg) for each; ev.env is the git environment the command sets.
+function forEachGitCommand(cmd, base, depth, visit) {
+  let cdDir = base;
+  const persist = {};
+  const persistDyn = {};
+  for (const seg of splitSegments(cmd)) {
+    const tokens = tokenize(seg);
+    if (!tokens.length) continue;
+    const se = segmentEnv(tokens);
+    const env = Object.assign({}, persist, se.inline);
+    Object.assign(persist, se.persist);
+    for (const n of Object.keys(se.persist)) delete persistDyn[n];
+    for (const d of se.persistDyn || []) persistDyn[d.name] = d.raw;
+    const ev = effectiveVerb(tokens);
+    if (!ev) continue;
+    ev.env = env;
+    ev.dynEnv = Object.keys(persistDyn).filter((n) => !(n in se.inline)).map((n) => persistDyn[n]).concat((se.inlineDyn || []).map((d) => d.raw));
+    if (ev.verb === ah.cfg('git_audit.cd_verb')) {
+      const dirTok = ev.args.find((t) => !t.text.startsWith('-'));
+      if (dirTok) cdDir = posix.resolveIn(S.procCwd, [cdDir, dirTok.text]);
+      continue;
+    }
+    const isEval = ev.verb === ah.cfg('git_audit.eval_verb');
+    if (depth < ah.cfg('git_audit.max_depth') && (isEval || TB.shellVerbs.has(ev.verb.toLowerCase()))) {
+      const payload = isEval ? extractEvalPayload(seg) : extractShellCPayload(seg);
+      if (payload) forEachGitCommand(payload, cdDir, depth + 1, visit);
+      continue;
+    }
+    if (ev.verb !== ah.cfg('git_audit.git_verb')) continue;
+    const { sub, rest } = gitSubcommand(ev.args);
+    visit(ev, sub, rest, cdDir, seg);
+  }
+}
+
+// PR #469: the subcommand of a commit this call creates whose message layer 1 cannot read (a file, stdin that no quoted heredoc
+// feeds, a reused or edited message, an expansion, a commit with no literal message, an alias), or null. Allowlist: only a
+// literal -m/--message, or -F - fed by a quoted heredoc, counts as read.
+function unreadCommitMessage(ev, sub, rest, dir, seg) {
+  if (TB.sameCallAlways.has(sub)) return sub;
+  if (!TB.sameCallSubs.has(sub)) {
+    const ex = expandAlias(ev.args, sub, rest, dir, undefined);
+    if (ex === null) return null;
+    return ex.verb === '!' || ex.verb.startsWith('-') || TB.sameCallSubs.has(ex.verb) || TB.sameCallAlways.has(ex.verb) ? sub : null;
+  }
+  let msg = false;
+  for (let i = 0; i < rest.length; i++) {
+    const w = rest[i].text;
+    if (w === '--' ) break;
+    if (TB.sameCallNoCommitOpts.some((re) => re.test(w))) return null;
+    if (w === TB.sameCallNoEditOpt && TB.sameCallNoEditSubs.has(sub)) { msg = true; continue; }
+    const mc = /^-([A-Za-z]*)m/.exec(w);
+    if (mc && mc[1] && TB.sameCallOpts.some((re) => re.test('-' + mc[1]))) return sub;
+    if (w === '--message' || /^-[A-Za-z]*m$/.test(w)) { msg = true; i++; continue; }
+    if (w.startsWith('--message=') || /^-[A-Za-z]*m./.test(w)) { msg = true; continue; }
+    if (TB.sameCallOpts.some((re) => re.test(w))) return sub;
+  }
+  for (const spec of fileCommitMessages(rest)) {
+    if ((spec === '-' || spec === '/dev/stdin') && TB.sameCallHeredoc.test(seg) && !TB.sameCallHereString.test(seg)) { msg = true; continue; }
+    return sub;
+  }
+  for (const tk of inlineCommitMessageToks(rest)) if (unresolvedExpansion(tk.raw)) return sub;
+  return TB.sameCallNeedMsg.has(sub) && !msg ? sub : null;
+}
+
+// PR #469: before the scan spends the call's git-query budget, every push of the call is checked (cached for the scan), and a
+// commit whose message layer 1 cannot read is refused together with a push in the same call: it would be published first, and a
+// published commit cannot be reworded without a force push.
+function pushPrepass(cmd, cwd) {
+  const pushes = [], unread = [];
+  try {
+    forEachGitCommand(cmd, cwd, 0, (ev, sub, rest, dir, seg) => {
+      if (sub === null) return;
+      if (sub === 'push') { pushes.push({ ev: ev, dir: dir }); return; }
+      const u = unreadCommitMessage(ev, sub, rest, dir, seg);
+      if (u) unread.push(u);
+    });
+  } catch (e) {
+    if (gitFatal(e)) throw e;
+    return null;
+  }
+  if (gitSettingOn('git.setting_push_credit')) {
+    // an unquoted substitution in the repository path cuts the segment before the push: matched on the whole command
+    const dm = new RegExp(ah.cfg('git.push_dynamic_repo_cmd_re')).exec(cmd);
+    if (dm) return gmKey('msg_push_dynamic_repo', { arg: dm[0].slice(0, ah.cfg('git.expansion_shown_chars')) });
+  }
+  if (!pushes.length || !gitSettingOn('git.setting_push_credit')) return null;
+  for (const p of pushes) {
+    const v = pushCreditVerdict(p.ev, p.dir);
+    if (v) return v;
+  }
+  if (unread.length) return gmKey('msg_push_same_call', { sub: unread[0] });
+  return null;
+}
+
+// The script an interpreter call names: its first word that is not an option and not a redirection (`bash 2>/dev/null x.sh`, `bash 2> /dev/null x.sh`).
+function scriptArgOf(args) {
+  const redir = new RegExp(ah.cfg('git.script_redirect_re')), bare = new RegExp(ah.cfg('git.script_redirect_bare_re')), opd = ah.cfg('git.shell_operand_opts'), letters = ah.cfg('git.shell_operand_letters');
+  for (let i = 0; i < args.length; i++) {
+    const t = args[i];
+    if (t.text === '--') return args[i + 1]; // after `--` the next word is the script, whatever it starts with
+    if (opd.indexOf(t.text) >= 0) { i++; continue; }
+    // a bundle of short options ends the way its last letter says: -eo pipefail, -Oe extglob take the next word as the operand
+    if (/^[-+][A-Za-z]+$/.test(t.text) && Array.prototype.some.call(t.text.slice(1), function (ch) { return letters.indexOf(ch) >= 0; })) { i++; continue; } // an option that takes an operand (--rcfile x, -o pipefail): the next word is not the script
+    if (t.text.startsWith('-') || t.text.startsWith('+')) continue;
+    if (bare.test(t.text)) { i++; continue; } // the operator stands alone: the next word is its target
+    if (redir.test(t.raw !== undefined ? t.raw : t.text)) continue;
+    return t;
+  }
+  return undefined;
+}
+
+// PR #469: a script a call runs by literal path (bash x.sh, ./x.sh, source x) is read and scanned like a commit message: a
+// credit line on any line is refused (naming the file and line), and so is a commit whose message layer 1 cannot read together
+// with a push in it, as in one call. A missing, oversized or non-literal path is let through with an advisory.
+function scriptFileVerdict(tok, cdDir, byPath) {
+  if (!tok) return null;
+  const raw0 = tok.raw !== undefined ? tok.raw : tok.text;
+  // a leading $HOME / ${HOME} is the user's home directory (as for a heredoc target): a path under it is literal
+  const homeRe = /^\$(?:HOME|\{HOME\})(?=\/|$)/;
+  const raw = raw0.replace(homeRe, '~');
+  // a redirection (2>/dev/null) is no script path; a variable assignment / parameter expansion (d=${d%/}) is none either when it stands
+  // where a program is (byPath), but bash takes `release=nightly.sh` as the script name
+  if (new RegExp(ah.cfg('git.script_redirect_re')).test(raw0)) return null;
+  if (byPath && new RegExp(ah.cfg('git.script_assign_re')).test(raw0)) return null;
+  // a program run directly by a path that is not literal is named only when it looks like a script (an extension of git.script_ext_re): a
+  // binary behind a variable ($B/ah-engine) is no script; an interpreter (bash x.sh, source x) always names the script it runs
+  if (/[$`*?[]/.test(raw) || !tok.text) {
+    if (!byPath || new RegExp(ah.cfg('git.script_ext_re')).test(tok.text || raw0)) S.scriptUnchecked = tok.text || raw0;
+    return null;
+  }
+  const path = scriptRealPath(tok.text.replace(homeRe, '~'), cdDir || S.procCwd);
+  if (path === null) { if (!byPath) S.scriptUnchecked = tok.text; return null; }
+  const size = ah.fs.size(path);
+  // a path run directly that is not there is a script only when this very call writes it (cat > x.sh <<EOF ... ./x.sh)
+  if (size === null && byPath && !new RegExp(ah.cfg('git.script_written_prefix_re') + '(?:[^\\s\'"]*/)?' + tok.text.split('/').pop().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).test(S.raw)) return null;
+  // the host reads at most script.read_max_bytes: a larger cap would scan a cut-off script
+  const cap = Math.min(ah.cfgNum('git.script_scan_max_bytes'), ah.cfgNum('script.read_max_bytes'));
+  const body = size === null || size > cap ? null : ah.fs.readText(path, cap);
+  if (body === null) {
+    // a program run by path that is no script (a binary over the cap) is not reported
+    const head = size !== null && byPath ? ah.fs.readText(path, 2) : '#!';
+    if (head === '#!') S.scriptUnchecked = tok.text;
+    return null;
+  }
+  // comment lines and greps of a pattern cannot reach a message; blanked, so line numbers stay
+  const live = body.split('\n').map((l) => (TB.scriptInertLine.test(l) ? '' : l));
+  const liveBody = live.join('\n');
+  let reaches = false, pushes = 0;
+  const unread = [];
+  try {
+    forEachGitCommand(body, cdDir || S.procCwd, 0, (ev, sub, rest, dir, seg) => {
+      if (sub === null) return;
+      if (sub === 'push') { pushes++; reaches = true; return; }
+      if (TB.sameCallSubs.has(sub)) reaches = true;
+      const u = unreadCommitMessage(ev, sub, rest, dir, seg);
+      if (u) unread.push(u);
+    });
+  } catch (e) {
+    if (gitFatal(e)) throw e;
+    reaches = true; // unparsed: keep the credit scan, as before
+  }
+  // PR #469 round 10: a gh pr/issue/release command (gh_subs x gh_actions) publishes its body text like a commit does; its body
+  // and --body-file / --notes-file text are checked as the direct command is
+  let ghHit = null;
+  try {
+    for (const seg of splitSegments(liveBody)) {
+      const gev = effectiveVerb(tokenize(seg));
+      if (gev && gev.verb === 'gh' && ghSelfCreditMessage(gev.args)) { ghHit = seg; break; }
+    }
+  } catch (e) {
+    if (gitFatal(e)) throw e;
+  }
+  if (ghHit !== null) {
+    const first = ghHit.trim().split(/\s+/)[0] || '';
+    const gl = live.findIndex((l) => l.includes(first) && /\bgh\b/.test(l));
+    return gmKey('msg_script_credit', { file: tok.text, line: gl < 0 ? 1 : gl + 1 });
+  }
+  // a script that never commits, merges, tags or pushes cannot publish a credit line it mentions
+  if (reaches && hasSelfCredit(liveBody)) {
+    const line = live.findIndex((l) => hasSelfCredit(l));
+    return gmKey('msg_script_credit', { file: tok.text, line: line < 0 ? 1 : line + 1 });
+  }
+  if (!gitSettingOn('git.setting_push_credit')) return null;
+  return pushes && unread.length ? gmKey('msg_push_same_call', { sub: unread[0] }) : null;
+}
+
+// The file a script path runs: the kernel resolves symlinks before `..` (link/../x.sh is the link target's parent), so a lexical
+// normalisation can name another file. realpath follows the links; a path that does not resolve and holds `..` is unverifiable.
+function scriptRealPath(text, cwd) {
+  let abs = expandTilde(text.replace(/\\/g, '/'), S.home);
+  if (!abs.startsWith('/')) abs = expandTilde(String(cwd).replace(/\\/g, '/'), S.home).replace(/\/+$/, '') + '/' + abs;
+  const real = ah.fs.realpath(abs);
+  if (real) return real;
+  return /(^|\/)\.\.(\/|$)/.test(abs) ? null : normalizeGuardPath(text, cwd);
+}
+
 function handoverCommitVerdict(ev, lastCdDir) {
   if (!ev.args.some((t) => t.text === 'commit')) return null;
   if (S.handoverEvalBudget-- <= 0) { S.handoverSkipped++; return null; }
@@ -1856,13 +2705,27 @@ function forwardable(tokens) {
   return out;
 }
 
+// { name, raw } of each git.push_repo_env_names assignment whose value the shell expands at run time (dynamicRepoPath)
+function dynamicRepoEnv(tokens) {
+  const names = ah.cfg('git.push_repo_env_names');
+  const out = [];
+  for (const t of tokens) {
+    if (t.quotedOnly) continue;
+    const m = /^([A-Za-z_][A-Za-z0-9_]*)=/.exec(t.text);
+    if (!m || !names.includes(m[1])) continue;
+    const raw = String(t.raw === undefined ? t.text : t.raw);
+    if (dynamicRepoPath(raw.slice(raw.indexOf('=') + 1))) out.push({ name: m[1], raw: raw });
+  }
+  return out;
+}
+
 function segmentEnv(tokens) {
   try {
     const gi = tokens.findIndex((t) => !t.quotedOnly && t.text === 'git');
-    if (gi >= 0) return { inline: forwardable(tokens.slice(0, gi)), persist: {} };
+    if (gi >= 0) return { inline: forwardable(tokens.slice(0, gi)), persist: {}, inlineDyn: dynamicRepoEnv(tokens.slice(0, gi)) };
     const first = tokens[0] && !tokens[0].quotedOnly ? tokens[0].text : '';
     const allAssign = tokens.every((t) => !t.quotedOnly && /^[A-Za-z_][A-Za-z0-9_]*=/.test(t.text));
-    if (first === 'export' || first === 'declare' || allAssign) return { inline: {}, persist: forwardable(tokens) };
+    if (first === 'export' || first === 'declare' || allAssign) return { inline: {}, persist: forwardable(tokens), persistDyn: dynamicRepoEnv(tokens) };
   } catch (e) { if (gitFatal(e)) throw e; }
   return { inline: {}, persist: {} };
 }
@@ -2188,8 +3051,8 @@ function scanCommand(cmd, depth, baseCwd) {
   const heredocBodies = extractHeredocBodies(cmd);
   let lastCdDir = (typeof baseCwd === 'string' && baseCwd) ? baseCwd : null;
 
-  if (d < 3) {
-    for (const lit of callLiteralCommands(scanText)) {
+  if (d < TB.inlineDepth) {
+    for (const lit of callLiteralCommands(withoutGhTextValues(scanText))) {
       const hit = scanCommand(lit, d + 1, baseCwd);
       if (hit) return hit;
     }
@@ -2245,7 +3108,7 @@ function scanCommand(cmd, depth, baseCwd) {
     }
 
     if (ev.verb === 'eval') {
-      if (d < 3) {
+      if (d < TB.inlineDepth) {
         const payload = extractEvalPayload(seg);
         if (payload) {
           const nested = scanCommand(payload, d + 1, lastCdDir);
@@ -2256,7 +3119,7 @@ function scanCommand(cmd, depth, baseCwd) {
     }
 
     if (TB.shellVerbs.has(ev.verb.toLowerCase())) {
-      if (d < 3) {
+      if (d < TB.inlineDepth) {
         const payload = extractShellCPayload(seg);
         if (payload) {
           const nested = scanCommand(payload, d + 1, lastCdDir);
@@ -2264,8 +3127,17 @@ function scanCommand(cmd, depth, baseCwd) {
         } else if (shellScriptIsInput(tokens, [])) {
           const sv = stdinScriptVerdict(cmd, d, lastCdDir);
           if (sv) return sv;
+        } else {
+          const fv = scriptFileVerdict(scriptArgOf(ev.args), lastCdDir, false);
+          if (fv) return fv;
         }
       }
+      continue;
+    }
+
+    if (TB.scriptRunVerbs.has(ev.verb)) {
+      const fv = scriptFileVerdict(scriptArgOf(ev.args), lastCdDir, false);
+      if (fv) return fv;
       continue;
     }
 
@@ -2291,7 +3163,13 @@ function scanCommand(cmd, depth, baseCwd) {
       continue;
     }
 
-    if (ev.verb !== 'git') continue;
+    if (ev.verb !== 'git') {
+      if (ev.verbTok && ev.verbTok.text.indexOf('/') !== -1) {
+        const fv = scriptFileVerdict(ev.verbTok, lastCdDir, true);
+        if (fv) return fv;
+      }
+      continue;
+    }
 
     const gv = gitVerdict(ev, d, cmd, heredocBodies, lastCdDir, true);
     if (gv) return gv;
@@ -2311,7 +3189,7 @@ function scanCommand(cmd, depth, baseCwd) {
     const lb = launcherBackstop(scanText, baseCwd);
     if (lb) return lb;
   }
-  return gitBackstop(scanText, d, heredocBodies, baseCwd);
+  return gitBackstop(withoutGhTextValues(scanText), d, heredocBodies, baseCwd);
 }
 
 function launcherBackstop(rawCmd, baseCwd) {
@@ -2376,6 +3254,8 @@ function gitVerdict(ev, d, cmd, heredocBodies, lastCdDir, useJev) {
       const note = /<<-?[ \t]*['"\\]?[A-Za-z_]/.test(S.raw) ? ah.cfg('git.push_cmdsubst_heredoc_note') : '';
       return gm({ what: m.what, why: m.why, instead: m.instead + note });
     }
+    const pv = pushCreditVerdict(ev, lastCdDir);
+    if (pv) return pv;
   }
 
   if (TB.backstopCommitSubs.has(sub)) {
@@ -2383,6 +3263,12 @@ function gitVerdict(ev, d, cmd, heredocBodies, lastCdDir, useJev) {
     const msgs = inlineCommitMessages(rest);
     for (const m of msgs) {
       if (creditRegexes(m) || creditRegexes(normEscapes(m))) return gmKey('msg_commit_credit');
+    }
+    if (gitSettingOn('git.setting_commit_expansion')) {
+      for (const tk of inlineCommitMessageToks(rest)) {
+        const x = unresolvedExpansion(tk.raw);
+        if (x) return gmKey('msg_commit_expansion', { shown: x });
+      }
     }
     for (const m of msgs) if (m && useJev && consultJev(m)) return gmKey('msg_commit_jev');
 
@@ -2498,7 +3384,7 @@ function backstopEnv(cmd) {
 // body is scanned by stdinScriptVerdict; an unterminated heredoc keeps its tail (stricter, as in the command check).
 function withoutPlainHeredocBodies(cmd) {
   if (cmd.indexOf('<<') === -1) return cmd;
-  let out = '', last = 0, i = 0, inSingle = false, inDouble = false;
+  let out = [], last = 0, i = 0, inSingle = false, inDouble = false;
   const n = cmd.length;
   while (i < n) {
     const c = cmd[i];
@@ -2516,7 +3402,7 @@ function withoutPlainHeredocBodies(cmd) {
       const parsed = shellScan.parseHeredocAt(cmd, i);
       if (parsed) {
         if (parsed.terminated && parsed.lineEnd !== undefined && !heredocOpenerLineHasShell(cmd, i, parsed.lineEnd)) {
-          out += cmd.slice(last, parsed.lineEnd + 1);
+          out.push(cmd.slice(last, parsed.lineEnd + 1));
           last = parsed.end;
         }
         i = parsed.end;
@@ -2526,7 +3412,7 @@ function withoutPlainHeredocBodies(cmd) {
     }
     i++;
   }
-  return last === 0 ? cmd : out + cmd.slice(last);
+  return last === 0 ? cmd : out.join('') + cmd.slice(last);
 }
 
 function heredocOpenerLineHasShell(cmd, openerAt, lineEnd) {
@@ -2560,11 +3446,46 @@ function gitBackstopLines(cmd, d, heredocBodies, cwd) {
   return null;
 }
 
+// #907: the free text a gh pr/issue/release command publishes (its --body / --title / --notes value, a --body-file path) is data, never a
+// command of this chain: the quote-blind backstop must not read "a; <command words>" inside it as one. The value is blanked in the text the
+// backstop and call-literal scans read (the credit scan keeps reading it); a value that can run something (`$(..)`, a backtick, `${..}`
+// outside single quotes) stays live. A gh command that itself merges or deletes is untouched: only the value words go.
+function withoutGhTextValues(cmd) {
+  if (typeof cmd !== 'string' || cmd.indexOf('gh') === -1) return cmd;
+  let out = cmd;
+  try {
+    for (const seg of splitSegments(cmd)) {
+      const ev = effectiveVerb(tokenize(seg));
+      if (!ev || ev.verb !== 'gh') continue;
+      const words = ev.args.map((a) => a.text);
+      if (!TB.ghSubs.some((w) => words.includes(w))) continue;
+      let masked = seg;
+      for (let i = 0; i < ev.args.length; i++) {
+        const w = ev.args[i].text;
+        let val = null;
+        if (TB.ghValueOpts.has(w) || TB.ghFileOpts.has(w)) { if (i + 1 < ev.args.length) { val = ev.args[i + 1]; i++; } }
+        else if (TB.ghValuePrefixes.some((p) => w.startsWith(p)) || TB.ghFilePrefixes.some((p) => w.startsWith(p))) val = ev.args[i];
+        if (!val || typeof val.raw !== 'string' || val.raw === '') continue;
+        if (/^'[^']*'$/.test(val.raw) === false && /[$`]/.test(val.raw)) continue; // can run something: stays live
+        const at = masked.indexOf(val.raw);
+        if (at < 0) continue;
+        const eq = ev.args[i] === val && val.raw.indexOf('=') >= 0 && !TB.ghValueOpts.has(w) ? val.raw.indexOf('=') + 1 : 0;
+        masked = masked.slice(0, at + eq) + '""' + masked.slice(at + val.raw.length);
+      }
+      if (masked !== seg && out.indexOf(seg) >= 0) out = out.replace(seg, () => masked);
+    }
+  } catch (e) {
+    if (gitFatal(e)) throw e;
+    return cmd;
+  }
+  return out;
+}
+
 function gitBackstop(cmd, d, heredocBodies, baseCwd) {
   const benv = backstopEnv(cmd);
   const scanned = withoutPlainHeredocBodies(cmd);
   const cwd = (typeof baseCwd === 'string' && baseCwd) ? baseCwd : null;
-  if (d < 3) {
+  if (d < TB.inlineDepth) {
     for (const payload of pipedEchoShellPayloads(cmd)) {
       const hit = gitBackstop(payload, d + 1, extractHeredocBodies(payload), cwd);
       if (hit) return hit;
@@ -2575,7 +3496,7 @@ function gitBackstop(cmd, d, heredocBodies, baseCwd) {
     const variants = [trimmed];
     if (/^["']/.test(trimmed)) variants.push(trimmed.replace(/^["']+/, ''));
     for (const v of variants) {
-      if (d < 3) {
+      if (d < TB.inlineDepth) {
         const envPayload = extractEnvSPayload(v);
         if (envPayload) {
           const hit = gitBackstop(envPayload, d + 1, extractHeredocBodies(envPayload), cwd);
@@ -2589,7 +3510,7 @@ function gitBackstop(cmd, d, heredocBodies, baseCwd) {
         ev.env = benv;
         const hit = gitVerdict(ev, d, cmd, heredocBodies, cwd, false);
         if (hit) return hit;
-      } else if (d < 3 && (ev.verb === 'eval' || TB.shellVerbs.has(ev.verb.toLowerCase()))) {
+      } else if (d < TB.inlineDepth && (ev.verb === 'eval' || TB.shellVerbs.has(ev.verb.toLowerCase()))) {
         const payload = ev.verb === 'eval' ? extractEvalPayload(v) : extractShellCPayload(v);
         if (payload) {
           const hit = gitBackstop(payload, d + 1, extractHeredocBodies(payload), cwd);
@@ -2616,6 +3537,30 @@ function looksLikeFileWriteShape(cmd) {
   return new RegExp(TB.fileWriteEcho).test(cmd) && redirects;
 }
 
+// GH #457: every block is counted by reason (its message key); a blocked push also by its own counter
+function countBlock(hit) {
+  try {
+    const key = S.keyOf.get(hit);
+    const reason = key ? key.replace(ah.cfg('git.block_key_prefix'), '') : ah.cfg('git.block_reason_other');
+    ah.metric('git_blocked', ['reason', reason]);
+    if (key === 'msg_push_credit') ah.metric('git_push_blocked', []);
+  } catch (e) { /* counting never fails a hook */ }
+}
+
+// The config advisory for a dropped commit_expansion_patterns entry: shown once per session (a stamp in the state directory; without a
+// session id, or when the stamp cannot be written, on each call, which is loud rather than silent).
+function badExpansionAdvisory(session, bad) {
+  const msg = text.render(ah.cfg('git.expansion_pattern_advisory'), { shown: bad.map((p) => JSON.stringify(p)).join(', ') });
+  if (!session) return msg;
+  const name = ah.cfg('git.expansion_advisory_state_prefix') + session.replace(/[^A-Za-z0-9_.-]/g, '_') + ah.cfg('replykit.json_ext');
+  const rel = ah.cfg('replykit.state_dir') + '/' + name;
+  let told = false;
+  try { const prev = ah.state.readText(rel); told = prev !== null && prev !== ''; } catch (e) { told = false; }
+  if (told) return '';
+  try { ah.state.writeAtomic(rel, JSON.stringify({ told: bad })); } catch (e) { /* the advisory is shown regardless */ }
+  return msg;
+}
+
 function decide(p, opts, event) {
   try { return decideScan(p, opts, event); } finally { TOK_MEMO.clear(); SEG_MEMO.clear(); }
 }
@@ -2640,11 +3585,20 @@ function decideScan(p, opts, event) {
   S.abs = (q) => (q.charAt(0) === '/' ? q : posix.resolveIn(cwdIn, [q]));
   S.pluginRoot = (opts && typeof opts.plugin_root === 'string' && opts.plugin_root) || ah.env.get(ah.cfg('env.plugin_root')) || '';
   shellScan.reset();
-  const hit = scanCommand(cmd, 0, cwdIn);
+  const hit = pushPrepass(cmd, cwdIn) || scanCommand(cmd, 0, cwdIn);
+  if (hit) countBlock(hit);
   if (hit) return { block: looksLikeFileWriteShape(cmd) ? hit + ah.cfg('git.file_write_tip') : hit };
-  if (S.handoverSkipped > 0) {
-    const t = text.render(ah.cfg('git.handover_skipped_advisory'), { n: S.handoverSkipped });
-    return { advisory: JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: t } }) };
+  const notes = [];
+  if (S.pushUnchecked) notes.push(ah.cfg('git.push_unchecked_advisory'));
+  if (S.scriptUnchecked !== null) notes.push(text.render(ah.cfg('git.script_unchecked_advisory'), { file: S.scriptUnchecked }));
+  if (S.pushAckNote) notes.push(S.pushAckNote);
+  if (TB.badExpansion.length) {
+    const bad = badExpansionAdvisory(session, TB.badExpansion);
+    if (bad) notes.push(bad);
+  }
+  if (S.handoverSkipped > 0) notes.push(text.render(ah.cfg('git.handover_skipped_advisory'), { n: S.handoverSkipped }));
+  if (notes.length) {
+    return { advisory: JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', additionalContext: notes.join('\n') } }) };
   }
   return 'allow';
 }

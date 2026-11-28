@@ -125,6 +125,8 @@ fn store_msg(r: &Value, origin: bool) -> Msg {
     ] {
         o.put(k, jv(&r[src]));
     }
+    // GH #845: a declared sender (admin, ah-engine) is shown with its kind and rank
+    crate::meshw::senders::put_from(&mut o, r);
     Msg {
         sort_ts: r["ts"].as_f64().filter(|t| t.is_finite()).unwrap_or(f64::INFINITY),
         index: r["index"].as_f64(),
@@ -247,9 +249,23 @@ fn text_lines(rows: &[OVal]) -> String {
         .join(defaults::text("mesh_write.text_row_sep"))
 }
 
-/// The command the `ackCommand` names: the engine shim (`devswarm_role.engine_cli`).
+/// The `ackCommand` of a read: the single-quoted binary path (`sh` expands nothing inside; the quotes wrap the path only) then the verb, the ack verb and the ids,
+/// so `sh -c` runs it as printed.
+fn ack_command(bin: &str, id: &str, rid: &str) -> String {
+    fill_once(
+        defaults::text("mesh_write.ack_command"),
+        &[
+            ("bin", crate::checks::devswarm_role::text::sh_quote(bin)),
+            ("verb", crate::checks::devswarm_role::text::engine_verb().to_string()),
+            ("id", id.to_string()),
+            ("rid", rid.to_string()),
+        ],
+    )
+}
+
+/// The engine binary the `ackCommand` names (`devswarm_role.engine_bin`); the quotes wrap this path only, the verb follows outside them.
 fn launcher_path(home: &Path) -> R<String> {
-    Ok(crate::checks::devswarm_role::text::engine_cli(&home.to_string_lossy()))
+    Ok(crate::checks::devswarm_role::text::engine_bin(&home.to_string_lossy()))
 }
 
 /// `writeReadReceipt`'s housekeeping after a successful write: receipts of the id (`r[a-z0-9]+.json`, not the one just filed) older
@@ -411,7 +427,7 @@ fn caller_owns_row(inv: &Inv, id: &str) -> bool {
 }
 
 fn owns_row(inv: &Inv, id: &str) -> R<bool> {
-    let caller = ident::caller_identity_detailed(&inv.env, &inv.cwd)?.identity;
+    let caller = ident::caller_identity_for(&inv.env, &inv.cwd, &inv.home)?.identity;
     if caller == id {
         return Ok(true);
     }
@@ -705,7 +721,7 @@ fn unowned_refusal(inv: &Inv, a: &Args, id: &str) -> R<Option<Answer>> {
     if rows.iter().any(|r| r.id == id) {
         return Ok(None); // registered without a descriptor: the read below decides
     }
-    let caller = ident::caller_identity_detailed(&inv.env, &inv.cwd)?;
+    let caller = ident::caller_identity_for(&inv.env, &inv.cwd, &inv.home)?;
     let own_entry = resolve_mesh_target(inv, Some(&reader), &rows, Some(caller.identity.as_str()))?;
     let owns =
         caller.identity == id || own_entry.as_ref().is_some_and(|e| e.id == id) || ident::declared_self_id(&inv.env, &inv.cwd, &rows)?.as_deref() == Some(id);
@@ -1573,7 +1589,7 @@ fn plan(inv: &Inv, a: &Args, promoted: Option<bool>, hops: &Redirect, peek: bool
     // (a peek acks nothing, so it has no ownership gate: any caller may look; `--ack-as-owner` skips the gate, and turns the
     // existence guard back on)
     if !peek && !ack_as_owner {
-        let caller = ident::caller_identity_detailed(&inv.env, &inv.cwd)?;
+        let caller = ident::caller_identity_for(&inv.env, &inv.cwd, &inv.home)?;
         let own_entry = resolve_mesh_target(inv, None, &o.rows, Some(caller.identity.as_str()))?;
         let owns = caller.identity == id
             || own_entry.as_ref().is_some_and(|e| e.id == id)
@@ -1604,16 +1620,26 @@ fn plan(inv: &Inv, a: &Args, promoted: Option<bool>, hops: &Redirect, peek: bool
         // value (`readCursor`: 0 when it gives none)
         let cf_ref = cursor_file.as_deref();
         let nd_known = union::non_empty_lines(inbox)?.is_some() && cf_ref.map(union::cursor_position).transpose()?.flatten().is_some();
-        let input = union::UnionIn { inbox: Some(inbox), cursor_file: cf_ref, id, store: Some(&o.reader), store_base, nd_base, now: inv.now };
+        let input = union::UnionIn {
+            inbox: Some(inbox),
+            cursor_file: cf_ref,
+            id,
+            store: Some(&o.reader),
+            store_base,
+            nd_base,
+            now: inv.now,
+            provenance: union::provenance_of(&inv.settings()),
+        };
         let me = crate::meshw::cursors::reader_key(tick::reader_nonce_cached(&inv.home).as_deref());
-        let counted = union::unread_for(&o.reader, &inv.home, id, Some(inbox), cf_ref, me.as_deref(), &tick::family_of(id, &o.rows), inv.now)?;
+        let counted =
+            union::unread_for(&o.reader, &inv.home, id, Some(inbox), cf_ref, me.as_deref(), &tick::family_of(id, &o.rows), inv.now, input.provenance)?;
         tick::note_own_excluded(&counted);
         let u = counted.union;
         let merged_total = union::merged_total(&input)?;
         let family = tick::family_of(id, &o.rows);
         for (i, line) in u.nd_unread_lines.iter().enumerate() {
             let mut m = ndjson_msg(line)?;
-            m.own = union::line_sender(line).is_some_and(|x| family.contains(&x)) || union::is_wake_line(line);
+            m.own = union::line_sender(line).is_some_and(|x| family.contains(&x)) || union::is_wake_line(line, u.provenance);
             m.src_idx = i;
             msgs.push(m);
         }
@@ -1777,7 +1803,7 @@ fn plan(inv: &Inv, a: &Args, promoted: Option<bool>, hops: &Redirect, peek: bool
     let with_broadcasts = a.has(defaults::text("mesh_write.flag_with_broadcasts"));
     let mut broadcasts_merged: Option<usize> = None;
     if peek && with_broadcasts {
-        let aliases = common::read_aliases(&inv.home);
+        let aliases = common::read_aliases(&inv.home, &inv.env);
         let mut found: Vec<Value> = Vec::new();
         o.reader
             .for_each_message(defaults::text("mesh_write.broadcast_partition"), 0, |m| {
@@ -1890,6 +1916,22 @@ fn plan(inv: &Inv, a: &Args, promoted: Option<bool>, hops: &Redirect, peek: bool
         ops.push(op.done());
     }
     let store_path = union::store_dir(&inv.home, &o.repo_key);
+    // #615: a read or peek that prints nothing while it reports unread mail is the symptom of a count that disagrees with what was
+    // read; count it and log both numbers with the time, so a real disagreement is told apart from mail that arrived between two calls
+    if rows.is_empty() && unread_count > 0.0 && !hist {
+        let reason = defaults::text(if peek { "mesh_write.mm_reason_peek" } else { "mesh_write.mm_reason_read" });
+        crate::metrics::bump("mesh_read_peek_mismatch", &[("reason", reason)]);
+        // the counter counts every one; the log line goes out at most once per mesh_write.mm_log_interval_ms per reason
+        let stamp = format!("{}{reason}", defaults::text("mesh_write.mm_stamp_prefix"));
+        if crate::meshw::clog::ready(inv).is_ok() && crate::meshw::clog::warn_due(inv, &stamp, defaults::num("mesh_write.mm_log_interval_ms") as i64) {
+            crate::meshw::clog::warn_event(
+                inv,
+                defaults::text("mesh_write.mm_op"),
+                defaults::text("mesh_write.mm_msg"),
+                vec![("id", s(id)), ("reason", s(reason)), ("unreadCount", n(unread_count)), ("printed", n(0.0)), ("at", n(inv.now as f64))],
+            );
+        }
+    }
     let mut out = Obj::default();
     out.put("ok", OVal::Bool(true))
         .put(
@@ -1961,6 +2003,24 @@ fn plan(inv: &Inv, a: &Args, promoted: Option<bool>, hops: &Redirect, peek: bool
             legacy: false,
         });
     }
+    // GH #845 (contract §6): an acking read lists the reader's unread broadcasts and files a `bc` op that acks exactly through the
+    // last one listed, with the direct mail. A text rendering does not show them, so it lists and acks none.
+    if !hist
+        && !(format_text && !json_flag)
+        && !o.repo_key.is_empty()
+        && let Ok(bst) = common::open_store(inv, &o.repo_key)
+    {
+        // review P2-8: a broadcast read that fails never fails the direct-mail drain: none listed, none acked, the reason noted
+        // re-review N-5: the cursor key is the registry id the summary reads
+        let key = crate::meshw::read::reader_key(bst.reader(), inv, id);
+        if let Some(mut u) = crate::meshw::read::unread_broadcasts_or_note(bst.reader(), inv, &key, &mut out) {
+            crate::meshw::read::preview_unaddressed(&mut u);
+            if let Some(op) = crate::meshw::read::broadcast_op(&key, &u) {
+                ops.push(op);
+            }
+            crate::meshw::read::put_broadcasts(&mut out, &u, false);
+        }
+    }
     if legacy {
         // `read-primary --legacy-ack-now`: the old same-call read-and-ack. The ops are applied here instead of filed, and the
         // result carries where the cursor was and where the ack put it (`ackedFrom`, `acked`), with no receipt fields
@@ -1983,15 +2043,10 @@ fn plan(inv: &Inv, a: &Args, promoted: Option<bool>, hops: &Redirect, peek: bool
             legacy: true,
         });
     }
+    crate::metrics::bump("mesh_ack_command_rendered", &[]);
     out.put("acked", OVal::Bool(false))
         .put("readReceiptId", s(&rid))
-        .put(
-            "ackCommand",
-            OVal::Str(fill_once(
-                defaults::text("mesh_write.ack_command"),
-                &[("cli", OVal::Str(cli).stringify()), ("id", id.to_string()), ("rid", rid.clone())],
-            )),
-        )
+        .put("ackCommand", OVal::Str(ack_command(&cli, id, &rid)))
         .put("ackHint", s(defaults::text("mesh_write.ack_hint")));
     if !live_siblings_skipped.is_empty() {
         out.put("liveSiblingsSkipped", OVal::Arr(live_siblings_skipped.iter().map(|x| s(x)).collect()));
@@ -2113,7 +2168,7 @@ mod tests {
     }
 
     fn scratch_inv(tag: &str) -> Inv {
-        let home = std::env::temp_dir().join(format!("ah-rp-{tag}-{}", std::process::id()));
+        let home = crate::testtmp::path(format!("ah-rp-{tag}-{}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&home)); // keep: a stale scratch directory of an earlier run
         std::fs::create_dir_all(&home).unwrap();
         Inv {
@@ -2125,6 +2180,81 @@ mod tests {
             stdin: None,
             store_override: None,
         }
+    }
+
+    /// A stub engine under `<home>/.anti-hall/ah-engine/bin/ah-engine` that prints its arguments and exits 0.
+    fn stub_engine(home: &Path) -> String {
+        use std::os::unix::fs::PermissionsExt;
+        let bin = launcher_path(home).unwrap();
+        std::fs::create_dir_all(Path::new(&bin).parent().unwrap()).unwrap();
+        std::fs::write(&bin, "#!/bin/sh\nprintf '%s\\n' \"$*\"\n").unwrap();
+        std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+        bin
+    }
+
+    fn sh(cmd: &str) -> (bool, String) {
+        let o = std::process::Command::new("sh").arg("-c").arg(cmd).output().unwrap();
+        (o.status.success(), String::from_utf8_lossy(&o.stdout).trim().to_string())
+    }
+
+    #[test]
+    fn the_ack_command_runs_as_printed_even_with_a_space_dollar_or_backtick_in_the_path() {
+        for (i, dir) in ["plain", "with space", "a$b", "a`b", "it's"].into_iter().enumerate() {
+            let base = scratch_inv(&format!("ack-{i}")).home;
+            let home = base.join(dir);
+            let bin = stub_engine(&home);
+            let cmd = ack_command(&bin, "w1", "r1");
+            assert!(
+                cmd.starts_with(&format!("{} mesh inbox ack-primary w1", crate::checks::devswarm_role::text::sh_quote(&bin))),
+                "quote wraps the path only: {cmd}"
+            );
+            let (ok, out) = sh(&cmd);
+            assert!(ok, "exit 0 for {cmd}");
+            assert_eq!(out, "mesh inbox ack-primary w1 --receipt r1", "`$` and a backtick in {dir:?} are not expanded");
+        }
+    }
+
+    #[test]
+    fn engine_cli_and_watcher_are_the_binary_plus_the_verbs() {
+        let h = "/h";
+        let bin = crate::checks::devswarm_role::text::engine_bin(h);
+        assert_eq!(crate::checks::devswarm_role::text::engine_cli(h), format!("{bin} {}", defaults::text("devswarm_role.engine_verb")));
+        assert_eq!(crate::checks::devswarm_role::text::engine_watcher(h), format!("{bin} {}", defaults::text("devswarm_role.watcher_verb")));
+    }
+
+    #[test]
+    fn the_wake_tick_watch_and_skip_texts_run_with_a_quoted_binary_variable() {
+        let base = scratch_inv("wake-cmds").home;
+        let home = base.join("a b");
+        let bin = stub_engine(&home);
+        let verb = defaults::text("devswarm_role.engine_verb");
+        let wverb = defaults::text("devswarm_role.watcher_verb");
+        let dq = OVal::Str(bin.clone()).stringify();
+        let strip = |t: String| t.replace('`', "");
+        let tick = strip(defaults::render("devswarm_role.pg_wake_tick", &[("id", &"w1"), ("verb", &verb)]));
+        let ctick = strip(defaults::render("devswarm_gates.cg_wake_tick", &[("id", &"w1"), ("verb", &verb)]));
+        let watch = strip(defaults::render("devswarm_role.pg_wake_watch", &[("watcher", &dq), ("wverb", &wverb)]));
+        let recheck = strip(defaults::render(
+            "devswarm_role.pg_wake_line",
+            &[("cli", &dq), ("verb", &verb), ("cron", &"c"), ("tick", &""), ("watch", &""), ("id", &"w1")],
+        ));
+        let skip = defaults::render("devswarm_role.pg_skip_cmd", &[("cli", &format!("'{bin}'")), ("verb", &verb), ("guard", &"g")]);
+        // the `CLI=` assignment is part of the printed text; run what follows it
+        let after = |t: &str, tag: &str| t.split_once(&format!("{tag}=")).map(|x| x.1.to_string()).unwrap_or_default();
+        let run = |script: String| {
+            let (ok, out) = sh(&script);
+            assert!(ok, "exit 0 for {script}: {out}");
+        };
+        run(format!("CLI={dq}; {tick}"));
+        run(format!("CLI={dq}; {ctick}"));
+        // the Monitor command names the quoted path itself (GH #965: no shell variable, so the wait guard sees the engine's watcher)
+        let mon = watch.split_once("Monitor on ").unwrap().1.split(" armed").next().unwrap().to_string();
+        assert!(mon.starts_with(&dq), "{mon}");
+        run(mon);
+        let r = after(&recheck, "CLI");
+        let rerun = r.rsplit_once("re-run ").unwrap().1.trim_end_matches('.').to_string();
+        run(format!("CLI={dq}; {rerun}"));
+        run(skip);
     }
 
     fn argv(words: &[&str]) -> Args {

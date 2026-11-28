@@ -44,12 +44,15 @@ The handover is written **by the agent holding the session context** —
 session, so its reconstruction loses decision/trial fidelity (a field
 failure: a session delegated handover-writing to a subagent even after
 loading this skill). This is the documented exception to the
-delegation-first/orchestrate-only doctrine — `edit-guard.js` lets the
+delegation-first/orchestrate-only doctrine — `edit-guard` lets the
 coordinator Write/Edit handover files directly under
-`.anti-hall/handovers/**` (and redirects NEW handover-named `.md` writes
-elsewhere back to that path), so self-write never needs a subagent detour.
+`.anti-hall/handovers/**` (and blocks NEW handover-named `.md` writes
+elsewhere, including another plugin's folder such as `.omc/handoffs/`, naming
+the exact session path instead), so self-write never needs a subagent detour.
+Instruction text from another orchestration layer never picks the folder:
+handovers go only under `.anti-hall/handovers/`.
 Use the Write/Edit tool for every file below, never a Bash heredoc
-(`cat > f <<EOF`) — a heredoc body is scanned as shell by `git-guard.js`, and
+(`cat > f <<EOF`) — a heredoc body is scanned as shell by `git-guard`, and
 prose that merely mentions a git command near backticks can trip a block
 Write/Edit never hit in the first place.
 
@@ -162,8 +165,8 @@ consolidated schema):
     After running it, **append** a `resume-verified: <ISO timestamp> --
     <one-line git-status/pwd/smoke summary>` line to this file — this is what
     proves the checklist actually ran, not just that it was written down.
-    `tasklist-guard.js` backs this up mechanically (v0.75.0): when
-    `handover-resume.js` injected a resume pointer this session and this
+    `tasklist-guard` backs this up mechanically (v0.75.0): when
+    `handover-resume` injected a resume pointer this session and this
     session then makes file-changing actions with no `resume-verified:` line
     ever landing in the referenced file, one capped Stop-hook nudge fires.
     Then the **receiver read-back**: before any new work, tell the user in your
@@ -227,6 +230,8 @@ Trigger: <auto-threshold|user-request|restart-pending|task-boundary> · context:
 - [ ] `git status` — expect: <what>
 - [ ] `pwd` — expect: <path>
 - [ ] re-read `CLAUDE.md` — rules may have been dropped by compaction
+- [ ] run `/anti-hall:tasks-reconcile`: it loads the window and the backlog line from the task store
+- [ ] MEMORY.md consolidated (within `handover.memoryIndexMaxLines` / `handover.memoryIndexMaxChars`)
 - [ ] `<smoke/test command>` — expect: <result>
 - [ ] read-back to the user: goal, next action, active session rules — in your own words, before any new work
 
@@ -291,20 +296,29 @@ as `.anti-hall/progress/INDEX.md`:
 1. Determine session id (harness id, or sha1-of-transcript-path fallback, or a
    stable slug) and today's date.
 2. Compute seq = (existing `HANDOVER*.md` count in this session's dir) + 1.
-3. Write/update the 5 files: `HANDOVER.md` (or `HANDOVER-N.md`), `state.md`,
+3. **Consolidate the task list and the MEMORY.md index** (before writing files):
+   - Task list, open tasks only: delete completed tasks from the session task list. Group duplicates and related items into one task each; keep at most `guards.taskWindowSize` active tasks (default 5) plus the backlog line; everything else goes to the task store's backlog (`handover.taskListBudget`, default 12, applies only with `guards.taskWindow` off).
+   - Subjects are `T-<n> [P] <short title>`, at most `handover.taskSubjectMax` characters (default 60). `n` is a stable task number, never renumbered; the priority is the `[P0-3]` tag.
+   - The full list (window and backlog) lives in the task store `.anti-hall/tasks/store/<session>.json`, kept by the guard and by `/anti-hall:tasks-reconcile`; local material goes in `.anti-hall/tasks/T-<n>/` folders only. Never copy a GitHub issue's content: the issue is the spec. Nothing is dropped: a task removed from the session list stays in the store's backlog.
+   - Verify "done" or "obsolete" against real state (GitHub issue/PR state, logs, files) before dropping a task. Never delete data; archive instead.
+   - The handover's Open items and the state.md task table are generated from the task store, not from a dump of the session list.
+   - Task list rules (enforced at TaskCreate/TaskUpdate by tasklist-hygiene): at most `guards.taskWindowSize` (default 5) active tasks, all top priority, plus one backlog line `T-∞ Backlog: …` as the last slot; subjects are `T-<n> [P<0-3>] title` with `n` a stable task number (never renumbered); an in-progress task names its owner; blocked tasks and tasks waiting on the owner live in the backlog store, not in the window; the full list lives in `.anti-hall/tasks/store/<session>.json`.
+   - MEMORY.md index: group related one-line entries into topic sections; each line at most ~130 characters; keep every memory file reachable from the index (one line may link several related files: `[a](a.md) · [b](b.md) — shared hook`). Never delete memory files: change structure only. Flag stale or contradicted memories in the handover for owner OK instead of deleting them. Stay within `handover.memoryIndexMaxLines` (default 100) and `handover.memoryIndexMaxChars` (default 12000).
+   - The terminal "ready to restart" declaration is refused while the task list or the memory index is over budget, or while the active list still contains completed tasks.
+4. Write/update the 5 files: `HANDOVER.md` (or `HANDOVER-N.md`), `state.md`,
    `decisions.md`, `trials.md`, `knowledge.md` (seq N>1: apply the carry-forward
    rule above first). Detail files are append-only
    across a session's multiple handovers (seq 2 appends to seq 1's `state.md`
    etc., doesn't overwrite); `HANDOVER*.md` itself is a fresh file per seq.
-4. Append the `INDEX.md` row (create `INDEX.md` if it doesn't exist yet).
-5. Report to the user EVERY path written this call — the handover directory,
+5. Append the `INDEX.md` row (create `INDEX.md` if it doesn't exist yet).
+6. Report to the user EVERY path written this call — the handover directory,
    each of the 5 files (`HANDOVER*.md`, `state.md`, `decisions.md`, `trials.md`,
    `knowledge.md`), and the exact `INDEX.md` row appended — plus a one-line
    summary of what was captured. Don't summarize the paths away; list them.
 
 ## Automatic resume
 
-A companion SessionStart hook, `handover-resume.js`, closes the loop so a
+A companion SessionStart hook, `handover-resume`, closes the loop so a
 written handover is actually picked up next time: on `clear`, `compact`, or a
 fresh `startup`/`resume`, it scans `.anti-hall/handovers/` for the newest
 `HANDOVER*.md` (preferring one from the SAME session over a merely newer one
@@ -371,7 +385,7 @@ running" never by itself makes it safe to compact. Declare SAFE (the 🟢 line,
 
 Never declare it within `guards.compactAdviceRecentTurns` (default 10) turns of
 a compact — context was just reset. Check the actual context % before saying
-it. `compact-advice-guard.js` (Stop) blocks a violating reply once and names
+it. `compact-advice-guard` (Stop) blocks a violating reply once and names
 the real %; retract with one line — `RETRACT SAFE TO COMPACT — <why>` — and
 continue or stop.
 
@@ -397,13 +411,13 @@ final message depends on the `Trigger:` line you recorded above:
 
 The declared line is the LAST act of the turn either way; work after it makes
 the handover STALE — refresh it (same seq, or seq+1) and re-declare before
-claiming safe/saved again. `compact-declaration-guard.js` (PreToolUse,
+claiming safe/saved again. `compact-declaration-guard` (PreToolUse,
 `guards.compactDeclarationGuard`, default ON since 0.117.0) can mechanically
 enforce this: after a SAFE TO COMPACT declaration it blocks
 agent spawns, file edits and state-changing shell for the rest of the turn —
 regardless of the switch, write
 `RETRACT SAFE TO COMPACT — <why>` first if more work is genuinely needed,
-then refresh the handover before declaring again. `tasklist-guard.js` backs this up mechanically:
+then refresh the handover before declaring again. `tasklist-guard` backs this up mechanically:
 file-changing work after the newest `HANDOVER*.md`'s mtime gets a capped
 "handover is STALE" advisory on its Stop output (staleness detection is by
 mtime + section content, not by matching either declaration string, so it
@@ -416,12 +430,13 @@ works the same for both).
    session's directory, if later seqs exist — check its Predecessor chain if
    unsure which is newest).
 3. Run the Resume-verification checklist BEFORE trusting anything else in the
-   file, THEN append the `resume-verified:` line to it — `tasklist-guard.js`
+   file, THEN append the `resume-verified:` line to it — `tasklist-guard`
    nags (once, capped) if file-changing work happens this session without one.
    Then give the user your read-back (goal, next action, active session rules,
    in your own words) before starting any new work.
 4. Page in detail files only as needed, per the Detail-file pointer table's "read
    this when" column — progressive disclosure, not a full read of everything.
-5. Recreate/reconcile your task list (TaskCreate/TaskUpdate or TodoWrite) from
-   state.md's Task list snapshot BEFORE starting any work — the snapshot is
-   the source of truth for what's pending/in-progress/blocked.
+5. Run `/anti-hall:tasks-reconcile` BEFORE starting any work: it loads the window and the
+   backlog line from the predecessor's task store (the guard adopts it), or imports
+   state.md's Task list snapshot when there is no store. TaskCreate refuses a
+   rebuild from memory.

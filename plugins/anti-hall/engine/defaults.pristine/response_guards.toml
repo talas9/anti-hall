@@ -43,6 +43,14 @@ value = ["surrogate", "hex escape", "recursion limit", "out of range"]
 doc = "The role value of an assistant transcript entry."
 value = "assistant"
 
+[replykit.word_before_re]
+doc = "Rust Unicode regex that recognizes a word character other than Markdown underscore immediately before a candidate hedge; such a candidate is embedded in a word."
+value = '[\w&&[^_]]$'
+
+[replykit.word_after_re]
+doc = "Rust Unicode regex that recognizes a word character other than Markdown underscore immediately after a candidate hedge; such a candidate is embedded in a word."
+value = '^[\w&&[^_]]'
+
 # ---- once-per-turn gate ----------------------------------------------------------
 
 # ---- speculation-guard -------------------------------------------------------
@@ -60,7 +68,7 @@ doc = "Where the on/off switch is read from (guards.speculationGuard, default on
 value = { section = "guards", key = "speculationGuard", env = "", aliases = [], option = "guards_speculation_guard", default = true }
 
 [speculation_guard.inference_setting]
-doc = "The switch of the causal-claim scan (guards.inferenceCheck, default off); the scan reads tool evidence and stays on Node, so with the switch on a reply without a hedge is left to Node."
+doc = "Scan causal claims for evidence. The switch of the causal-claim scan (guards.inferenceCheck, default off); the scan reads tool evidence (the inference logic file) and, with the switch on, blocks once per reply a confident causal claim that no tool result supports."
 value = { section = "guards", key = "inferenceCheck", env = "ANTIHALL_INFERENCE_CHECK", aliases = [], option = "", default = false }
 
 [speculation_guard.state_prefix]
@@ -82,10 +90,14 @@ unit = "bytes"
 min = 4096
 
 [speculation_guard.max_blocks]
-doc = "Most blocks per session: after this many the guard stays quiet whatever the reply says (the text changes as the model reworks it, which defeats the per-text dedupe)."
+doc = "Most blocks per cap_scope window; retries with changing text share this budget. A new real owner turn resets it in owner_turn scope; same-text dedupe remains independent."
 value = 3
 min = 1
 max = 100
+
+[speculation_guard.cap_scope]
+doc = "Block-cap scope: owner_turn (default) resets max_blocks on a new real user turn; session keeps a session-wide cap. Tool results, hook text, notifications and cross-session messages never reset it. Missing legacy window metadata starts a fresh owner-turn window, with an original-state backup."
+value = "owner_turn"
 
 [speculation_guard.markers]
 doc = "Regex sources (case-insensitive) of the hedge words that assert something as probably true without evidence, in the order they are tried."
@@ -140,7 +152,7 @@ doc = "Lower-cased hedge matches that may state a requirement instead of a guess
 value = ["must be", "should be"]
 
 [speculation_guard.ack_ci]
-doc = "Regex sources (case-insensitive) of the acknowledgments that make hedging honest: any one in the reply lifts the block."
+doc = "Regex sources (case-insensitive) of the acknowledgments that make hedging honest: any one in the reply lifts the block. The last two rows cover a hedge word that only describes someone else's content (GH #933): a hypothesis the reply rules out ('rules out X as the likely cause') and what another agent will report ('will report ... the likely code'). Each needs the whole shape in one line, so a bare 'the likely cause is X' is still a guess."
 value = [
   '\bverified\b',
   '''i don'?t know\b''',
@@ -155,7 +167,19 @@ value = [
   '\brunning\b',
   '\bper the data\b',
   '\bthe data shows\b',
+  '\b(?:rules?|ruled|ruling)\s+out\b[^\n]{0,160}?\bas\s+(?:the|a|an)\s+(?:(?:most|more)\s+)?likely\b',
+  '\b(?:will|would|to)\s+report\b[^\n]{0,200}?\b(?:the|a)\s+(?:most\s+)?likely\s+(?:code|cause|culprit|source|file|line|reason|suspect)\b',
 ]
+
+[speculation_guard.ack_local_ci]
+doc = "Regex sources (case-insensitive) matched against the text AFTER a hedge word (GH #486): a label attached to the hedged phrase. After the hedge word come at most 3 plain words (the hedged phrase), then a comma, dash or opening bracket (spaces and tabs only, never a line break), then the label, and the label must END the clause (full stop, closing bracket, ! or ?, or the end of the text). 'probably DNS (unverified)', 'probably DNS - not yet proven.', 'likely the cache, my inference.' A label later in the sentence, after other words ('probably DNS, but the ticket is unconfirmed'), before the hedge, or in another sentence covers nothing. Unlike ack_ci, which covers the whole reply."
+value = [
+  '^(?:[ \t]+[\w\x27/]+){0,3}[ \t]*[,(\[—–-][ \t]*[*_]*(?:(?:and|but|though)[ \t]+)?(?:(?:that|this|it)[ \t]+(?:is|remains|stays)[ \t]+)?(?:not[ \t]+(?:yet[ \t]+)?(?:proven|confirmed)|unproven|unconfirmed|(?:my|an)[ \t]+inference)[*_]*[ \t]*(?:[.)\]!?]|$)',
+]
+
+[speculation_guard.ack_scope_re]
+doc = "Regex source where a sentence of the reply ends, for ack_local_ci: a sentence stop followed by a space or by the next sentence's first letter, bracket or emphasis mark, or a line break."
+value = '[.!?]+(?:\s|[*_)\]]*[A-Z(])|\n+'
 
 [speculation_guard.ack_cs]
 doc = "Regex sources (case-sensitive) of the acknowledgments that make hedging honest: a file:line citation such as main.js:42."
@@ -163,7 +187,7 @@ value = ['\b\w+\.\w+:\d+\b']
 
 [speculation_guard.obligation_re]
 doc = "Regex source (case-insensitive) of what follows a must-be or should-be that names a real obligation, which is a requirement and not a guess."
-value = '^\s+(measured|verified|tested|checked|reviewed|documented|validated|approved|confirmed|updated|run)\b'
+value = '^\s+(measured|verified|tested|checked|reviewed|documented|validated|approved|confirmed|updated|run|shown|proven|demonstrated)\b'
 
 [speculation_guard.obligation_window]
 doc = "How many UTF-16 units after a must-be or should-be are read for the obligation word."
@@ -216,6 +240,10 @@ value = '‘[^‘’\n]*’'
 doc = "Block headline; {marker} is the hedge found."
 value = "your reply makes an unverified claim (\"{marker}\")."
 
+[speculation_guard.msg_digest]
+doc = "The one-line digest of this rule (#462): what the rule is and what to do, shown to agents at session start and after compaction (guard_rules.digest_entry)."
+value = "No unverified claims: verify with a tool or label the claim unverified."
+
 [speculation_guard.msg_why]
 doc = "Block reason."
 value = "Unverified claims read as facts."
@@ -229,8 +257,18 @@ doc = "The Jev integration id of the speculation question (add-block trust)."
 value = "speculation"
 
 [speculation_guard.jev_gate]
-doc = "When the Stop waits for Jev on the speculation question: `hit` (default) only when the hedge scan found a marker (acknowledged or not), `would_block` only when the rule layer would itself block, `always` on every Stop. Any other value is read as `hit`. Ignored while jev.gate_enabled is 0."
-value = "hit"
+doc = "When the Stop waits for Jev on the speculation question: `claim` (default) when the hedge scan found a marker OR the reply makes an unhedged completion claim (speculation_guard.claim_markers) that neither acknowledges nor cites evidence, `hit` only on a hedge marker (acknowledged or not), `would_block` only when the rule layer would itself block, `always` on every Stop (every Stop then costs a Jev round trip: not for the Stop latency bar). Any other value is read as `claim`. The wait is bounded by jev.stop_soft_ms / jev.stop_hard_ms and fails open. Ignored while jev.gate_enabled is 0."
+value = "claim"
+
+[speculation_guard.claim_markers]
+doc = "Regex sources (case-insensitive) of an unhedged completion claim: a reply that says the work is finished or working, with no hedge word. With speculation_guard.jev_gate = claim such a reply, when it holds no acknowledgment and cites no tool output, is asked about on the Jev lane; the rule layer never blocks it by itself."
+value = [
+  '\ball (done|set|good|fixed|green)\b',
+  '\b(it|that|this|everything|all of it) (now )?(works|is working|passes|is passing|is fixed|is done|is complete|is resolved)\b',
+  '\b(fixed|resolved|completed|finished|done|shipped|merged|pushed|deployed|verified)\s*[.!]',
+  '\b(fix|change|work|task|feature|migration|implementation) (is|are) (now )?(complete|done|fixed|working|merged|shipped|in place|deployed)\b',
+  '\b(tests|build|ci|checks) (are |is )?(now )?(all )?(green|passing|pass|passes)\b',
+]
 
 [speculation_guard.jev_framed_id]
 doc = "The Jev integration id of the framed-expectation question (relax-block trust)."

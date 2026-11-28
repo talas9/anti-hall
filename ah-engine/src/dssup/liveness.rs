@@ -384,10 +384,11 @@ fn pending_for(inv: &Inv, d: &Desc, self_id: Option<&str>) -> R<Pending> {
         store_base,
         nd_base,
         now: inv.now,
+        provenance: union::provenance_of(&inv.settings()),
     })?;
     let pending = u.unread > 0;
     let not_draining = pending && u.oldest_unread_age_ms.is_some_and(|a| a > defaults::num("mesh_write.not_draining_age_ms") as f64);
-    let mut inbound = u.nd_unread_lines.iter().filter(|l| !union::is_wake_line(l)).count();
+    let mut inbound = u.nd_unread_lines.iter().filter(|l| !union::is_wake_line(l, u.provenance)).count();
     for row in &u.store_only_unread {
         let own = self_id.is_some_and(|s| row["sender"].as_str() == Some(s));
         if !own && !union::is_wake_row(row) {

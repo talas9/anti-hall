@@ -38,8 +38,27 @@ pub(crate) fn install_scripted(home: &Path, env: &[(&str, &str)], script: Vec<Re
     let f = Arc::new(Fake::new(script));
     let jev =
         super::Jev::with_parts(home, super::Env::from_pairs(env.iter().copied()), f.clone(), Arc::new(super::breaker::ManualClock::default()), None, None);
+    hold_lanes();
     super::shared::install(home, jev.clone());
     (jev, f)
+}
+
+/// The process-wide shared-lane registry is one global: a test that installs a lane and a test that clears the registry must
+/// not overlap. Held per test thread until the test ends (taken once per thread, so a second call is a no-op).
+static LANES_LOCK: Mutex<()> = Mutex::new(());
+
+thread_local! {
+    static LANES_HELD: std::cell::RefCell<Option<std::sync::MutexGuard<'static, ()>>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Take the shared-lane registry for the rest of this test (see [`LANES_LOCK`]).
+pub(crate) fn hold_lanes() {
+    LANES_HELD.with(|h| {
+        let mut h = h.borrow_mut();
+        if h.is_none() {
+            *h = Some(LANES_LOCK.lock().unwrap_or_else(|e| e.into_inner()));
+        }
+    });
 }
 
 /// The decision-log rows under `home`, parsed, oldest first.

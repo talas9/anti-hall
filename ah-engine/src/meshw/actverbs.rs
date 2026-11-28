@@ -1113,7 +1113,8 @@ pub fn archive_request(inv: &Inv, a: &Args) -> R<Answer> {
                 let live_now = crate::meshw::rosterrows::Verdicts::new(inv, &repo_key).live(&id, w.as_deref(), sid.as_deref()).unwrap_or(true);
                 live_now.then(|| defaults::text("devswarm_cli.act_reason_became_live").to_string())
             };
-            let archived = crate::meshw::archiveverb::cmd_archive(inv, &id, &crate::meshw::archiveverb::Opts { args: None, revalidate: Some(&revalidate) })?;
+            let archived =
+                crate::meshw::archiveverb::cmd_archive(inv, &id, &crate::meshw::archiveverb::Opts { args: None, revalidate: Some(&revalidate), parked: None })?;
             let result = OVal::parse(archived.stdout.trim()).unwrap_or(OVal::Null);
             let ok = matches!(result.get("ok"), Some(OVal::Bool(true)));
             let mut o = Obj(match result {
@@ -1192,7 +1193,10 @@ pub fn archive_request(inv: &Inv, a: &Args) -> R<Answer> {
         .put("sent", OVal::Bool(appended.inserted))
         .put("seq", appended.seq.map_or(OVal::Null, |x| n(x as f64)))
         .put("reason", reason.map_or(OVal::Null, s))
-        .put("reminder", s(defaults::text("devswarm_cli.archive_reminder")));
+        .put("reminder", s(defaults::text("devswarm_cli.archive_reminder")))
+        // #876: a posted request archives nothing; say what it still needs, so an ok answer is not read as done
+        .put("completed", OVal::Bool(false))
+        .put("needs", s(&defaults::render("devswarm_cli.archive_request_needs", &[("id", &id)])));
     for (k, v) in heal {
         out.put(&k, v);
     }

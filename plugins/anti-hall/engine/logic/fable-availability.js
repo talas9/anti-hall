@@ -51,7 +51,7 @@ function decide() {
   var state = JSON.stringify({ available: found.available, checkedAt: Date.now(), source: found.source });
   var wrote = ah.state.writeAtomic(ah.cfg('fable_availability.state_file'), state);
   if (!wrote || found.available !== true) return 'allow';
-  var t = text.message('tip', ah.cfg('fable_availability.guard_name'), {
+  var t = text.message('order', ah.cfg('fable_availability.guard_name'), {
     what: ah.cfg('fable_availability.msg_what'), why: ah.cfg('fable_availability.msg_why'), instead: ah.cfg('fable_availability.msg_instead'),
   });
   return { advisory: text.advisoryJson('SessionStart', t) };

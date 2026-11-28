@@ -77,29 +77,41 @@ function cgResolvedId() {
 }
 
 function cgDq(s) { return '"' + s.replace(/["\\$`]/g, function (c) { return '\\' + c; }) + '"'; }
-function cgShQuote(s) { return "'" + s.replace(/'/g, "'\\''") + "'"; }
 
 // `wakeReassertLine(env, true)`: the child's mailbox-wake re-verify line (Claude only).
 function cgWakeLine(l) {
   if (!cgClaude()) return '';
   var id = cgResolvedId();
-  var tick = text.render(ah.cfg('devswarm_gates.cg_wake_tick'), { id: id });
-  var watch = l.watcher ? text.render(ah.cfg('devswarm_role.pg_wake_watch'), { watcher: cgDq(l.watcher) }) : '';
-  return text.render(ah.cfg('devswarm_role.pg_wake_line'), { cli: cgDq(l.cli), cron: dwWakeCron(), tick: tick, watch: watch, id: id });
+  var tick = text.render(ah.cfg('devswarm_gates.cg_wake_tick'), { id: id, verb: l.verb });
+  var watch = l.watcher ? text.render(ah.cfg('devswarm_role.pg_wake_watch'), { watcher: cgDq(l.bin), wverb: l.wverb }) : '';
+  return text.render(ah.cfg('devswarm_role.pg_wake_line'), { cli: cgDq(l.bin), verb: l.verb, cron: dwWakeCron(), tick: tick, watch: watch, id: id });
 }
 
 // `frame({ guard, headline, why, override, body })` of hooks/lib/block-message.js with the gate's own texts and skip command.
-function cgFrame(body, ctx) {
+// The headline: names the unmet duties (the kinds this block was consumed for) so the visible line says what is missing; the generic headline when none maps.
+function cgHeadline(kinds) {
+  var names = {};
+  names[ah.cfg('devswarm_gates.cg_kind_cron')] = ah.cfg('devswarm_gates.cg_duty_cron');
+  names[ah.cfg('devswarm_gates.cg_kind_report')] = ah.cfg('devswarm_gates.cg_duty_report');
+  names[ah.cfg('devswarm_gates.cg_kind_inbox')] = ah.cfg('devswarm_gates.cg_duty_inbox');
+  names[ah.cfg('devswarm_gates.cg_kind_unknown')] = ah.cfg('devswarm_gates.cg_duty_unknown');
+  var list = (kinds || []).filter(function (k) { return Object.prototype.hasOwnProperty.call(names, k); }).map(function (k) { return names[k]; });
+  return list.length === 0 ? ah.cfg('devswarm_gates.cg_headline') : text.render(ah.cfg('devswarm_gates.cg_headline_duties'), { duties: list.join(ah.cfg('devswarm_gates.cg_duty_sep')) });
+}
+
+function cgFrame(body, ctx, kinds) {
   var guard = ah.cfg('devswarm_gates.child_gate_guard_name');
-  var cli = dwEngineCmd('devswarm_role.engine_cli', ah.env.get(ah.cfg('env.home')) || '');
-  var skip = text.render(ah.cfg('devswarm_role.pg_skip_cmd'), { cli: cgShQuote(cli), guard: guard });
+  var cli = dwEngineCmd('devswarm_role.engine_bin', ah.env.get(ah.cfg('env.home')) || '');
+  var skip = text.render(ah.cfg('devswarm_role.pg_skip_cmd'), { cli: dwShWord(cli), verb: ah.cfg('devswarm_role.engine_verb'), guard: guard });
   var reason = text.message('block', guard, {
-    what: ah.cfg('devswarm_gates.cg_headline'),
+    what: cgHeadline(kinds),
     instead: ah.cfg('devswarm_gates.cg_short_instead'),
     why: ah.cfg('devswarm_gates.cg_why'), override: skip,
     extra: [body], details: true,
   }, ctx.sid);
-  return text.blockJson(reason);
+  var reply = stopReblock.finish(guard, ctx.p, { exact: { code: 0, out: text.blockJson(reason), err: '' } }, { body: body, workspace: cgBuilder(), durable: ctx.durable, native: ctx.native });
+  ctx.err += reply.exact.err;
+  return reply.exact.out;
 }
 
 // ---- the planned writes (applied at the end) --------------------------------------------------------------
@@ -251,6 +263,24 @@ function cgReported(ctx, since) {
   return recent.some(function (x) { return x && x.from === id && cgFinite(x.ts) && x.ts >= since; });
 }
 
+// #844 item 3: this child's latest heartbeat (devswarm heartbeats/<builder id>.json, written by `mesh heartbeat` with or without a
+// summary) or summary row at or after `since`. The duty is a recent report, not one per turn: a heartbeat from the previous turn counts
+// for devswarm_gates.cg_report_fresh_ms (0 = off, only this episode's report counts).
+function cgBeatSince(ctx, since) {
+  var id = cgBuilder();
+  if (!dgSafeId(id)) return false;
+  var r = jx.read(ctx.home + '/' + cgDirRel() + '/' + ah.cfg('mesh_write.dir_heartbeats') + '/' + id + ah.cfg('mesh_write.json_suffix'));
+  if (r.big || r.text === undefined) return false;
+  var j = jx.parse(r.text.trim());
+  if (j.unsure || j.invalid || !j.v || typeof j.v !== 'object') return false;
+  return j.v.id === id && cgFinite(j.v.ts) && j.v.ts >= since && j.v.ts <= ctx.now + ah.cfgNum('devswarm_gates.cg_report_skew_ms');
+}
+function cgReportedFresh(ctx) {
+  var fresh = ah.cfgNum('devswarm_gates.cg_report_fresh_ms');
+  if (!(fresh > 0)) return false;
+  return cgBeatSince(ctx, ctx.now - fresh) || cgReported(ctx, ctx.now - fresh);
+}
+
 // `findRecentDropAttempt`: the freshest drop-attempt record of this project since `since` that this hook authenticates (its reader
 // nonce, or a session id of its own descriptor), and the mismatch diagnosis of an own-id record that authenticates against neither.
 function cgDrop(ctx, since, diag) {
@@ -366,8 +396,22 @@ function cgNative(ctx) {
       n = isFinite(v) && v >= 0 ? v : null;
     }
   }
+  // the engine's own wake prompts stay pending natively (a task nothing accepts) and are never mail: the child's last pull counted them
+  if (n !== null && n > 0) n = Math.max(0, n - cgNativeWake(ctx));
   ctx.native = n;
   return n;
+}
+
+// How many of the native queue's pending messages the child's last pull found to be wake prompts: the wake-tick marker's field while
+// the marker is fresh and known; 0 (nothing is subtracted) for a stale, absent or unknown one.
+function cgNativeWake(ctx) {
+  var id = cgBuilder();
+  if (!dgSafeId(id)) return 0;
+  var m = cgJson(ctx.home + '/' + cgDirRel() + '/' + ah.cfg('devswarm_parent.dir_wake_tick') + '/' + id + '.json');
+  if (!m || typeof m !== 'object' || m.known !== true || !cgFinite(m.ts)) return 0;
+  if ((ctx.now - m.ts) > ah.cfgNum('devswarm_gates.cg_wake_marker_fresh_ms')) return 0;
+  var w = m[ah.cfg('mesh_write.marker_native_wake_field')];
+  return cgFinite(w) && w > 0 ? w : 0;
 }
 
 // `hasUnreadParentMessages`: true, false or 'unknown'.
@@ -394,7 +438,47 @@ function cgTickFresh(ctx) {
   return m.known === true;
 }
 
-// `cronMissingWarning`: the warning text, or null (not Claude, no usable id, a recent tick, or too new to judge).
+// A session_crons entry of the shape the host documents ({id, schedule, recurring, prompt}): an object with a string prompt and a boolean
+// recurring flag. A list holding none of those (old shape, malformed entries) says nothing about the tick job.
+function cgCronRecognised(c) {
+  return jx.isObj(c) && typeof c[ah.cfg('devswarm_gates.cg_payload_cron_prompt_field')] === 'string'
+    && typeof c[ah.cfg('devswarm_gates.cg_payload_cron_recurring_field')] === 'boolean';
+}
+
+// Whether a recognised entry is the live mailbox tick job: it repeats, has a schedule, its prompt RUNS the tick command (devswarm_gates.
+// cg_cron_prompt_re, not a prompt that merely mentions it) (the payload carries no expiry).
+function cgCronIsTick(ctx, c) {
+  if (c[ah.cfg('devswarm_gates.cg_payload_cron_recurring_field')] !== true) return false;
+  var sched = c[ah.cfg('devswarm_gates.cg_payload_cron_schedule_field')];
+  if (typeof sched !== 'string' || sched.trim() === '') return false;
+  if (!new RegExp(ah.cfg('devswarm_gates.cg_cron_prompt_re')).test(c[ah.cfg('devswarm_gates.cg_payload_cron_prompt_field')])) return false;
+  return true;
+}
+
+// The Stop payload's cron list (Claude Code 2.1.145+, devswarm.cronFromPayload): null when the switch is off, the payload carries no list
+// or the list is of a shape not recognised (the age-based check then decides), else whether one of the session's scheduled jobs is the live
+// recurring mailbox tick job. An empty list is recognised: nothing is scheduled.
+function cgPayloadCron(ctx) {
+  if (!ah.settings.bool('devswarm_gates.sw_cron_from_payload')) return null;
+  var list = ctx.p[ah.cfg('devswarm_gates.cg_payload_crons_field')];
+  if (!Array.isArray(list)) return null;
+  var known = list.filter(cgCronRecognised);
+  if (list.length > 0 && known.length === 0) return null;
+  return known.some(function (c) { return cgCronIsTick(ctx, c); });
+}
+
+// The warning for a stale sign of life of `ageMs`, with the key of the age-based text: null when the payload lists the tick job (nothing
+// is missing; the stale marker alone is not evidence), the payload text when the list shows it missing, else the age-based text.
+function cgCronText(ctx, textKey, ageMs, perMin) {
+  var m = String(Math.round(ageMs / perMin)), listed = cgPayloadCron(ctx);
+  if (listed === true) {
+    waste.note(ctx.sid, 'forced_turn', ah.cfg('devswarm_gates.cg_cron_present_metric'), 0);
+    return null;
+  }
+  return text.render(ah.cfg(listed === false ? 'devswarm_gates.cg_cron_missing_payload' : textKey), { m: m }) + cgWakeLine(ctx.l);
+}
+
+// `cronMissingWarning`: the warning text, or null (not Claude, no usable id, a recent tick, too new to judge, or the payload lists the tick job).
 function cgCronWarn(ctx) {
   if (!cgClaude()) return null;
   var id = cgBuilder();
@@ -405,12 +489,12 @@ function cgCronWarn(ctx) {
   var ageMs = marker && cgFinite(marker.ts) ? ctx.now - marker.ts : null;
   if (ageMs !== null) {
     if (ageMs <= warnMs) return null;
-    return text.render(ah.cfg('devswarm_gates.cg_cron_missing_tick'), { m: String(Math.round(ageMs / perMin)) }) + cgWakeLine(ctx.l);
+    return cgCronText(ctx, 'devswarm_gates.cg_cron_missing_tick', ageMs, perMin);
   }
   var hb = cgJson(dir + ah.cfg('devswarm_gates.cg_heartbeats_dir') + '/' + id + '.json');
   var hbAge = hb && cgFinite(hb.ts) ? ctx.now - hb.ts : null;
   if (hbAge === null || hbAge <= warnMs) return null;
-  return text.render(ah.cfg('devswarm_gates.cg_cron_missing_hb'), { m: String(Math.round(hbAge / perMin)) }) + cgWakeLine(ctx.l);
+  return cgCronText(ctx, 'devswarm_gates.cg_cron_missing_hb', hbAge, perMin);
 }
 
 // `recordCronMissingWarn`: one `{ts}` line appended, the file capped to its newest lines ({rel, body}, read before the budget write).
@@ -492,7 +576,7 @@ function cgGate(p, root, l) {
       cgPut(ctx, metric.rel, metric.body);
       state.lastCheckAt = ctx.now;
       cgWriteState(ctx, state);
-      ctx.out = cgFrame(cronWarn, ctx);
+      ctx.out = cgFrame(cronWarn, ctx, [kCron]);
       return ctx;
     }
   } else cgClear(ctx, [kCron]);
@@ -500,7 +584,7 @@ function cgGate(p, root, l) {
   var prevCheckAt = state.lastCheckAt;
   state.lastCheckAt = ctx.now;
   var episodeSince = Math.max(state.lastBlockAt, prevCheckAt || (ctx.now - ah.cfgNum('devswarm_gates.cg_reset_ms')));
-  var reported = cgReported(ctx, episodeSince);
+  var reported = cgReported(ctx, episodeSince) || cgReportedFresh(ctx);
   var diag = {};
   var drop = reported ? null : cgDrop(ctx, episodeSince, diag);
   if (diag.mismatch && !state.mismatchLogged) {
@@ -556,7 +640,7 @@ function cgGate(p, root, l) {
   var outbound = drop ? text.render(ah.cfg('devswarm_gates.cg_heartbeat_drop'), { drop: cgDescribeDrop(drop) })
     : text.render(ah.cfg('devswarm_gates.cg_heartbeat'), args);
   var reason = nativeOnlyUnknown ? prefix.trim() : heartbeatSatisfied ? prefix + wakeLine : prefix + outbound + wakeLine;
-  ctx.out = cgFrame(reason, ctx);
+  ctx.out = cgFrame(reason, ctx, kinds);
   return ctx;
 }
 

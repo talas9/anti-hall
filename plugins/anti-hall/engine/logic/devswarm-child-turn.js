@@ -26,7 +26,7 @@ function ctHeartbeatKey(builderId, branch) {
 // The CLI path the reminders name: the stable launcher when that is switched on and installed, else the plugin's own script (`preferStableLauncher`).
 // null when the plugin root cannot be resolved the way Node's `__dirname` would be.
 function ctCli(opts, home) {
-  return dwEngineCmd('devswarm_role.engine_cli', home);
+  return dwCliCmd(home);
 }
 
 // Text of a small state file, or null when absent; undefined when it is too large to read whole (Node reads all of it).
@@ -64,6 +64,32 @@ function ctUnread(id, home) {
   if (!isFinite(cursor) || cursor < 0) return null;
   var lines = inbox.split('\n').filter(function (l) { return l.trim() !== ''; }).slice(cursor);
   return lines.length > 0 ? { id: id, count: lines.length, lines: lines } : null;
+}
+
+// The id of the child's newest read receipt that is still UNACKED: it ran `inbox read` and delivered at least one row, never acked, and the
+// summary still shows direct mail unread (the caller checks that). The Primary sees the mail as unread until
+// the ack, so the child is told the exact command (GH: read, replied, never acked). null for none.
+function ctUnackedRead(id, home, now) {
+  if (!ctSafeId(id)) return null;
+  var floor = now - ah.cfgNum('devswarm_parent.read_seen_window_ms');
+  var dir = home + '/' + ah.cfg('devswarm_role.pg_devswarm_dir') + '/' + ah.cfg('mesh_write.dir_read_receipts') + '/' + id;
+  var names = ah.fs.readdir(dir);
+  if (names === null || !names.length) return null;
+  names = names.filter(function (n) { return /\.json$/.test(n); }).sort().reverse().slice(0, ah.cfgNum('devswarm_prompt.read_unacked_scan'));
+  for (var i = 0; i < names.length; i++) {
+    var raw = ctRead(dir + '/' + names[i]);
+    if (typeof raw !== 'string') continue;
+    var r;
+    try { r = JSON.parse(raw); } catch (e) { continue; }
+    if (!r || typeof r !== 'object' || !Array.isArray(r.ops)) continue;
+    var delivered = r.ops.some(function (op) { return op && typeof op.delivered === 'number' && op.delivered > 0; });
+    if (!delivered) continue;
+    // only the NEWEST read that delivered mail decides: acked (a later read and ack covers an older unacked one) or older than the window
+    // (an ack that keeps failing, or a child that stopped reading, falls back to the Primary's plain unread flag instead of ordering forever)
+    if ((r.ackedAt !== null && r.ackedAt !== undefined) || typeof r.createdAt !== 'number' || r.createdAt < floor) return null;
+    return typeof r.receiptId === 'string' && ctSafeId(r.receiptId) ? r.receiptId : names[i].replace(/\.json$/, '');
+  }
+  return null;
 }
 
 // `buildPlanSegment(id, home, null, env)` of the hook: the child's step plan as a reminder, null for none. null for anything that throws.
@@ -276,7 +302,12 @@ function decide(p, opts) {
     var block = [ah.cfg('devswarm_prompt.child_override'), ah.cfg('devswarm_prompt.child_autonomy'),
       sub(text.render(ah.cfg('devswarm_prompt.child_reminder'), { cli: cli })), sub(text.render(ah.cfg('devswarm_prompt.child_receive'), { cli: cli }))];
     var every = ah.settings.num('verify_first.num_repeat_every');
-    var staticOpts = { sessionId: sid, key: ah.cfg('devswarm_prompt.child_static_key'), content: block.join(ah.cfg('devswarm_prompt.child_block_joiner')), transcriptPath: tp, keepaliveTurns: isFinite(every) && every > 0 ? every : 0 };
+    var staticOpts = { sessionId: sid, key: ah.cfg('devswarm_prompt.child_static_key'), content: block.join(ah.cfg('devswarm_prompt.child_block_joiner')), transcriptPath: tp, stateOnly: ah.settings.bool('devswarm_prompt.child_static_state_only'), keepaliveTurns: isFinite(every) && every > 0 ? every : 0 };
+    // Mirror the dispatcher's configured comms cuts when proving delivery of the static state.
+    var markers = ah.cfg('inject_gate.comms_markers'), sep = ah.cfg('inject_gate.segment_sep');
+    staticOpts.deliveryContent = staticOpts.content.split(sep).filter(function (part) {
+      return !markers.some(function (marker) { return part.indexOf(marker) === 0; });
+    }).join(sep);
     var planOpts = plan === null ? null : { sessionId: sid, key: ah.cfg('devswarm_prompt.child_plan_key'), content: plan, transcriptPath: tp, keepaliveTurns: ah.cfgNum('devswarm_prompt.child_plan_keepalive') };
     var dedupeOn = sid !== null && !dedupe.disabled();
     if (dedupeOn && ((banner !== null && banner.opts !== null && banner.content !== null && !dedupe.canDecide(banner.opts)) || !dedupe.canDecide(staticOpts) || (planOpts !== null && !dedupe.canDecide(planOpts)))) ctUnsure('dedupe-undecidable'); // a timestamp only V8 reads: decided on what the engine reads
@@ -301,7 +332,7 @@ function decide(p, opts) {
       if (banner.content !== null && (!dedupeOn || dedupe.shouldEmit(banner.opts))) bannerText = banner.content;
     }
     // the mailbox summary the registration just refreshed: mail addressed to this child by mesh, and a parent's request to archive
-    var archiveRequested = false, meshDirect = null;
+    var archiveRequested = false, meshDirect = null, ownUnread = false;
     if (wkey !== null && ctSafeId(builder)) {
       var spath = home + '/' + ah.cfg('paths.base_dir') + '/' + ah.cfg('devswarm_prompt.summary_dir') + '/' + wkey + '.json';
       var ssize = ah.fs.size(spath);
@@ -321,16 +352,25 @@ function decide(p, opts) {
             else meshDirect = ctMeshDirect(rawDirect, builder, entry, cli);
           }
           if (entry.archive_requested) archiveRequested = true;
+          ownUnread = rawDirect > 0;
         }
       }
     }
     var info = reg ? ctUnread(builder, home) : preInfo; // a registration may have created the cursor and the inbox
+    var unackedRid = (ownUnread || info !== null) && ctSafeId(builder) ? ctUnackedRead(builder, home, ah.clock.now()) : null; // still unread by the summary or the durable inbox; not deduped: the order stands until the ack is run
     var segments = [];
     if (bannerText !== null) segments.push(bannerText);
-    if (!dedupeOn || dedupe.shouldEmit(staticOpts)) segments = segments.concat(block);
+    var staticEmit = !dedupeOn || dedupe.evaluate(staticOpts, 'suppressed');
+    if (staticEmit) segments = segments.concat(block);
     if (meshDirect !== null) segments.push(meshDirect);
+    if (unackedRid !== null) segments.push(text.render(ah.cfg('devswarm_prompt.read_unacked'), { cli: cli, id: builder, rid: unackedRid }));
     if (plan !== null && (!dedupeOn || dedupe.shouldEmit(planOpts))) segments.push(plan);
     var archiveSegment = false;
+    var unreadSig = null;
+    if (info !== null) {
+      unreadSig = ah.sha1(JSON.stringify([info.id, info.count, info.lines])); // the unread set (every unread line, the message ids with it), not just its count (#709)
+      if (!dwUnreadDecide('child', sid, unreadSig, ah.clock.now())) { ah.metric('devswarm_inbox_advisory_suppressed', ['kind', 'child']); info = null; }
+    }
     if (info !== null) {
       segments.push(text.render(ah.cfg('devswarm_prompt.unread_segment'), { count: info.count, cli: cli, id: info.id }));
       if (info.lines.some(function (l) { return typeof l === 'string' && l.indexOf(ah.cfg('devswarm_prompt.archive_marker')) >= 0; })) {
@@ -339,7 +379,9 @@ function decide(p, opts) {
       }
     }
     if (archiveRequested && !archiveSegment) segments.push(text.render(ah.cfg('devswarm_prompt.archive_request'), { cli: cli, id: builder }));
-    if (!segments.length) return 'allow';
-    return { advisory: text.advisoryJson(ah.cfg('devswarm_prompt.event'), segments.join(ah.cfg('devswarm_prompt.child_block_joiner'))) };
+    // Build the return value before recording an emission: a failed renderer delivered nothing.
+    var result = segments.length ? { advisory: text.advisoryJson(ah.cfg('devswarm_prompt.event'), segments.join(ah.cfg('devswarm_prompt.child_block_joiner'))) } : 'allow';
+    if (dedupeOn && staticEmit) dedupe.shouldEmit(staticOpts);
+    return result;
   })();
 }

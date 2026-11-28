@@ -205,7 +205,15 @@ value = ["claude code", "claude", "chatgpt", "codex", "copilot"]
 
 [git.gh_body_markers]
 doc = "Markers in a gh pr, issue or release body or title that credit an AI tool."
-value = ["claude.com/claude-code", "chatgpt.com/codex", "<noreply@anthropic.com>"]
+value = ["claude.com/claude-code", "chatgpt.com/codex", "<noreply@anthropic.com>", "claude.ai/code/session"]
+
+[git.credit_session_keys]
+doc = "Trailer keys (lowercase) whose line credits an AI tool whatever its value is, e.g. a session trailer a coding assistant appends (GH #457). Checked in commit messages, reused messages, gh bodies and the audit."
+value = ["claude-session"]
+
+[git.credit_url_markers]
+doc = "URL fragments of an AI tool's session link (GH #457). In a commit message a line that is only the link, or a trailer key and the link, counts as a credit; in a gh body the link anywhere does (see gh_body_markers)."
+value = ["claude.ai/code/session"]
 
 [git.gh_subs]
 doc = "gh subcommands whose bodies are checked."
@@ -372,6 +380,24 @@ value = 3
 doc = "Most symlink hops followed when resolving a dangling launcher link."
 value = 10
 
+[git.inline_depth]
+doc = "Nesting depth of inline shells (`bash -c`), eval and command substitutions the git check follows into (the git-guard.js `d < 3`; the command check has its own command.max_depth). The minimum is the shipped value: a security scan must not be loosened below its pre-config literal; raising is allowed."
+value = 3
+min = 3
+max = 16
+
+[git.heredoc_levels]
+doc = "Deepest nesting of heredoc bodies the git check reads for a git command fed through a heredoc; a deeper body is not scanned. The minimum is the shipped value: a security scan must not be loosened below its pre-config literal; raising is allowed."
+value = 6
+min = 6
+max = 32
+
+[git.var_hops]
+doc = "Most variable indirections (`$A` naming `$B` ...) followed when deciding whether a path variable names the hook launcher. The minimum is the shipped value: a security scan must not be loosened below its pre-config literal; raising is allowed."
+value = 4
+min = 4
+max = 32
+
 [git.cd_max_chars]
 doc = "A tracked cd directory longer than this many characters is dropped (a command that long is not worth resolving)."
 value = 4096
@@ -420,6 +446,22 @@ value = "git-guard"
 [git.setting_git_guard]
 doc = "Master switch of the check: settings.json section and key, environment variable and plugin-option name."
 value = { section = "safety", key = "gitGuard", env = "ANTIHALL_GIT_GUARD", option = "safety_git_guard", type = "boolean", default = true }
+
+[git.setting_commit_expansion]
+doc = "Switch for the unresolved-shell-expansion check on inline commit messages (GH #457): off lets a message built from $VAR, $(...) or backticks through (the credit check cannot read it)."
+value = { section = "guards", key = "gitCommitExpansionCheck", env = "ANTIHALL_GIT_COMMIT_EXPANSION_CHECK", option = "", type = "boolean", default = true }
+
+[git.setting_commit_audit]
+doc = "Switch for the authoritative post-call commit check (PR #469): off lets a commit with an AI credit stand until the push check."
+value = { section = "guards", key = "gitCommitAudit", env = "ANTIHALL_GIT_COMMIT_AUDIT", option = "", type = "boolean", default = true }
+
+[git.setting_push_credit]
+doc = "Switch for the pre-push credit backstop (GH #457): off lets a push through although an unpushed commit carries an AI credit."
+value = { section = "guards", key = "gitPushCreditCheck", env = "ANTIHALL_GIT_PUSH_CREDIT_CHECK", option = "", type = "boolean", default = true }
+
+[git.setting_push_credit_scope]
+doc = "Switch for narrowing the pre-push credit check to the commits a push sends (GH #506): off (the default) reads every unpushed commit of the repository for every push. On, a push proven to name literal paths and refs reads only the commits it sends, and a cd whose target the shell expands at run time before a push is refused (msg_push_dynamic_repo)."
+value = { section = "guards", key = "gitPushCreditScope", env = "ANTIHALL_GIT_PUSH_CREDIT_SCOPE", option = "", type = "boolean", default = false }
 
 [git.setting_heredoc_data]
 doc = "Switch for data-heredoc masking."
@@ -590,11 +632,11 @@ value = { what = "find could supply hidden force-push arguments.", why = "find f
 
 [git.msg_handover]
 doc = "Block: a commit that includes a session handover. Placeholders: {shown}, {skip}."
-value = { what = "this commit includes a private session handover.", why = "Handovers are private session notes and are never committed.", instead = "unstage the handover before committing.", override = "tell the agent \"skip git-guard\", only if you want this file committed." }
+value = { what = "this commit includes a private session handover.", why = "Handovers are private session notes and are never committed.", instead = "unstage the handover before committing.", override = "tell the agent \"skip git-guard\", only if you want this file committed.", digest = "Never commit a session handover: unstage it before committing." }
 
 [git.msg_force_push]
 doc = "Block: a force push."
-value = { what = "a force push was stopped.", why = "Rewriting published history should be a deliberate human decision.", instead = "push without rewriting published history." }
+value = { what = "a force push was stopped.", why = "Rewriting published history should be a deliberate human decision.", instead = "push without rewriting published history.", digest = "Never force push (--force, -f, +ref): push normally or ask the owner." }
 
 [git.msg_delete_ref]
 doc = "Block: remote ref deletion. Placeholder: {skip}."
@@ -614,7 +656,7 @@ value = { what = "a trailer setting adds AI credit.", why = "Commits in this set
 
 [git.msg_commit_credit]
 doc = "Block: an inline commit message with an AI self-credit."
-value = { what = "commit has an AI co-author line.", why = "Commits in this setup carry no AI co-author line.", instead = "remove the Co-Authored-By line and commit again." }
+value = { what = "commit has an AI co-author line.", why = "Commits in this setup carry no AI co-author line.", instead = "remove the Co-Authored-By line and commit again.", digest = "No AI co-author or credit line in commits or PRs: remove it, then commit." }
 
 [git.msg_commit_file_credit]
 doc = "Block: a commit message read from a file or heredoc with an AI self-credit."
@@ -686,7 +728,7 @@ value = { what = "git {sub} is chained with text containing AI credit.", why = "
 
 [git_audit.summary]
 doc = "One-line description of the git-audit check in the generated reference."
-value = "Advisory after a commit-creating git command: a commit made in the last 15 minutes carries an AI self-credit trailer."
+value = "Block after a Bash call: a commit git wrote in the last 15 minutes (reflog) carries an AI self-credit; one HEAD reaches and no remote has is blocked until reworded, one a remote already has (committed and pushed in one call) is blocked once and reported as published."
 
 [git_audit.window_s]
 doc = "How recent, in seconds, a commit must be for the audit to look at it."
@@ -706,8 +748,50 @@ value = 4000
 unit = "ms"
 
 [git_audit.argv_log]
-doc = "git arguments of the audit's log query; {dir} is the repository directory and {n} the number of commits. Fields are separated by US (0x1f) and records end with RS (0x1e)."
-value = ["-C", "{dir}", "log", "-n", "{n}", "--format=%h%x1f%ct%x1f%B%x1e", "HEAD"]
+doc = "git arguments of the audit's log query: the commits HEAD reaches that no remote has; {dir} is the repository directory and {n} the number of commits. Fields are separated by US (0x1f) and records end with RS (0x1e)."
+value = ["-C", "{dir}", "log", "-n", "{n}", "--format=%H%x1f%B%x1e", "HEAD", "--not", "--remotes"]
+
+[git_audit.argv_reflog]
+doc = "git arguments reading HEAD's reflog (newest first): full hash, the entry's selector with its unix time, and git's own description of the step. {dir} and {n} as in argv_log."
+value = ["-C", "{dir}", "log", "-g", "-n", "{n}", "--date=unix", "--format=%H%x1f%gd%x1f%gs%x1e", "HEAD"]
+
+[git_audit.reflog_skip]
+doc = "Regular expressions (JavaScript syntax) for reflog descriptions of reflog_creating steps that write no commit (a fast-forward, the start, finish or abort of a rebase): HEAD then points at a commit that already existed, often public history (PR #469 P2)."
+value = ["^[a-z -]*\\((?:start|finish|abort)\\)", ": fast-forward$"]
+
+[git_audit.reflog_creating]
+doc = "Lower-case starts of the reflog descriptions of steps that write a commit (a checkout, reset or pull only moves HEAD and is not read)."
+value = ["commit", "merge", "cherry-pick", "rebase", "revert", "am"]
+
+[git_audit.argv_published]
+doc = "git arguments reading the stored messages of the commits the audit found written in its window that the unpushed log did not list (a remote already has them, or they were amended away). {dir} is the repository directory and {shas} expands to the hashes. Fields and records as in argv_log."
+value = ["-C", "{dir}", "log", "--no-walk=unsorted", "--format=%H%x1f%B%x1e", "{shas}"]
+
+[git_audit.argv_remote_has]
+doc = "git arguments naming one remote-tracking ref that contains a commit ({sha}); empty output means no remote has it (an amended-away commit, never reported)."
+value = ["-C", "{dir}", "for-each-ref", "--count=1", "--contains", "{sha}", "--format=%(refname:short)", "refs/remotes/"]
+
+[git_audit.published_file]
+doc = "State file, under replykit.state_dir, holding the hashes of published credited commits already reported, so each one blocks once: the agent cannot clear it itself."
+value = "git-audit-published.json"
+
+[git_audit.published_memory]
+doc = "How many reported published commit hashes the audit remembers (oldest dropped first)."
+value = 500
+min = 10
+max = 100000
+
+[git_audit.msg_published]
+doc = "Block after a commit git stored with an AI credit that a remote already has (committed and pushed in one call). Placeholders: {hits} (short hashes), {remotes} (the remote-tracking refs that have them)."
+value = { what = "the commit(s) just written carry AI credit ({hits}) and are already on a remote ({remotes}).", why = "Commits in this setup carry no AI credit. The credit is published: an amend or a new commit leaves it in the remote's history, and rewriting published history is the owner's decision, not the agent's.", instead = "stop: do not push to {remotes} again and do not amend or rebase these commits. Report the hashes ({hits}) and the remote refs ({remotes}) to the owner and wait for their decision on the published history. Commit without credit from now on.", override = "turn off guards.gitCommitAudit, only after you checked the message." }
+
+[git_audit.block_reason]
+doc = "The reason label of git_blocked for an audit block."
+value = "audit_credit"
+
+[git_audit.block_reason_published]
+doc = "The reason label of git_blocked for an audit block on a credited commit a remote already has."
+value = "audit_credit_published"
 
 [git_audit.record_sep]
 doc = "The character that ends one commit record of the audit's log output (RS)."
@@ -724,8 +808,8 @@ min = 0
 max = 16
 
 [git_audit.msg]
-doc = "Advisory text. Placeholders: {window_min} (minutes) and {hits} (comma separated short hashes)."
-value = "⚠️ git safety: recent commits contain AI credit.\nDo instead: remove the credit before pushing."
+doc = "Block after a commit git stored with an AI credit. Placeholders: {hits} (short hashes), {first} (the oldest one)."
+value = { what = "the commit(s) just written carry AI credit ({hits}).", why = "Commits in this setup carry no AI credit; git stored it although the command text did not show it.", instead = "remove the credit before pushing: git commit --amend for the last commit, or git rebase -i {first}^ and reword.", override = "turn off guards.gitCommitAudit, only after you checked the message." }
 
 [git_audit.cd_verb]
 doc = "The verb whose directory argument moves the audit's working directory."
@@ -747,12 +831,414 @@ value = ["-c", "--git-dir", "--work-tree", "--namespace", "--config-env"]
 doc = "The global git option that changes the repository directory."
 value = "-C"
 
-[git_audit.event]
-doc = "The hook event name in the audit's output."
-value = "PostToolUse"
-
 [git_audit.max_buffer]
 doc = "Largest log output, in bytes, the audit accepts from one repository (Node's child-process buffer cap: a larger output is dropped)."
 value = 1048576
 min = 1024
 max = 268435456
+
+# ---- GH #457: unresolved expansion in a commit message, and the pre-push credit backstop -----------------------
+
+[git.commit_expansion_patterns]
+doc = "Regular expressions (JavaScript syntax) for a shell expansion left in the raw text of an inline commit message argument: the guard reads the command text, so a trailer behind a variable or a substitution is invisible to it. Each pattern is matched at the start of the expansion within the whole text, so a pattern with lookbehind, \\b, \\B or a `^` alternative is dropped (counted, and named once per session in an advisory) while the other patterns keep working."
+value = ["\\$[A-Za-z_{]", "\\$\\(", "`"]
+
+[git.commit_expansion_allow]
+doc = "Regular expressions tested against the text that starts at an expansion; a match means the expansion is a form the guard already reads (a heredoc substitution, or the `$(:)` stand-in the guard puts where it already scanned a heredoc body), so it is not refused."
+value = ["^\\$\\([ \\t]*cat[ \\t]*<<", "^\\$\\([ \\t]*:[ \\t]*\\)"]
+
+[git.expansion_advisory_state_prefix]
+doc = "File name prefix of the per-session stamp that records the dropped-expansion-pattern advisory was shown (git.expansion_pattern_advisory), kept in replykit.state_dir under the home directory with replykit.json_ext; the session id follows it."
+value = "git-expansion-advisory-"
+
+[git.expansion_pattern_advisory]
+doc = "Advisory (shown once per session) naming the git.commit_expansion_patterns entries the guard dropped because they are not valid or look before the match start (lookbehind, \\b, \\B, `^`); the other patterns and every other git check keep working. Placeholder: {shown} (the dropped patterns, quoted)."
+value = "anti-hall git guard config: ignored git.commit_expansion_patterns entries that are invalid or look before the match start (lookbehind, \\b, \\B, ^): {shown}. Fix or remove them in the git settings; the rest of the git guard is unaffected."
+
+[git.msg_commit_expansion]
+doc = "Block: an inline commit message holds an unresolved shell expansion. Placeholder: {shown} (the first expansion found)."
+value = { what = "the commit message holds a shell expansion ({shown}).", why = "The guard reads the command text, so a credit line behind a variable or substitution cannot be checked.", instead = "write the message literally in the -m argument (or a heredoc) and commit again." }
+
+[git.push_skip_opts]
+doc = "git push options after which nothing is published, so the pre-push credit backstop is skipped."
+value = ["--dry-run", "-n", "--delete", "-d"]
+
+[git.push_argv_log]
+doc = "git arguments listing every local commit no remote has (the pre-push credit check reads all of them, whatever the push would publish): {dir} is the repository directory, {repo} expands to the command's --git-dir/--work-tree, {n} the most commits read (the cap plus one, to see an overflow). Fields are separated by US and records end with RS (git_audit.field_sep, git_audit.record_sep)."
+value = ["-C", "{dir}", "{repo}", "log", "-n", "{n}", "--format=%H%x1f%B%x1e", "--exclude=refs/stash", "--exclude=refs/original/*", "--all", "--not", "--remotes"]
+
+[git.push_argv_log_scoped]
+doc = "git arguments listing the commits of the refs a push sends that no remote has (GH #506), used for a push its command line and configuration narrow (guards.gitPushCreditScope): {dir}, {repo} and {n} as in push_argv_log, {revs} expands to the revisions the push names (its refspec sources, or HEAD for a bare push)."
+value = ["-C", "{dir}", "{repo}", "log", "-n", "{n}", "--format=%H%x1f%B%x1e", "{revs}", "--not", "--remotes", "--"]
+
+[git.push_argv_config_bool]
+doc = "git arguments asking git itself for each boolean configuration key matching {pattern} (git.push_scope_bool_patterns), parsed by git as a boolean in every spelling it accepts (a bare key, `= true`, yes, on, 1, any case, included files, includeIf): `<key> true` lines widen a push. Exit 1 with no output means no key matched; any other failure (a value git cannot read as a boolean) is treated as widening."
+value = ["-C", "{dir}", "{repo}", "config", "--type=bool", "--get-regexp", "{pattern}"]
+
+[git.push_argv_config_raw]
+doc = "git arguments listing each configuration key matching {pattern} (git.push_scope_any_patterns, git.push_scope_default_pattern) with its raw value, as `<key> <value>` lines. Exit 1 with no output means no key matched; any other failure is treated as widening."
+value = ["-C", "{dir}", "{repo}", "config", "--get-regexp", "{pattern}"]
+
+[git.push_scope_bool_patterns]
+doc = "Key patterns (git --get-regexp syntax) of boolean settings that make a bare push send more than the current branch when true: a remote mirror flag, push.followTags (git lowercases section and variable names, not the remote name)."
+value = ["^remote\\..*\\.mirror$", "^push\\.followtags$"]
+
+[git.push_scope_any_patterns]
+doc = "Key patterns (git --get-regexp syntax) of settings that widen a push whatever their value: a configured push refspec of a remote (it can be a glob or +refs/*; a bare push sends it instead of the current branch)."
+value = ["^remote\\..*\\.push$"]
+
+[git.push_scope_default_pattern]
+doc = "Key pattern (git --get-regexp syntax) of the push.default setting."
+value = "^push\\.default$"
+
+[git.push_default_narrow]
+doc = "push.default values (lower case) under which a bare push sends only the current branch. Any other value, including one this list does not know, widens the push (git.push_scope_default_pattern); an unset push.default is `simple`."
+value = ["nothing", "current", "upstream", "tracking", "simple"]
+
+[git.push_unscoped_opts]
+doc = "git push options after which the commits sent cannot be read from the command line (every branch, every tag, a mirror, pruning): the push is not narrowed to its own commits."
+value = ["--all", "--branches", "--mirror", "--tags", "--follow-tags", "--prune"]
+
+[git.push_value_opts]
+doc = "git push options that take a value: a long one as the next word unless written `--opt=value`, a short one as the rest of its cluster or else the next word; a negated `--no-` form takes none. Skipped when the command's refspecs are read. An option whose value is optional (--signed, --force-with-lease) takes it only after `=` and is listed in push_flag_opts."
+value = ["-o", "--push-option", "--repo", "--receive-pack", "--exec", "--recurse-submodules"]
+
+[git.push_flag_opts]
+doc = "git push options that take no separate value (GH #506). With push_value_opts this is the whole option table a command-line option is resolved against the way git resolves it: an exact name, else a unique prefix of a long name, the `--no-` forms included. An option that resolves to no entry or to more than one is not understood, and the push is not narrowed to its own commits (every unpushed commit is read)."
+value = ["-v", "--verbose", "-q", "--quiet", "--all", "--branches", "--mirror", "-d", "--delete", "--tags", "-n", "--dry-run", "--porcelain", "-f", "--force", "--force-with-lease", "--force-if-includes", "--thin", "-u", "--set-upstream", "--progress", "--prune", "--no-verify", "--verify", "--follow-tags", "--signed", "--atomic", "-4", "--ipv4", "-6", "--ipv6"]
+
+[git.push_narrow_re_flags]
+doc = "Regular expression flags for the push_narrow_* patterns (empty: case-sensitive)."
+value = ""
+
+[git.push_narrow_forbidden_re]
+doc = "Regular expression (JavaScript syntax) of what makes a Bash call unprovable for narrowing a push to its own commits (GH #506, PR #524 review): a command chain or pipe other than a double ampersand (semicolon, double bar, bar, a single ampersand, a newline), a substitution or subshell (dollar-paren, backtick, parentheses), a block or function body (braces), a here-document or here-string, and the words eval, source, alias, function, a shell name, exec, command, builtin, env, xargs, time or a leading dot (source). Any match: the push counts every unpushed commit of the repository."
+value = '[;|\n\r`(){}]|(?<!&)&(?!&)|<<|\$\(|(?:^|[\s&])(?:eval|source|alias|function|sh|bash|zsh|dash|ksh|exec|command|builtin|env|xargs|time|\.)\s'
+
+[git.push_narrow_tail_re]
+doc = "Regular expression (JavaScript syntax), anchored at the end of the command, for the only output tail a proven push may carry (GH #506): an optional `2>&1`, then optionally a pipe to `tail` or `head` (with an optional `-n N` or `-N`) or to `cat`. It is cut off before push_narrow_forbidden_re and the segment patterns are checked; any other pipe, redirect (`>`, `<`), `tee` or shell stays unproven."
+value = '''(?:\s+2>&1)?(?:\s*\|\s*(?:(?:tail|head)(?:\s+(?:-n\s*\d+|-\d+))?|cat))?\s*$'''
+
+[git.push_scope_redirect_re]
+doc = "Regular expression (JavaScript syntax) for a push word that is a file-descriptor redirect (`2>&1`), the only redirect a proven push carries (push_narrow_tail_re): it is not read as a remote or refspec."
+value = '''^\d*>&\d+$'''
+
+[git.push_narrow_separator]
+doc = "The only command separator a narrowed push may follow."
+value = "&&"
+
+[git.push_narrow_push_re]
+doc = "Regular expression (JavaScript syntax) the last segment of a call must match to be narrowed: the push itself, starting at `git push`, optionally after plain NAME=value assignments (group 1; a name matching push_narrow_env_deny_re keeps the push unproven), with no option before the subcommand except -C <plain literal path, optionally inside one matching pair of quote marks (group 2)>, and only plain words after it (no quote, dollar sign, glob or redirect: a word the shell may expand is not proven to name one remote or ref). -c and --config-env are not allowed."
+value = '''^\s*((?:[A-Za-z_][A-Za-z0-9_]*=[A-Za-z0-9_./@%+=:,-]*\s+)*)git\s+(?:-C\s+(["\']?)(?![-~])[A-Za-z0-9_./@%+=:,-]+\2\s+)?push(?:\s+[A-Za-z0-9_./@%+=:,^-]+)*\s*$'''
+
+[git.push_narrow_env_name_re]
+doc = "Regular expression (JavaScript syntax), read globally, for each variable name in the assignments before a narrowed push (group 1 of push_narrow_push_re)."
+value = '''[A-Za-z_][A-Za-z0-9_]*(?==)'''
+
+[git.push_narrow_env_deny_re]
+doc = "Regular expression (JavaScript syntax) over a variable name set on a push: a match can change which repository, configuration, binary or hook git reads or runs (GIT_*, HOME, XDG_*, PATH, loader and shell start-up variables), so the push is not narrowed to its own commits. Any other plain NAME=value assignment leaves it narrowed."
+value = '''^(?:GIT_|XDG_|LD_|DYLD_)|^(?:HOME|USERPROFILE|PATH|BASH_ENV|ENV|SHELLOPTS|PS4|IFS|EXEC_PATH)$'''
+
+[git.push_narrow_before_res]
+doc = "Allowlist of segments (regular expressions, JavaScript syntax) that may run before a narrowed push: only commands that change nothing a push publishes. Start: `cd <path>` with a literal absolute, ./, ../, ~/ or ~ path, or . or .. (not `cd -`, which goes to the previous directory; not a bare relative name, which CDPATH can redirect; not ~user), optionally after -P, -L or -- (but not -P with a path holding `..`: the physical and the logical `..` can differ) and optionally inside one matching pair of quote marks (a quoted literal path cannot expand; GH #593). The target is the LAST capture group (pushNarrowDir); an opening quote, when the pattern has one, is the group before it."
+value = ['''^\s*cd\s+(?!-[PL]*P[PL]*\s+\S*\.\.)(?:(?:--|-[PL]+)\s+)?(?!["\']~)(["\']?)(~/[A-Za-z0-9_./@%+=:,-]*|~|(?:/|\./|\.\./)[A-Za-z0-9_./@%+=:,-]*|\.|\.\.)\1\s*$''']
+
+[git.push_cd_word_re]
+doc = "Regular expression (JavaScript syntax), read globally over the whole command, for a cd, pushd or popd word anywhere (after a separator, a brace, a parenthesis, a quote, or a command or builtin prefix). Capture group 1 is the rest of that segment (its arguments). With guards.gitPushCreditScope on, each such word in a call that pushes must have a literal target (push_cd_literal_re), else the repository is unreadable before the call runs and the push is refused (msg_push_dynamic_repo; the text names the clearing step: write the path literally)."
+value = '''(?:^|[\s;&|(){}`'"])(?:cd|pushd|popd)(?=[\s;&|(){}'"]|$)([^;&|(){}\n]*)'''
+
+[git.push_cd_literal_re]
+doc = "Regular expression (JavaScript syntax) the arguments of a cd or pushd (group 1 of push_cd_word_re) must match to be literal: optional -P, -L, -e, -@ or -- options, then one absolute, ./, ../, ~/ or ~ path, or . or .., plain or in quotes without a dollar sign or backtick. No arguments (home, or popd), `-`, `~-`, `~+`, an expansion or a bare relative name (CDPATH) do not match."
+value = '''^\s*(?:(?:--|-[PLe@]+)\s+)*(?:(?:/|\./|\.\./|~/)[A-Za-z0-9_./@%+=:,-]*|~|\.|\.\.|"(?:/|\./|\.\./|~/)[^"$`\\]*"|'(?:/|\./|\.\./|~/)[^']*')\s*$'''
+
+[git.push_unscoped_globals]
+doc = "git options before the subcommand that change the configuration or the environment a push runs with: the push is not narrowed to its own commits."
+value = ["-c", "--config-env"]
+
+[git.push_unscoped_env_prefixes]
+doc = "Environment variable name prefixes set on a push that change the configuration it runs with (GIT_CONFIG_COUNT/KEY/VALUE, GIT_CONFIG_PARAMETERS, GIT_CONFIG_GLOBAL): the push is not narrowed to its own commits."
+value = ["GIT_CONFIG"]
+
+[git.push_bare_rev]
+doc = "The revision a push that names no refspec (a bare push, or one naming only a remote) is narrowed to: the current branch of the push's repository."
+value = "HEAD"
+
+[git.push_refspec_unscoped_re]
+doc = "Regular expression (JavaScript syntax) over a push refspec source: a glob, a bare `:` (matching), the word `tag`, a leading dash or a shell expansion character makes the push not narrowable to its own commits (any other source, revision syntax such as HEAD~1 included, is what git log reads)."
+value = "^(?:[-:]|tag$|.*[*?\\[\\\\$`])"
+
+[metric.git_push_scoped]
+doc = "Pushes whose credit check read only the commits the push sends, not every unpushed commit of the repository (GH #506)."
+value = { kind = "counter", unit = "pushes", labels = [] }
+
+[metric.git_push_narrow_unproven]
+doc = "Pushes read in full because the same Bash call could not be proven to leave what the push publishes unchanged before it runs (a chain, a substitution, another command, an option or an environment prefix before the push; GH #506, PR #524 review)."
+value = { kind = "counter", unit = "pushes", labels = [] }
+
+[metric.git_push_unscoped]
+doc = "Pushes read in full although guards.gitPushCreditScope is on, by reason: unproven (the call could not be proven to leave what the push publishes unchanged), form (the command line cannot be narrowed to named refs: --all, a glob, a mirror, a tag push), config (a repository setting widens the push), query (the scoped git query failed and the push fell back to every unpushed commit). GH #593."
+value = { kind = "counter", unit = "pushes", labels = ["reason"] }
+
+[git.unscoped_reason_unproven]
+doc = "Label git_push_unscoped{reason} for a push the call could not be proven to leave unchanged."
+value = "unproven"
+
+[git.unscoped_reason_form]
+doc = "Label git_push_unscoped{reason} for a push whose command line names no narrowable refs."
+value = "form"
+
+[git.unscoped_reason_config]
+doc = "Label git_push_unscoped{reason} for a push a repository setting widens (remote mirror, push.followTags, and for a push naming no refspec remote.<name>.push or a push.default that sends more than the current branch)."
+value = "config"
+
+[git.unscoped_reason_query]
+doc = "Label git_push_unscoped{reason} for a push whose scoped git query failed, so every unpushed commit was read."
+value = "query"
+
+[git.msg_push_over_cap]
+doc = "Block: more local commits are on no remote than the pre-push credit check reads, so a credit past the cap could not be ruled out. Placeholders: {cap}, {repo} (the repository directory the push runs in) and {count} (the commits counted, read up to one past the cap)."
+value = { what = "more than {cap} local commits are on no remote in {repo} (counted up to {count}), more than the credit check reads.", why = "A credit in a commit past the cap could not be ruled out, and the guard never allows what it did not read.", instead = "check them yourself (git log <branch> --not --remotes for the branch you push, git log --all --not --remotes for every branch), reword any with an AI credit, then push.", override = "turn off guards.gitPushCreditCheck for this push, only after you checked the range." }
+
+[git.push_unchecked_advisory]
+doc = "Advisory when a git query of the pre-push credit check could not run (unavailable), failed (non-zero exit, e.g. not a repository) or passed push_timeout_ms: the push is let through unchecked."
+value = "anti-hall: this push was not checked for AI credit lines (git could not run, failed or timed out); check git log --all --not --remotes yourself."
+
+[git.push_same_call_subs]
+doc = "Subcommands whose message the same-call check reads: with a push in the same Bash call, one whose message layer 1 cannot read is refused (msg_push_same_call)."
+value = ["commit", "commit-tree", "tag", "merge", "revert", "rebase"]
+
+[git.push_same_call_always]
+doc = "Subcommands that write a commit message layer 1 never reads (a patch, a copied commit); with a push in the same Bash call they are refused."
+value = ["am", "cherry-pick"]
+
+[git.push_same_call_need_message]
+doc = "Subcommands of push_same_call_subs that open an editor or reuse a message without a literal -m (or -F - fed by a quoted heredoc): with none, the message counts as unread."
+value = ["commit", "merge", "revert"]
+
+[git.push_same_call_opts]
+doc = "Regular expressions (JavaScript syntax) for options that take the message from somewhere layer 1 does not read (a reused or edited commit, a template, an editor: -e or --edit); any one makes the message unread. A short-flag cluster ending in m (-em) is matched on its flags before the m."
+value = ["^-[A-Za-z]*[Ccte]", "^--(?:reuse-message|reedit-message|template|edit|continue)(?:=|$)"]
+
+[git.push_same_call_no_commit_opts]
+doc = "Regular expressions (JavaScript syntax) for options with which a subcommand of push_same_call_subs writes no commit of its own (an aborted, skipped or fast-forward-only merge, rebase or revert): the same-call check lets it through."
+value = ["^--(?:abort|quit|skip|ff-only|squash|no-commit)$"]
+
+[git.push_same_call_no_edit_subs]
+doc = "Subcommands of push_same_call_need_message whose message git writes itself when push_same_call_no_edit_opt is given (a revert's own subject line): that option counts as a read message."
+value = ["revert"]
+
+[git.push_same_call_no_edit_opt]
+doc = "The option that makes git write the message of a push_same_call_no_edit_subs subcommand itself, with no editor and no prepared message."
+value = "--no-edit"
+
+[git.push_same_call_quoted_heredoc]
+doc = "Regular expression (JavaScript syntax) for a quoted heredoc on the commit's own command: -F - fed by one is read by layer 1 (its body never expands)."
+value = "<<-?[ \\t]*(?:'[^']+'|\"[^\"]+\"|\\\\\\S)"
+
+[git.push_same_call_here_string]
+doc = "Regular expression (JavaScript syntax) for a here-string on the commit's command; it expands, so -F - fed by one is unread."
+value = "<<<"
+
+[git.msg_push_same_call]
+doc = "Block: one Bash call creates a commit whose message layer 1 cannot read and pushes. Placeholder: {sub} (the subcommand)."
+value = { what = "this call creates a commit whose message the guard cannot read (git {sub}) and pushes in the same call.", why = "A credit line in that message would be published before any check could see it, and a published commit cannot be reworded without a force push.", instead = "split it: commit in one call, push in a separate call (the push is checked on what git stored)." }
+
+[git.script_run_verbs]
+doc = "Commands whose first argument is a script file run in the current shell (source, .); the file is scanned like a script run by path (msg_script_credit)."
+value = ["source", "."]
+
+[git.script_scan_max_bytes]
+doc = "Largest script (in bytes) a Bash call runs by literal path (through a shell, directly, or with source) that is read and scanned for AI credit lines and a same-call commit and push; a larger, missing or non-literal one is let through with script_unchecked_advisory."
+value = 262144
+min = 1024
+max = 16777216
+
+[git.script_inert_line_re]
+doc = "A line of a script that cannot put text into a commit message: a pure comment line, or a plain grep, egrep, fgrep or rg of a pattern. A grep line with a pipe, a here-string or other input or output redirection, a process or command substitution, a variable expansion or a ; / & continuation is live (it can feed a command). The script credit scan ignores inert lines, and a script that never commits, merges, tags, pushes or publishes with gh (push_same_call_subs, push, and a gh command of gh_subs and gh_actions, whose body is checked like the direct command) is not scanned for credit text at all."
+value = "^[ \\t]*(?:#|(?:(?:e|f)?grep|rg)\\b[^|<>;&`$]*$)"
+
+[git.msg_script_credit]
+doc = "Block: a Bash call runs a script whose text carries an AI credit line. Placeholders: {file} (the script path), {line} (the first line with the credit)."
+value = { what = "this call runs {file}, whose line {line} carries an AI credit line.", why = "The script would commit or publish that line before any check could see the stored message.", instead = "remove the credit line from {file} and run it again; credit lines never go into commits, pushes or PR text." }
+
+[git.script_redirect_re]
+doc = "A word that is a redirection (2>/dev/null, >out, <in, 2>&1): never a script path. Matched against the word as written."
+value = "^[0-9]*[<>&]"
+
+[git.script_redirect_bare_re]
+doc = "A redirection operator written apart from its target (2>, >>, <): the word after it is the target, not the script."
+value = "^[0-9]*(?:>>?|<|&>>?)$"
+
+[git.shell_operand_opts]
+doc = "Options of bash, sh, dash and zsh that take the next word as their operand (--rcfile ./x, -o pipefail, +O extglob): that word is not the script the shell runs. Shared by the shells; an option a shell does not know never occurs in a working call."
+value = ["--rcfile", "--init-file", "-O", "+O", "-o", "+o"]
+
+[git.shell_operand_letters]
+doc = "Short option letters of bash, sh, dash and zsh that take the next word as their operand when they appear in a bundle (-eo pipefail, +Oe extglob)."
+value = ["o", "O"]
+
+[git.script_assign_re]
+doc = "A variable assignment word (name=value, d=${d%/}). Where a program is expected (a command run by its path) it is no script path; after bash, sh or source it is a script name like any other."
+value = "^[A-Za-z_][A-Za-z0-9_]*\\+?="
+
+[git.script_ext_re]
+doc = "File name endings that mark a script: a program run by a path that cannot be resolved (a variable in it) is named in the unchecked advisory only when its name ends so."
+value = "\\.(?:sh|bash|zsh|ksh|py|rb|pl|js|mjs|cjs|ts)$"
+
+[git.script_written_prefix_re]
+doc = "What precedes a path in the same Bash call when the call writes that file (a redirection, tee, chmod, cp, mv or ln onto it); the escaped path is appended. A script run directly by a path that is not on disk is named in the unchecked advisory only when the call writes it first."
+value = "(?:>>?|\\btee\\b(?:\\s+-\\S+)*|\\bchmod\\b(?:\\s+\\S+)?|\\b(?:cp|mv|ln)\\b(?:\\s+-\\S+)*\\s+\\S+)\\s*['\"]?"
+
+[git.script_unchecked_advisory]
+doc = "Advisory when a script a Bash call runs by path could not be read (missing, over script_scan_max_bytes, or not a literal path): it is let through unchecked. Placeholder: {file}."
+value = "anti-hall: the script {file} was not checked for AI credit lines (missing, too large or not a literal path); check it yourself before it commits or pushes."
+
+[git.push_max_commits]
+doc = "Most unpushed local commits the pre-push credit check reads: those the push sends when it is narrowed (push_argv_log_scoped), else every one of the repository's (on any ref). More is refused (msg_push_over_cap), never allowed unread."
+value = 50
+min = 1
+max = 1000
+
+[git.push_timeout_ms]
+doc = "Timeout of each git query the pre-push credit backstop runs."
+value = 4000
+unit = "ms"
+
+[git.msg_push_credit]
+doc = "Block: a push would publish commits that carry an AI credit. Placeholder: {shown} (each short hash with the branches that hold it, push_hit_format)."
+value = { what = "this push would publish commits with AI credit: {shown}.", why = "Commits in this setup carry no AI credit, and the guard never rewrites history for you.", instead = "unpushed tip of your branch: switch to it, reword it (commit --amend); already public or other: tell the owner." }
+
+[git.push_ack_max_shas]
+doc = "OFF by default (0): a credited commit never reaches a push, and an identical retry of a blocked push is blocked again. When set above 0 (PR #469 round 6), after msg_push_credit blocked a push once, the identical push retried unchanged (same command text and directory) downgrades the commits it named to push_ack_advisory for the rest of the session; a new credited commit still blocks first, and past this many the oldest acknowledgement is dropped. Trade-off: a commit that is already public but whose remote-tracking ref was pruned looks unpushed offline and blocks every push until it is acknowledged, so the owner may enable this knowingly; it also lets ANY credited commit through on an identical retry, which agents do after a block. A stamp that cannot be written lets the blocked commits through with the advisory at once (fails toward advisory)."
+value = 0
+
+[git.push_ack_state_prefix]
+doc = "File name prefix of the per-session push acknowledgement stamp (push_ack_max_shas), kept in replykit.state_dir under the home directory with replykit.json_ext; the session id follows it."
+value = "git-push-ack-"
+
+[git.push_ack_advisory]
+doc = "Advisory when a push is let through because its credited commits were acknowledged in this session (push_ack_max_shas). Placeholder: {shown} (as in msg_push_credit)."
+value = "anti-hall: this push was let through although it may publish commits with AI credit: {shown}. They were blocked once and the same push was retried unchanged, so they are taken as already public; if they are not, stop and tell the owner."
+
+[git.push_hit_format]
+doc = "One credited commit in msg_push_credit. Placeholders: {sha} (short hash), {branches} (the local branches that contain it, from push_argv_branch_contains), {where} (push_hit_where_format for a submodule, else empty)."
+value = "{sha} on {branches}{where}"
+
+[git.push_hit_no_branch_format]
+doc = "One credited commit in msg_push_credit that no local branch contains (a tag, a custom ref, a detached HEAD), or whose branches could not be read. Placeholders: {sha}, {where}."
+value = "{sha} (on no local branch){where}"
+
+[git.push_hit_where_format]
+doc = "Appended to a credited commit found inside a submodule. Placeholder: {path} (the submodule directory)."
+value = " in submodule {path}"
+
+[git.push_argv_branch_contains]
+doc = "git arguments listing the local branches that contain one credited commit, for the block message ({dir}, {repo} as in push_argv_log; {sha} the commit). At most git.shown hits are looked up, each bounded by push_timeout_ms."
+value = ["-C", "{dir}", "{repo}", "branch", "--format=%(refname:short)", "--contains", "{sha}"]
+
+[git.push_argv_cdup]
+doc = "git arguments printing the path from the push directory to the top of its work tree (empty at the top and in a bare repository); .gitmodules there means submodules are scanned."
+value = ["-C", "{dir}", "{repo}", "rev-parse", "--show-cdup"]
+
+[git.push_gitmodules_file]
+doc = "The file at the top of a work tree whose presence makes the pre-push credit check scan each checked-out submodule too."
+value = ".gitmodules"
+
+[git.push_argv_gitlinks]
+doc = "git arguments listing, in raw form, every path the commits a push sends change (GH #506, guards.gitPushCreditScope): the submodule gitlinks among them name the only submodules a non-recursing push publishes a commit of. {revs} expands to the revisions the push names; a merge is listed against each parent."
+value = ["-C", "{dir}", "{repo}", "log", "-n", "{n}", "-m", "--no-renames", "--raw", "--no-abbrev", "--format=", "{revs}", "--not", "--remotes", "--"]
+
+[git.push_gitlink_line_re]
+doc = "Regular expression (JavaScript syntax) for one raw line of push_argv_gitlinks: groups old mode, new mode, old id, new id, path."
+value = '''^:(\d{6}) (\d{6}) ([0-9a-f]+) ([0-9a-f]+) [A-Z]\d*\t(.+)$'''
+
+[git.push_gitlink_mode]
+doc = "The file mode of a submodule gitlink in a raw tree listing."
+value = "160000"
+
+[git.push_recurse_flag_prefix]
+doc = "A push option starting with this text may be --recurse-submodules (git resolves an unambiguous prefix): its value, from `=value` or the next word, decides whether the push publishes submodule commits. Any other option that starts with it counts as recursing (the submodules are read, as without guards.gitPushCreditScope)."
+value = "--rec"
+
+[git.push_recurse_off_values]
+doc = "Values of --recurse-submodules (and of push.recurseSubmodules, submodule.recurse as git reports them) that publish no submodule commit. Any other value, or one this code cannot read, counts as recursing."
+value = ["no", "false", "off", "0"]
+
+[git.push_recurse_config_pattern]
+doc = "Key pattern (git --get-regexp syntax) of the settings that make a push publish submodule commits: push.recurseSubmodules and submodule.recurse."
+value = "^(push\\.recursesubmodules|submodule\\.recurse)$"
+
+[git.push_argv_submodules]
+doc = "git arguments printing the absolute path of each checked-out submodule, nested ones included; each is scanned with push_argv_log, and all of them share push_max_commits."
+value = ["-C", "{dir}", "{repo}", "submodule", "foreach", "--quiet", "--recursive", "pwd"]
+
+[git.push_argv_tags]
+doc = "git arguments listing the newest local tags ({n} of them, the commit cap plus one) as object type, name, tagged object and message. An annotated tag (push_tag_object_type) is in scope only when the commit it tags is itself unpushed (in the push_argv_log result): a tag on a commit a remote already has is taken as public, so a fetched credited tag never blocks, and a tag made locally on an already-pushed commit (or a tag of a tag) is not scanned. One in scope whose message carries an AI credit refuses the push. Fields end with US and records with RS."
+value = ["-C", "{dir}", "{repo}", "for-each-ref", "--count={n}", "--sort=-creatordate", "--format=%(objecttype)%1f%(refname:short)%1f%(*objectname)%1f%(contents)%1e", "refs/tags"]
+
+[git.push_tag_object_type]
+doc = "The object type for-each-ref prints for an annotated tag (a lightweight tag prints its commit's type and is covered by the commit scan)."
+value = "tag"
+
+[git.msg_push_tag_credit]
+doc = "Block: a local annotated tag's message carries an AI credit. Placeholder: {tags} (the tag names)."
+value = { what = "the local annotated tag {tags} carries an AI credit in its message.", why = "A push would publish it, and a published tag cannot be reworded without a force push.", instead = "if you made it and no remote has it, recreate it cleanly; else stop and tell the owner. Never force push." }
+
+[git.push_repo_env_names]
+doc = "Environment names that move the repository a push runs in: a value the shell expands at run time refuses the push (msg_push_dynamic_repo), and submodule scans run without them."
+value = ["GIT_DIR", "GIT_WORK_TREE"]
+
+[git.push_repo_opts]
+doc = "git options before the subcommand whose value is the repository a push runs in; a value the shell expands at run time refuses the push (msg_push_dynamic_repo)."
+value = ["-C", "--git-dir", "--work-tree"]
+
+[git.push_dynamic_path_res]
+doc = "Regular expressions (JavaScript syntax) for a repository path, as written, that the guard cannot expand (a ~user home, an unquoted glob); a $ or backtick expansion is always one."
+value = ["^~[^/]", "^[^'\"]*[*?\\[]"]
+
+[git.push_dynamic_repo_cmd_re]
+doc = "Regular expression (JavaScript syntax) over the whole command for a git push at command position whose -C, --git-dir or --work-tree value holds an unquoted command substitution (a quoted one is read on the token): the segment splitter cuts the command there, so the push is matched on the raw text (msg_push_dynamic_repo)."
+value = "(?:^|[;&|\\n(]\\s*)(?:[A-Za-z_][A-Za-z0-9_]*=[^\\s;&|'\"]*\\s+)*git\\s+(?:[^\\s;&|'\"]+\\s+)*?(?:-C\\s+|--git-dir[=\\s]|--work-tree[=\\s])[^\\s;&|'\"]*(?:\\$\\(|`)[^;&|\\n]*\\bpush\\b"
+
+[git.msg_push_dynamic_repo]
+doc = "Block: a push whose repository (-C, --git-dir, --work-tree, GIT_DIR, GIT_WORK_TREE) is a path the shell expands at run time. Placeholder: {arg}."
+value = { what = "this push runs in a repository path the guard cannot read before it runs ({arg}).", why = "The credit check would read some other directory and could miss a credited commit.", instead = "write the repository path literally (git -C /full/path push, or cd /full/path first)." }
+
+[git.block_key_prefix]
+doc = "The prefix of a message key that is removed to make the reason label of the git_blocked counter."
+value = "msg_"
+
+[metric.git_blocked]
+doc = "Commands the git guard blocked, by reason (the message key without its prefix, e.g. commit_credit, commit_expansion, push_credit, gh_credit, force_push)."
+value = { kind = "counter", unit = "commands", labels = ["reason"] }
+
+[metric.git_expansion_pattern_dropped]
+doc = "git.commit_expansion_patterns entries the guard dropped (invalid regex, or one that looks before the match start), counted each time the git tables are built; the user is told once per session."
+value = { kind = "counter", unit = "patterns", labels = [] }
+
+[metric.git_push_blocked]
+doc = "Pushes the pre-push credit backstop blocked because an unpushed commit carries an AI credit (GH #457)."
+value = { kind = "counter", unit = "pushes", labels = [] }
+
+[metric.git_push_ack_downgraded]
+doc = "Pushes the credit backstop let through as an advisory because the identical push had been blocked once and git.push_ack_max_shas acknowledges it (off by default)."
+value = { kind = "counter", unit = "pushes", labels = [] }
+
+[metric.git_audit_blocked]
+doc = "Bash calls the post-call commit check blocked because a commit git just wrote carries an AI credit (PR #469)."
+value = { kind = "counter", unit = "blocks", labels = [] }
+
+[git.expansion_shown_chars]
+doc = "How many characters of the expansion the refusal shows."
+value = 12
+min = 1
+max = 80
+unit = "chars"
+
+[git.block_reason_other]
+doc = "The reason label of the git_blocked counter for a block that has no message key."
+value = "other"
+
+[git_audit.event]
+doc = "The hook event name in the audit's output."
+value = "PostToolUse"

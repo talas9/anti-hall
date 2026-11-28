@@ -27,7 +27,7 @@ struct Scratch(PathBuf);
 impl Scratch {
     fn new(tag: &str) -> R<Scratch> {
         let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-        let dir = std::env::temp_dir().join(format!("ah-ops-parity-{}-{n}-{tag}", std::process::id()));
+        let dir = crate::common::testtmp::path(format!("ah-ops-parity-{}-{n}-{tag}", std::process::id()));
         if dir.exists() {
             fs::remove_dir_all(&dir)?;
         }
@@ -65,6 +65,7 @@ fn run(mut cmd: Command, home: &Path, cwd: &Path, extra: &[(&str, &str)], stdin:
         .env("HOME", home)
         .env("TMPDIR", home.join("tmp"))
         .env("CLAUDE_PLUGIN_ROOT", plugin_src())
+        .env("AH_ENGINE_PLUGIN_ROOT", plugin_src())
         .env("ANTIHALL_INGEST_DRY_RUN", "1")
         .env("AH_ENGINE_SHADOW_RATE_STATUSLINE", "0")
         .env("AH_ENGINE_SHADOW_RATE_PHASE", "0")
@@ -289,6 +290,7 @@ fn engine_shadowed(home: &Path, cwd: &Path, node: Option<&Path>, extra: &[(&str,
         .env("PATH", std::env::var("PATH")?)
         .env("HOME", home)
         .env("CLAUDE_PLUGIN_ROOT", plugin_src())
+        .env("AH_ENGINE_PLUGIN_ROOT", plugin_src())
         .env("AH_ENGINE_SHADOW_RATE_PHASE", "1000")
         // the Node installer writes the Node-only command; the engine's installer writes its own command unless told otherwise
         .env("ANTIHALL_STATUSLINE_NODE_ONLY", "1")

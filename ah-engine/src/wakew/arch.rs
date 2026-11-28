@@ -269,7 +269,7 @@ mod tests {
     const KEY: &str = "proj-aaaaaaaa";
 
     fn proc_in(tag: &str) -> Proc {
-        let home = std::env::temp_dir().join(format!("ah-arch-{tag}-{}", std::process::id()));
+        let home = crate::testtmp::path(format!("ah-arch-{tag}-{}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&home)); // keep: an absent directory is the goal state
         std::fs::create_dir_all(&home).unwrap();
         let home_s = home.to_string_lossy().into_owned();

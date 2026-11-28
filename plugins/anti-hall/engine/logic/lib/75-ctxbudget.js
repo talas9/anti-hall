@@ -64,7 +64,23 @@ var cb = {
       if (!u || typeof u !== 'object') continue;
       var input = typeof u.input_tokens === 'number' ? u.input_tokens : 0, cc = typeof u.cache_creation_input_tokens === 'number' ? u.cache_creation_input_tokens : 0, cr = typeof u.cache_read_input_tokens === 'number' ? u.cache_read_input_tokens : 0;
       if (input === 0 && cc === 0 && cr === 0) continue;
-      return { input: input, cacheCreate: cc, cacheRead: cr };
+      return cb.contextOf(u) || { input: input, cacheCreate: cc, cacheRead: cr };
+    }
+    return null;
+  },
+  // The real context size of one assistant usage object (#709). A message that holds a server-tool call (an advisor call) lists its model
+  // requests under `iterations` and reports the SUM of its main-model requests at the top level, which is what the host bills, not what
+  // the next request reads. The context is the LAST iteration whose kind is in `ctxbudget.usage_context_iteration_types`. null when the
+  // usage lists none (the caller reads the top-level fields, which are then the one request).
+  contextOf: function (u) {
+    var its = u[cb.c('ctxbudget.usage_iterations_key')], kinds = cb.c('ctxbudget.usage_context_iteration_types'), tk = cb.c('ctxbudget.usage_iteration_type_key');
+    if (!Array.isArray(its) || !Array.isArray(kinds)) return null;
+    var num = function (v) { return typeof v === 'number' && isFinite(v) ? v : 0; };
+    for (var i = its.length - 1; i >= 0; i--) {
+      var it = its[i];
+      if (!it || typeof it !== 'object' || kinds.indexOf(it[tk]) === -1) continue;
+      var r = { input: num(it.input_tokens), cacheCreate: num(it.cache_creation_input_tokens), cacheRead: num(it.cache_read_input_tokens) };
+      if (r.input + r.cacheCreate + r.cacheRead > 0) return r;
     }
     return null;
   },
@@ -79,7 +95,8 @@ var cb = {
       if (!pl || pl.type !== 'token_count') continue;
       var info = pl.info;
       if (!info || typeof info !== 'object') continue;
-      var used = info.total_token_usage && typeof info.total_token_usage.total_tokens === 'number' ? info.total_token_usage.total_tokens : null;
+      var lastKey = cb.c('ctxbudget.codex_usage_key'), last = info[lastKey]; // the last request's usage is the context; total_token_usage is the session's cumulative billing total
+      var used = last && typeof last.total_tokens === 'number' ? last.total_tokens : info.total_token_usage && typeof info.total_token_usage.total_tokens === 'number' ? info.total_token_usage.total_tokens : null;
       var max = typeof info.model_context_window === 'number' ? info.model_context_window : null;
       if (used === null || max === null || max <= 0) continue;
       return { used: used, max: max };
@@ -128,12 +145,14 @@ var cb = {
     return v ? v.split(new RegExp('[' + cb.c('ctxbudget.ah_marker_seps').join('') + ']')).map(function (s) { return s.trim(); }).filter(Boolean) : [];
   },
   resolveEffective: function () {
-    var off = { enabled: false, pct: 0, maxTokens: 0, nag: false, nagStepPct: 0, nagQuietMin: 0, gateNewWork: false, gateBudgetPct: 0, decisivePrompt: false, gateHousekeepingMarkers: [] };
+    var off = { enabled: false, pct: 0, maxTokens: 0, workspaceMaxTokens: 0, nag: false, nagStepPct: 0, nagQuietMin: 0, gateNewWork: false, gateBudgetPct: 0, decisivePrompt: false, gateHousekeepingMarkers: [] };
     var envRaw = ah.env.get(cb.c('ctxbudget.env_pct_off'));
     if (envRaw !== null && String(envRaw).trim() !== '' && parseInt(envRaw, 10) === 0) return off;
     if (!ah.settings.bool('ctxbudget.set_ah_enabled')) return off;
     return {
       enabled: true, pct: ah.settings.num('ctxbudget.set_ah_pct'), maxTokens: Math.floor(ah.settings.num('ctxbudget.set_ah_max_tokens')),
+      // GH #884: a DevSwarm workspace (child) session has its own, lower context ceiling
+      workspaceMaxTokens: devswarmGate.isChild() ? Math.floor(ah.settings.num('ctxbudget.set_ah_ws_max_tokens')) : 0,
       nag: ah.settings.bool('ctxbudget.set_ah_nag'), nagStepPct: ah.settings.num('ctxbudget.set_ah_nag_step'), nagQuietMin: ah.settings.num('ctxbudget.set_ah_nag_quiet'),
       gateNewWork: ah.settings.bool('ctxbudget.set_ah_gate'), gateBudgetPct: ah.settings.num('ctxbudget.set_ah_gate_budget'),
       decisivePrompt: ah.settings.bool('ctxbudget.set_ah_decisive'), gateHousekeepingMarkers: cb.markers(),
@@ -141,7 +160,10 @@ var cb = {
   },
   overThreshold: function (result, cfg) {
     if (!result || !cfg || !cfg.enabled) return null;
-    var byPct = isFinite(result.pct) && result.pct >= cfg.pct, byTokens = cfg.maxTokens > 0 && typeof result.used === 'number' && isFinite(result.used) && result.used >= cfg.maxTokens;
+    var used = typeof result.used === 'number' && isFinite(result.used) ? result.used : null;
+    var byPct = isFinite(result.pct) && result.pct >= cfg.pct, byTokens = cfg.maxTokens > 0 && used !== null && used >= cfg.maxTokens;
+    // the workspace ceiling first: in a workspace its order (a fresh session per PR) is the one that fits
+    if (cfg.workspaceMaxTokens > 0 && used !== null && used >= cfg.workspaceMaxTokens) return cb.c('ctxbudget.ah_via_workspace');
     if (byPct && result.windowKnown !== false) return cb.c('ctxbudget.ah_via_pct');
     if (byTokens) return cb.c('ctxbudget.ah_via_tokens');
     if (byPct) return 'pct-unknown-window';
@@ -225,10 +247,49 @@ var cb = {
     delete next.gateBackstopPct;
     return next;
   },
+  // ---- quiet mode (GH #958 (b)) ----
+  // Whether the session must keep working: the machine-wide AFK flag or the session's no-stop state is on, or a task is open (lib/87-nostop.js).
+  // A task of a subagent's own sidechain is not the session's work: the store lists only the session's tasks, and the transcript tail is read
+  // as hasOpenTasks reads it (sidechain records skipped); `lines` is the tail the caller already holds (read here when omitted).
+  quiet: function (p, lines) {
+    if (nostop.afkOn() || nostop.session(p) !== null) return true;
+    // GH #981: an OMC autonomous loop drives this session (task-guard defers to it the same way): no stopping-point advice against it
+    if (ah.settings.bool('ctxbudget.set_quiet_on_omc_loop') && omcx.loopActive(ah.home() || '', p && typeof p.cwd === 'string' ? p.cwd : '', p && p.session_id ? String(p.session_id) : '', ah.clock.now(), ah.cfg('ctxbudget.omc_tag'))) {
+      ah.metric('auto_handover_quiet_omc', []);
+      return true;
+    }
+    var home = ah.home(), sid = p && p.session_id ? String(p.session_id) : '';
+    if (home && sid !== '') {
+      var gaps = { n: 0, strict: true }, st = tk.storeTasks(home, sid, gaps);
+      if (st !== null && gaps.n === 0) return tk.withStore([], st).some(tk.isOpen);
+    }
+    if (lines === undefined) {
+      var tp = p && typeof p.transcript_path === 'string' ? p.transcript_path : null;
+      lines = tp ? ah.fs.tailLines(hookProc.open(p, tp), cb.n('ctxbudget.tail_bytes'), false) : null;
+    }
+    return cb.hasOpenTasks(lines) === true;
+  },
+  // The refresh nudge (the only context message in quiet mode): null unless the saved handover is older than the last task or milestone change
+  // by ctxbudget.refresh_stale_ms (or there is none) and the last nudge is older than ctxbudget.refresh_interval_ms.
+  refreshNudge: function (p, latch, pct, now) {
+    var last = latch && typeof latch.lastRefreshAt === 'number' && isFinite(latch.lastRefreshAt) ? latch.lastRefreshAt : 0;
+    if (now - last < cb.n('ctxbudget.refresh_interval_ms')) return null;
+    var h = cb.sessionHandover(p), change = nostop.lastChangeMs(p);
+    if (h !== null && change - h.mtimeMs <= cb.n('ctxbudget.refresh_stale_ms')) return null;
+    var instead = h === null ? cb.c('ctxbudget.refresh_instead_none') : cb.r('ctxbudget.refresh_instead', { min: Math.max(0, Math.round((now - h.mtimeMs) / 60000)) });
+    return text.message('order', cb.c('ctxbudget.ah_guard'), { what: cb.r('ctxbudget.refresh_what', { pct: Math.round(pct) }), instead: instead });
+  },
   // ---- texts ----
   compactCommand: function (hp, codex) { return codex ? cb.c('ctxbudget.ah_compact_codex') : cb.r('ctxbudget.ah_compact_claude', { path: hp || cb.c('ctxbudget.ah_compact_no_path') }); },
-  fire: function (result, via, p, maxTokens, hp) {
+  fire: function (result, via, p, maxTokens, hp, cfg) {
     var codex = cb.codexPayload(p), w = cb.words(p), what;
+    if (via === cb.c('ctxbudget.ah_via_workspace')) {
+      var wsK = cfg && isFinite(cfg.workspaceMaxTokens) ? Math.round(cfg.workspaceMaxTokens / 1000) : 0;
+      return text.message('order', cb.c('ctxbudget.ah_guard'), {
+        what: cb.r('ctxbudget.ah_what_workspace', { usedK: Math.round((result.used || 0) / 1000), k: wsK }), why: cb.c('ctxbudget.ah_why_workspace'),
+        instead: cb.r('ctxbudget.ah_instead_workspace', { skill: w.skill, file: hp ? cb.r('ctxbudget.ah_fire_main_file', { path: hp }) : '' }),
+      });
+    }
     if (via === cb.c('ctxbudget.ah_via_tokens')) {
       var ceilingK = isFinite(maxTokens) && maxTokens > 0 ? Math.round(maxTokens / 1000) : null;
       what = cb.r('ctxbudget.ah_what_tokens', { usedK: Math.round((result.used || 0) / 1000), ceiling: ceilingK != null ? cb.r('ctxbudget.ah_ceiling', { k: ceilingK }) : '' });
@@ -244,10 +305,10 @@ var cb = {
     });
   },
   milestone: function (pct, p) {
-    return text.message('tip', cb.c('ctxbudget.ah_guard'), { what: cb.r('ctxbudget.ah_nag_what', { pct: Math.round(pct) }), instead: cb.r('ctxbudget.ah_nag_instead', { bloat: cb.c('ctxbudget.ah_bloat'), reset: cb.words(p).reset }) });
+    return text.message('order', cb.c('ctxbudget.ah_guard'), { what: cb.r('ctxbudget.ah_nag_what', { pct: Math.round(pct) }), instead: cb.r('ctxbudget.ah_nag_instead', { bloat: cb.c('ctxbudget.ah_bloat'), reset: cb.words(p).reset }) });
   },
   soft: function (pct) {
-    return text.message('tip', cb.c('ctxbudget.ah_guard'), { what: cb.r('ctxbudget.ah_soft_what', { pct: Math.round(pct) }), why: cb.c('ctxbudget.ah_soft_why'), instead: cb.r('ctxbudget.ah_soft_instead', { bloat: cb.c('ctxbudget.ah_bloat') }) });
+    return text.message('order', cb.c('ctxbudget.ah_guard'), { what: cb.r('ctxbudget.ah_soft_what', { pct: Math.round(pct) }), why: cb.c('ctxbudget.ah_soft_why'), instead: cb.r('ctxbudget.ah_soft_instead', { bloat: cb.c('ctxbudget.ah_bloat') }) });
   },
   budgetLabel: function (b, max) {
     var tokK = isFinite(max) && max > 0 ? Math.round((max * b) / 100 / 1000) : null;
@@ -261,6 +322,12 @@ var cb = {
       allowed: cb.c('ctxbudget.ah_gate_allowed'), override: cb.c('ctxbudget.ah_gate_override'),
     });
   },
+  // The state of the post-handover gate (GH #894): the handover point and the context band (autoHandover.nagStepPct points). An
+  // unchanged state is told again only after the on-change profile's repeat interval (ctxbudget.ah_gate_profile).
+  gateFacts: function (result, latch, cfg) {
+    var step = isFinite(cfg.nagStepPct) && cfg.nagStepPct > 0 ? cfg.nagStepPct : 1;
+    return { hp: Math.round(latch.handoverPct), band: Math.floor(result.pct / step) };
+  },
   gateBackstop: function (pct, latch, cfg, p) {
     var w = cb.words(p);
     return text.message('warn', cb.c('ctxbudget.ah_guard'), {
@@ -270,7 +337,7 @@ var cb = {
   },
   // ---- the pause nag and the decisive prompt (hooks/auto-handover-pause-nag.js, hooks/lib/handover-freshness.js) ----
   pause: function (pct, p) {
-    return text.message('tip', cb.c('ctxbudget.ah_guard'), { what: cb.r('ctxbudget.ah_pause_what', { pct: Math.round(pct) }), instead: cb.r('ctxbudget.ah_pause_instead', { bloat: cb.c('ctxbudget.ah_bloat'), reset: cb.words(p).reset }) });
+    return text.message('order', cb.c('ctxbudget.ah_guard'), { what: cb.r('ctxbudget.ah_pause_what', { pct: Math.round(pct) }), instead: cb.r('ctxbudget.ah_pause_instead', { bloat: cb.c('ctxbudget.ah_bloat'), reset: cb.words(p).reset }) });
   },
   // `relativeHandoverPath(payload, filePath)`: the path relative to the working directory when it lies under it.
   relativeHandoverPath: function (p, file) {
@@ -314,7 +381,7 @@ var cb = {
     try { return cb.freshScan(lines, mtime, { tmp: wd.tmpdir(), cwd: cwd }); } finally { wd.underTmp = under; }
   },
   freshScan: function (lines, mtime, cx) {
-    var recognized = false, last = 0;
+    var recognized = false, last = 0, byFiles = ah.settings.bool('tasklist_guard.file_count_setting'); // GH #794: real project files, not command text
     for (var i = 0; i < (lines || []).length; i++) {
       var line = lines[i];
       if (!line) continue;
@@ -331,7 +398,7 @@ var cb = {
       var uses = [];
       cb.toolUses(e, uses);
       for (var u = 0; u < uses.length; u++) {
-        if (wd.counted(uses[u], cx) && ts > last) last = ts;
+        if ((byFiles ? wd.countedFiles(uses[u], cx) : wd.counted(uses[u], cx)) && ts > last) last = ts;
       }
     }
     return recognized ? last <= mtime + cb.n('ctxbudget.ah_freshness_grace_ms') : null;

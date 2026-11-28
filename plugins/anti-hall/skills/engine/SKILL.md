@@ -9,7 +9,7 @@ The anti-hall engine (`ah-engine`) runs the guards and the state behind anti-hal
 
 ## Feature areas
 
-- Agents and tasks (`/anti-hall:engine-agents`): Subagent, task-list, delegation and routing guards.
+- Agents (`/anti-hall:engine-agents`): Subagent, delegation and routing guards.
 - DevSwarm (`/anti-hall:engine-devswarm`): The DevSwarm role, gate and wake guards.
 - DevSwarm supervisor (`/anti-hall:engine-devswarm-supervisor`): The DevSwarm supervisor sweep: auto-archive, pokes, app sync, retention, reconcile and housekeeping.
 - Doctor and repair (`/anti-hall:engine-doctor`): Health check, repair, migrations and capability scans.
@@ -18,8 +18,11 @@ The anti-hall engine (`ah-engine`) runs the guards and the state behind anti-hal
 - Handovers and compaction (`/anti-hall:engine-handovers`): Handover, resume and compaction guards.
 - Mesh (`/anti-hall:engine-mesh`): Read the DevSwarm message store and per-project mailboxes.
 - Process, resource and disk watch (`/anti-hall:engine-processes`): Leftover processes, runaway CPU or memory and low disk space.
+- Reply length (`/anti-hall:engine-replies`): The final-reply length guard (R-style) and its limits.
 - Resources and state (`/anti-hall:engine-resources`): Daemon status, metrics, backups, schedules and limits.
+- Rules (`/anti-hall:engine-rules`): Every rule the engine enforces, with what, why and what to do instead.
 - Settings and Jev (`/anti-hall:engine-settings`): Settings switches, the generated reference and the Jev classifier.
+- Tasks and dispatch (`/anti-hall:engine-tasks`): Task-list, task-lifecycle and dispatch guards.
 
 ## Roles
 

@@ -107,6 +107,7 @@ fn select(registry: &Value, host: &str, event: &str, payload: Option<&Value>) ->
 }
 
 fn run_shell(command: &str, input: &[u8], env: &[(String, String)], cwd: &Path, timeout_s: u64) -> Res {
+    // the caller's `env` carries HOME and AH_ENGINE_PLUGIN_ROOT / CLAUDE_PLUGIN_ROOT / PLUGIN_ROOT (this checkout's plugin), see Rig::env
     let mut c = Command::new("/bin/sh");
     c.args(["-c", command]).env_clear().envs(env.iter().map(|(k, v)| (k, v))).current_dir(cwd).process_group(0);
     c.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
@@ -454,7 +455,7 @@ fn host_index(h: &str) -> usize {
 
 impl Rig {
     fn new(tag: &str) -> Rig {
-        let root = std::env::temp_dir().join(format!("ahd-flip-{tag}-{}", std::process::id()));
+        let root = crate::common::testtmp::path(format!("ahd-flip-{tag}-{}", std::process::id()));
         ah_engine::discard::harmless(std::fs::remove_dir_all(&root));
         for d in ["repo", "specs", "h-old", "h-new", "state"] {
             std::fs::create_dir_all(root.join(d)).unwrap();
@@ -491,8 +492,16 @@ impl Rig {
             plugin,
             root,
         };
-        let launcher =
-            std::env::var_os("AH_HOOK_BIN").map(PathBuf::from).unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_ah-engine")).with_file_name("ah-hook"));
+        // The thin client is its own crate (ah-launcher), not a bin of this one: AH_HOOK_BIN, else its release or debug build in this
+        // checkout. Without one the symlink below would dangle and every thin row would read "engine not installed", so say so here.
+        let launcher = std::env::var_os("AH_HOOK_BIN").map(PathBuf::from).filter(|p| p.is_file()).unwrap_or_else(|| {
+            let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("ah-launcher/target");
+            ["release", "debug"]
+                .iter()
+                .map(|b| root.join(b).join("ah-hook"))
+                .find(|p| p.is_file())
+                .expect("no ah-hook binary: build ah-launcher (cargo build in ah-launcher/) or set AH_HOOK_BIN")
+        });
         let bin = rig.root.join("h-new/.anti-hall/ah-engine/bin");
         std::fs::create_dir_all(&bin).unwrap();
         std::os::unix::fs::symlink(launcher, bin.join("ah-hook")).unwrap();
@@ -509,6 +518,7 @@ impl Rig {
             ("ANTIHALL_TEST_ISOLATION".into(), "1".into()),
             ("CLAUDE_PLUGIN_ROOT".into(), self.plugin.display().to_string()),
             ("PLUGIN_ROOT".into(), self.plugin.display().to_string()),
+            ("AH_ENGINE_PLUGIN_ROOT".into(), self.plugin.display().to_string()),
             ("TMPDIR_FLIP".into(), self.root.display().to_string()),
             ("SPECS_FLIP".into(), self.specs.display().to_string()),
             ("TMPDIR".into(), self.root.display().to_string()),
@@ -639,7 +649,7 @@ impl Drop for Rig {
 }
 
 /// Built-in checks that inject text (never silent) on a well-formed payload.
-const CONTEXT_CHECKS: [&str; 4] = ["verify-first-subagent", "verify-first-full", "fable-availability", "verify-first"];
+const CONTEXT_CHECKS: [&str; 3] = ["verify-first-subagent", "verify-first-full", "fable-availability"];
 
 fn has_context_check(host: &str, event: &str) -> bool {
     table::entries(host, event).iter().any(|e| e.check.as_deref().is_some_and(|c| CONTEXT_CHECKS.contains(&c)))
@@ -647,6 +657,9 @@ fn has_context_check(host: &str, event: &str) -> bool {
 
 /// One row: the two answers must be identical (or the documented stricter one, for the one documented class).
 fn check(rig: &Rig, row: &Row, n: usize) -> Result<(), String> {
+    if row.class == "fuzz" {
+        return check_fuzz(rig, row, n);
+    }
     let want = rig.old(row, n);
     let got = rig.new_path(row);
     let ok = if row.stricter {
@@ -695,6 +708,64 @@ fn check(rig: &Rig, row: &Row, n: usize) -> Result<(), String> {
             cut(&got.err)
         ))
     }
+}
+
+/// The failure mode of a check per `script.failure_mode_by_check`, else `script.failure_mode_default`.
+fn is_closed_check(check: &str) -> bool {
+    let mode =
+        defaults::raw("script.failure_mode_by_check").get(check).and_then(|v| v.as_str()).unwrap_or_else(|| defaults::text("script.failure_mode_default"));
+    mode == defaults::text("script.failure_mode_closed")
+}
+
+/// One fuzz row. No hook command is launched any more (the fake Node hooks of the row are never run), and the stand-in daemon gives
+/// no usable answer, so every selected entry is unanswered and its check's failure mode decides: a `closed` check on a guard event
+/// BLOCKS (exit 2, script.msg_unanswered named on stderr); anything else is let through (exit 0, empty stdout, guards.failOpenNonSafety).
+fn check_fuzz(rig: &Rig, row: &Row, n: usize) -> Result<(), String> {
+    let got = rig.new_path(row);
+    let selected: Vec<String> = select(&rig.registry[host_index(row.host)], row.host, &row.event, row.logical.as_ref()).into_iter().map(|s| s.id).collect();
+    let guard_event = defaults::list("dispatch.guard_events").contains(&row.event.as_str());
+    let closed: Vec<String> = table::entries(row.host, &row.event)
+        .into_iter()
+        .filter(|e| selected.contains(&e.id) && e.check.as_deref().is_some_and(is_closed_check))
+        .filter_map(|e| e.check)
+        .collect();
+    let unanswered = format!("({})", defaults::text("script.msg_unanswered"));
+    let ok = if guard_event && !closed.is_empty() {
+        // Either closed-guard block names the check: the check's own failure policy (script.msg_unanswered) or the dispatcher's
+        // infra block of an entry it could not run (the engine could not run the guards for the event).
+        let infra_notice = format!("anti-hall: the engine could not run the guards for {}", row.event);
+        got.code == Some(2)
+            && got.out.is_empty()
+            && closed.iter().any(|c| got.err.contains(c.as_str()))
+            && (got.err.contains(&unanswered) || got.err.starts_with(&infra_notice))
+    } else {
+        // Let through. On a guard event the user is told once per session and check (script.msg_guard_down); that notice is the only
+        // thing allowed on stdout, and it names a selected, non-closed check.
+        let notice_of = |c: &str| defaults::render("script.msg_guard_down", &[("check", &c), ("why", &defaults::text("script.msg_unanswered"))]);
+        let said_ok = got.out.is_empty()
+            || (guard_event
+                && parse_object(&got.out).is_some_and(|o| {
+                    o.len() == 1
+                        && o.get("systemMessage").and_then(Value::as_str).is_some_and(|m| {
+                            table::entries(row.host, &row.event)
+                                .iter()
+                                .any(|e| selected.contains(&e.id) && e.check.as_deref().is_some_and(|c| !is_closed_check(c) && m == notice_of(c)))
+                        })
+                }));
+        got.code == Some(0) && said_ok
+    };
+    if ok {
+        return Ok(());
+    }
+    let cut = |s: &str| s.chars().take(300).collect::<String>();
+    Err(format!(
+        "{} {} [fuzz] row {n}: closed checks selected={closed:?}; got code={:?} out={:?} err={:?}",
+        row.host,
+        row.event,
+        got.code,
+        cut(&got.out),
+        cut(&got.err)
+    ))
 }
 
 fn run_rows(rig: &Rig, rows: Vec<Row>, conc: usize) -> (usize, Vec<String>, usize, String) {

@@ -102,7 +102,121 @@ pub fn omc_section(doc: &mut Doc, ctx: &Ctx) -> Option<&'static str> {
     } else {
         doc.ok(defaults::text("doctor_msg.omc_loop_idle").to_string());
     }
+    omc_compact_note(doc, ctx);
     None
+}
+
+/// GH #981: OMC's Stop context guard orders /compact from its threshold (OMC_CONTEXT_GUARD_THRESHOLD, else its default); below
+/// anti-hall's compact-advice cutoff (autoHandover.pct minus guards.compactAdviceMarginPct) the two disagree about the same reply.
+fn omc_compact_note(doc: &mut Doc, ctx: &Ctx) {
+    let st = crate::checks::git::util::Settings { home: ctx.home.clone(), env: ctx.env.iter().map(|(k, v)| (k.clone(), v.clone())).collect() };
+    let omc = ctx
+        .env
+        .get(defaults::text("ctxbudget.omc_guard_env"))
+        .and_then(|v| v.trim().parse::<f64>().ok())
+        .unwrap_or(defaults::num("ctxbudget.omc_guard_default_pct") as f64);
+    let ah_pct = crate::checks::guardkit::settings::get_num(&st, defaults::raw("ctxbudget.set_ah_pct"));
+    let margin = crate::checks::guardkit::settings::get_num(&st, defaults::raw("ctxbudget.set_ca_margin"));
+    let cutoff = ah_pct - margin;
+    if omc < cutoff {
+        let defer = crate::checks::guardkit::settings::get_bool(&st, defaults::raw("ctxbudget.set_compact_defer_omc"));
+        doc.infol(defaults::render(
+            if defer { "doctor_msg.omc_compact_below_deferred" } else { "doctor_msg.omc_compact_below" },
+            &[("omc", &omc.to_string()), ("cutoff", &cutoff.to_string())],
+        ));
+    }
+}
+
+/// GH #981: instruction files (doctor.omc_text_files) whose text steers models towards another orchestration layer's habits that
+/// anti-hall's rules contradict (doctor.omc_text_rules: a foreign handover folder while that plugin is off, ...). One warning per
+/// matching line, naming the file, the line number and the line; at most doctor.omc_text_max_findings. Read-only, fail-open.
+pub fn omc_text_section(doc: &mut Doc, ctx: &Ctx) {
+    let omc_on = omc_enabled(ctx);
+    let max_bytes = defaults::num("doctor.omc_text_max_bytes");
+    let (max_findings, line_max) = (defaults::num("doctor.omc_text_max_findings") as usize, defaults::num("doctor.omc_text_line_max") as usize);
+    let rules: Vec<(&'static str, regex::Regex)> = defaults::raw("doctor.omc_text_rules")
+        .as_array()
+        .unwrap_or_default()
+        .iter()
+        .filter(|r| r.str_field("when") != defaults::text("doctor.omc_text_when_off") || !omc_on)
+        .filter_map(|r| regex::Regex::new(r.str_field("re")).ok().map(|re| (r.str_field("msg"), re)))
+        .collect();
+    if rules.is_empty() {
+        return;
+    }
+    let mut found: Vec<String> = Vec::new();
+    for f in defaults::raw("doctor.omc_text_files").as_array().unwrap_or_default() {
+        let base = if f.str_field("base") == defaults::text("doctor.omc_text_base_home") { &ctx.home } else { &ctx.cwd };
+        if base.is_empty() {
+            continue;
+        }
+        let path = Path::new(base).join(f.str_field("rel"));
+        let Ok(meta) = std::fs::metadata(&path) else { continue };
+        if !meta.is_file() || meta.len() > max_bytes {
+            continue;
+        }
+        let Ok(text) = std::fs::read_to_string(&path) else { continue };
+        for (n, line) in text.lines().enumerate() {
+            for (msg, re) in &rules {
+                if found.len() < max_findings && re.is_match(line) {
+                    let shown: String = line.trim().chars().take(line_max).collect();
+                    found.push(defaults::render(
+                        "doctor_msg.omc_text_line",
+                        &[("file", &path.to_string_lossy()), ("line", &(n + 1).to_string()), ("why", msg), ("text", &shown)],
+                    ));
+                }
+            }
+        }
+    }
+    if found.is_empty() {
+        return;
+    }
+    doc.head(defaults::text("doctor_msg.head_omc_text"));
+    for f in found {
+        doc.warnl(f);
+    }
+}
+
+/// GH #981: a usage snapshot the configured source reads (limitConserve.usageSource) that is older than ctxbudget.usage_max_stale_ms:
+/// usage readers ignore it, so limit conservation cannot see the real usage. One warning per stale file, with its age in hours.
+pub fn usage_section(doc: &mut Doc, ctx: &Ctx) {
+    let source = crate::ops::settings::effective_text(defaults::text("ctxbudget.usage_source_section"), defaults::text("ctxbudget.usage_source_key"), "")
+        .unwrap_or_default();
+    let omc = Path::new(&ctx.home).join(defaults::text("ctxbudget.usage_cache"));
+    let sl = Path::new(&ctx.home).join(defaults::text("ctxbudget.usage_statusline_file"));
+    let paths = if source == defaults::text("ctxbudget.usage_source_omc") {
+        vec![omc]
+    } else if source == defaults::text("ctxbudget.usage_source_statusline") {
+        vec![sl]
+    } else {
+        vec![sl, omc]
+    };
+    let now = crate::checks::jsport::date::now_ms();
+    let max = defaults::num("ctxbudget.usage_max_stale_ms") as f64;
+    let mut stale: Vec<String> = Vec::new();
+    for p in paths {
+        let Some(snap) = read_bounded(&p, defaults::num("doctor.omc_text_max_bytes")) else { continue };
+        let ts = match snap.get("timestamp") {
+            Some(J::Num(n)) if n.is_finite() && *n > 0.0 => *n,
+            _ => std::fs::metadata(&p)
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map_or(0.0, |d| d.as_millis() as f64),
+        };
+        if ts > 0.0 && now - ts <= max {
+            return; // a fresh snapshot of the configured source: the readers use it
+        }
+        let hours = ((now - ts) / defaults::num("doctor.usage_stale_hour_ms") as f64).round();
+        stale.push(defaults::render("doctor_msg.usage_stale", &[("path", &p.to_string_lossy()), ("hours", &hours.to_string())]));
+    }
+    if stale.is_empty() {
+        return;
+    }
+    doc.head(defaults::text("doctor_msg.head_usage"));
+    for w in stale {
+        doc.warnl(w);
+    }
 }
 
 // ---- Codex ----------------------------------------------------------------------------------------------------------------------
@@ -124,6 +238,29 @@ fn codex_wired(hooks_json: &Path, expected: &[String]) -> Option<bool> {
     }))
 }
 
+/// The commands of a Codex `hooks.json` that still run a Node-era anti-hall hook script (`node .../anti-hall/.../hooks/<name>.js`): how
+/// many, and the first. The scripts no longer ship, so each of them fails on every call. `(0, "")` when none, or when the file is
+/// absent or unreadable.
+fn codex_node_entries(hooks_json: &Path) -> (usize, String) {
+    let Ok(text) = std::fs::read_to_string(hooks_json) else { return (0, String::new()) };
+    let Some(cfg) = migrate::parse_json(&text) else { return (0, String::new()) };
+    let re = crate::checks::lit_re(defaults::text("doctor.codex_node_entry_re"));
+    let mut found: Vec<String> = Vec::new();
+    for (_, groups) in as_obj(cfg.get("hooks")).into_iter().flatten() {
+        for g in as_arr(Some(groups)) {
+            for h in as_arr(g.get("hooks")) {
+                if let Some(J::Str(c)) = h.get("command")
+                    && re.is_match(&c.replace('\\', "/"))
+                {
+                    found.push(c.clone());
+                }
+            }
+        }
+    }
+    let max = defaults::num("doctor_l.excerpt_chars") as usize;
+    (found.len(), found.first().map(|c| c.chars().take(max).collect()).unwrap_or_default())
+}
+
 /// The events of the plugin's own Codex registration (what the installer registers).
 fn codex_events(root: Option<&Path>) -> Vec<String> {
     let Some(root) = root else { return Vec::new() };
@@ -140,25 +277,41 @@ pub fn codex_section(doc: &mut Doc, ctx: &Ctx, root: Option<&Path>) -> Option<&'
     let expected = codex_events(root);
     let re = crate::checks::lit_re(defaults::text("doctor.codex_hooks_enabled_re"));
     let dir = defaults::text("codex_install.dir");
-    let mut found: Vec<(&str, bool, Option<bool>)> = Vec::new();
+    let mut found = Vec::new();
     for (label, base) in [(defaults::text("doctor_msg.codex_label_project"), &ctx.cwd), (defaults::text("doctor_msg.codex_label_global"), &ctx.home)] {
         let d = Path::new(base).join(dir);
         let cfg = d.join(defaults::text("codex_install.config_file"));
-        if !cfg.is_file() {
+        let hooks = d.join(defaults::text("codex_install.hooks_file"));
+        if !cfg.is_file() && !hooks.is_file() {
             continue;
         }
         let enabled = std::fs::read_to_string(&cfg).is_ok_and(|t| re.is_match(&t));
-        found.push((label, enabled, codex_wired(&d.join(defaults::text("codex_install.hooks_file")), &expected)));
+        let missing = std::fs::read_to_string(&hooks)
+            .ok()
+            .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+            .is_some_and(|value| crate::hooksgen::missing_launcher(&value, &ctx.home, root, &ctx.env));
+        let node = if defaults::num("doctor.codex_node_entries") == 1 { codex_node_entries(&hooks) } else { (0, String::new()) };
+        found.push((label, enabled, codex_wired(&hooks, &expected), missing, node, hooks));
     }
     if found.is_empty() {
         return Some(defaults::text("doctor_msg.codex_none"));
     }
     doc.head(defaults::text("doctor_msg.head_codex"));
-    for (label, enabled, wired) in found {
+    for (label, enabled, wired, missing, node, hooks) in found {
         if enabled {
             doc.ok(defaults::render("doctor_msg.codex_hooks_on", &[("label", &label)]));
         } else {
             doc.warnl(defaults::render("doctor_msg.codex_hooks_off", &[("label", &label)]));
+        }
+        if missing {
+            doc.bad(defaults::render("doctor_msg.codex_launcher_missing", &[("label", &label), ("file", &hooks.display())]));
+            continue;
+        }
+        if node.0 > 0 {
+            // Node-era hooks that cannot run: they fail on every call, so no Codex guard runs (and `install-codex` replaces them)
+            crate::metrics::bump_shared("doctor_codex_node_entries", &[]);
+            doc.bad(defaults::render("doctor_msg.codex_node_entries", &[("label", &label), ("file", &hooks.display()), ("n", &node.0), ("first", &node.1)]));
+            continue;
         }
         match wired {
             Some(true) => doc.ok(defaults::render("doctor_msg.codex_wired", &[("label", &label)])),
@@ -247,7 +400,9 @@ pub fn foreign_section(doc: &mut Doc, ctx: &Ctx, root: Option<&Path>) {
             let hooks_json = read_bounded(&Path::new(&install).join(defaults::text("doctor.hooks_dir")).join(defaults::text("doctor.hooks_json")), max);
             for (event, matcher, base) in hook_entries(hooks_json.as_ref()) {
                 let shown = matcher.clone().unwrap_or_else(|| "*".into());
-                if event == defaults::text("doctor.foreign_pre") && matches_bash(&matcher) {
+                if (event == defaults::text("doctor.foreign_pre") || event == defaults::text("doctor.foreign_stop")) && defaults::list("doctor.foreign_observers").contains(&base.as_str()) {
+                    results.push((false, defaults::render("doctor_msg.foreign_observer", &[("event", &event), ("plugin", &name), ("script", &base)])));
+                } else if event == defaults::text("doctor.foreign_pre") && matches_bash(&matcher) {
                     results.push((true, defaults::render("doctor_msg.foreign_pre", &[("plugin", &name), ("script", &base), ("matcher", &shown)])));
                 } else if event == defaults::text("doctor.foreign_stop") {
                     let tail = if own_has_stop { defaults::text("doctor_msg.foreign_stop_tail") } else { "" };
@@ -328,5 +483,33 @@ pub(super) fn stray_submodule_state(doc: &mut Doc, ctx: &Ctx) {
             }
             pending.push((sub, depth + 1));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeMap;
+
+    fn doc_for(home: &Path) -> Doc {
+        let ctx = Ctx::new(home.to_string_lossy().into_owned(), String::new(), BTreeMap::new(), true, None, None);
+        let mut doc = Doc::default();
+        omc_text_section(&mut doc, &ctx);
+        doc
+    }
+
+    /// GH #981 (1c): a global instruction file that names OMC's handover folder while the OMC plugin is off is flagged with the line.
+    #[test]
+    fn a_foreign_handover_folder_in_global_instructions_is_flagged_while_omc_is_off() {
+        let home = crate::tmpsweep::scratch("ah-omc-doc-", "text");
+        std::fs::create_dir_all(home.join(".claude")).unwrap();
+        std::fs::write(home.join(".claude/CLAUDE.md"), "# rules\nRuntime state includes `.omc/plans/`, `.omc/handoffs/`.\n").unwrap();
+        let doc = doc_for(&home);
+        assert_eq!(doc.warn, 1, "{doc:?}");
+        let body = format!("{doc:?}");
+        assert!(body.contains("CLAUDE.md:2") && body.contains(".omc/handoffs/"), "{body}");
+        // the OMC plugin enabled: its own text has something behind it, nothing is flagged
+        std::fs::write(home.join(".claude/settings.json"), r#"{"enabledPlugins":{"oh-my-claudecode@omc":true}}"#).unwrap();
+        assert_eq!(doc_for(&home).warn, 0);
     }
 }

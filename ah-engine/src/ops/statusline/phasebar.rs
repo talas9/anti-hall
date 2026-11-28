@@ -301,12 +301,14 @@ fn activity_line(cx: &Ctx, input: &str) -> Option<String> {
     let mut cells = String::new();
     for i in 0..w {
         if i == pos {
-            cells.push_str(&format!("{}{}{}", color("cyan"), defaults::text("statusline.bar_fill"), color("reset")));
+            cells.push_str(&format!("{}{}{}", color("cyan"), defaults::text("statusline.activity_marker"), color("reset")));
         } else {
             cells.push_str(&format!("{}{}{}", color("dim"), defaults::text("statusline.bar_empty"), color("reset")));
         }
     }
     let plural = if count == 1 { "" } else { defaults::text("statusline.plural_s") };
+    // the context gauge stays visible while agents work: same level bar, filled cells = percent
+    let ctx = context_line(input).map(|l| format!(" {}·{} {l}", color("dim"), color("reset"))).unwrap_or_default();
     Some(defaults::render(
         "statusline.activity_template",
         &[
@@ -317,6 +319,7 @@ fn activity_line(cx: &Ctx, input: &str) -> Option<String> {
             ("blue", &color("blue")),
             ("count", &count),
             ("plural", &plural),
+            ("ctx", &ctx),
         ],
     ))
 }

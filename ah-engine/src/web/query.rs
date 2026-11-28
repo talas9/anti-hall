@@ -76,7 +76,7 @@ fn agents_doc() -> Value {
 }
 
 /// The guard blocks recorded in hot.db within `--window` (newest first, at most `need`): guard, rule, event, session, agent, tool,
-/// project and the first line of the block message.
+/// project and the block message.
 fn guard_blocks(rest: &[String], need: usize) -> Value {
     let mut window = flag(rest, "window");
     if window.is_empty() {

@@ -12,7 +12,7 @@
 
 [command.check_summary]
 doc = "One-line description of the command check for the generated reference."
-value = "command-guard (PreToolUse on Bash): heavy-command and Bash-write delegation gate; the engine answers the commands allowed in every context and every command of a payload-proven subagent, and defers the rest to the Node hook."
+value = "Delegate heavy commands and shell writes. command-guard (PreToolUse on Bash): heavy-command and Bash-write delegation gate; the engine answers the commands allowed in every context and every command of a payload-proven subagent, and defers the rest to the Node hook."
 
 [command.max_classify_len]
 doc = "Commands longer than this many characters are deferred to the Node hook (command-guard.js MAX_CLASSIFY_LEN: the Node guard switches to a head/tail scan above it)."
@@ -66,6 +66,18 @@ value = ["grep", "sed", "awk"]
 
 # ---- heavy commands -----------------------------------------------------------------------------------------------
 
+[command.read_only_subcommands]
+doc = "Exact gh/git argv prefixes exempt from heavy-command delegation, including broad remote_block groups. Each shell segment and substitution is still checked; clone, builds, suites and wide scans keep their existing rules."
+value = { gh = ["release view", "release list", "run list", "run view", "pr checks"], git = ["fetch", "ls-remote"] }
+
+[command.read_only_global_value_flags]
+doc = "gh global options taking a value before a read-only subcommand; git uses its existing global-option parser."
+value = ["-R", "--repo", "--hostname"]
+
+[command.read_only_api]
+doc = "gh API read proof: allowed methods, request-body options (separated or attached), method syntax and endpoints requiring a separate GraphQL proof. Non-GET methods and request bodies retain heavy classification."
+value = { bin = "gh", subcommand = "api", default_method = "GET", methods = ["GET"], method_flags = ["-X", "--method"], method_attached_re = '^(?:-X=?(.*)|--method=(.*))$', body_flags_re = '^(?:-[fF].*|--(?:field|raw-field|input)(?:=.*)?)$', denied_endpoints = ["graphql", "/graphql"] }
+
 [command.heavy_verbs]
 doc = "Effective verbs that are always heavy in the main thread."
 value = [
@@ -98,6 +110,7 @@ value = [
   '(?i)\bgo\s+version\b',
   '(?i)\bcargo\s+(?:--version|version)\b',
   '(?i)\bcargo\s+clean\b',
+  '(?i)\bflutter\s+clean\b',
   '(?i)\bgit\s+(?:push|pull)\b[^\n]*\s--dry-run\b',
   '(?i)\bdocker\s+(?:ps|images|inspect|logs|stats)\b',
   '(?i)^\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*node\s+(?:\S*[\\/])?scripts[\\/]jev-setup\.js\s+(?:-\S+\s+)*status\b',
@@ -209,7 +222,7 @@ value = [
 
 [command.gcloud_inspect_verbs]
 doc = "gcloud command-path verbs that read only."
-value = ["describe", "list", "get", "view", "read"]
+value = ["describe", "list", "get", "get-value", "view", "read"]
 
 [command.gcloud_refused_path]
 doc = "gcloud command-path words that refuse the read-only grammar."
@@ -237,10 +250,18 @@ value = { pr = ["merge", "close", "edit", "create", "review"], issue = ["create"
 
 [command.remote_allow]
 doc = "Remote commands that run in the main thread whatever their body or output (GH #263). Each entry is a command prefix: the binary and its leading subcommand words, global flags such as -R/--repo skipped, optionally followed by an option and its value (`gh api -X POST`). Works for any binary. Block wins over allow; a command in neither list keeps the default rule (reads pass, mutations block). Change it in your own config.toml (`[command]` table) with remote_allow_add and remote_allow_remove."
-value = ["gh issue create", "gh issue comment", "gh issue edit", "gh issue close", "gh issue reopen", "gh label create", "gh label edit", "gh pr create", "gh pr comment", "gh pr edit"]
+value = ["gh issue create", "gh issue comment", "gh issue edit", "gh issue close", "gh issue reopen", "gh label create", "gh label edit", "gh pr create", "gh pr comment", "gh pr edit", "gh pr ready"]
+
+[command.sw_resolve_wrapper_scripts]
+doc = "Judge shell wrappers by their script body. Default on: a `sh|bash <script>` run in the main thread is judged by the script's body (read up to script.read_max_bytes), the same verdict as the raw command (#547); off judges the wrapper as written."
+value = { section = "guards", key = "commandResolveWrapperScripts", type = "boolean", env = "ANTIHALL_COMMAND_RESOLVE_WRAPPER_SCRIPTS", option = "", default = true }
+
+[metric.command_wrapper_resolved]
+doc = "Heavy-command checks that read a `sh|bash <script>` body (#547), by verdict: same (the body is not heavy, the wrapper's verdict is unchanged), differs (the body is heavy and the wrapper is now stopped like the raw command) or role (a deploy script judged as written, GH #981)."
+value = { kind = "counter", unit = "checks", labels = ["verdict"] }
 
 [command.remote_block]
-doc = "Remote commands always blocked in the main thread, named in the block text as irreversible or sensitive (msg_remote_block_why). Same entry format as command.remote_allow; wins over it."
+doc = "Remote commands blocked in the main thread unless read_only_subcommands or read_only_api proves a read, named in the block text as irreversible or sensitive (msg_remote_block_why). Same entry format as command.remote_allow; wins over it."
 value = ["gh pr merge", "gh release", "gh repo edit", "gh repo delete", "gh secret", "gh api -X DELETE", "gh api -X PUT", "gh api -X PATCH", "gh api -X POST", "gh api --method DELETE", "gh api --method PUT", "gh api --method PATCH", "gh api --method POST"]
 
 [command.remote_allow_add]
@@ -366,6 +387,10 @@ value = "{kind}{detail} can't run in the main thread."
 doc = "The kind of a state-changing remote command."
 value = "a command that changes a shared remote"
 
+[command.msg_heavy_pull]
+doc = "The kind of a git pull or fetch that is held in the main thread (it reads from a shared remote and changes only local state, but can stall on network or credentials). `git pull --ff-only` is not held."
+value = "a git pull or fetch from a shared remote"
+
 [command.msg_heavy_plain]
 doc = "The kind of any other heavy command."
 value = "a heavy command"
@@ -377,6 +402,14 @@ value = " ({label})"
 [command.msg_heavy_detail_category]
 doc = "Detail of a block caused by a heavy pattern or category."
 value = " ({label})"
+
+[command.msg_brief_rule]
+doc = "The rule the visible heavy-command block names ({kind} is msg_heavy_remote or msg_heavy_plain, {label} the verb or category that matched, e.g. flutter or gh pr merge)."
+value = "Rule: {kind} ({label})."
+
+[command.msg_brief_rule_remote]
+doc = "The rule the visible block names for a state-changing remote command (git push/pull/fetch, a gh write): {kind} is msg_heavy_remote."
+value = "Rule: {kind}."
 
 [command.msg_heavy_why]
 doc = "Why a heavy command is blocked."
@@ -417,6 +450,10 @@ value = "."
 [command.msg_heavy_allowed_claude]
 doc = "End of the allowed text on Claude (the scratchpad script path)."
 value = "; or a read-only script in the scratchpad run in the background."
+
+[command.msg_heavy_suite_place]
+doc = "Added to the allowed text of a heavy-command block: where a full test suite should run (#621). Plain words, no internal jargon."
+value = " Run the full test suite once, in a single dedicated run, not repeatedly in the main thread."
 
 [command.msg_heavy_cd_hint]
 doc = "Added when the same command joined with && would qualify for the inline check."
@@ -493,6 +530,10 @@ value = "/tmp"
 [command.tmp_fixed_roots]
 doc = "The tmp roots added after os.tmpdir()."
 value = ["/tmp", "/private/tmp"]
+
+[command.golden_redirect_root]
+doc = "Test harness only: the directory a golden case's home is laid out in when the temp dir sits inside a command.tmp_fixed_roots root (a home in a tmp root would silence every file-changing case)."
+value = "/var/tmp"
 
 [command.scratch_uid_prefix]
 doc = "Prefix of the per-user directory under a tmp root that holds session scratchpads."
@@ -787,11 +828,11 @@ value = "set DISABLE_ANTIHALL_DEVSWARM=1 to disable the read-guard entirely"
 # ---- settings the main-thread decision reads ---------------------------------------------------------------------------
 
 [command.allow_subagent_mailbox_setting]
-doc = "guards.allowSubagentMailbox: a one-off allow of the subagent mailbox verbs (default off)."
+doc = "Allow subagent mailbox verbs. a one-off allow of the subagent mailbox verbs (default off)."
 value = { section = "guards", key = "allowSubagentMailbox", type = "boolean", env = "ANTIHALL_ALLOW_SUBAGENT_MAILBOX", aliases = [], option = "guards_allow_subagent_mailbox", default = false }
 
 [command.stash_guard_setting]
-doc = "guards.stashGuard: arms the git stash guard for every repository (default off)."
+doc = "arms the git stash guard for every repository (default off)."
 value = { section = "guards", key = "stashGuard", type = "boolean", env = "ANTIHALL_STASH_GUARD", aliases = [], option = "guards_stash_guard", default = false }
 
 [command.inbox_cmd_setting]
@@ -799,39 +840,39 @@ doc = "devswarm.inboxCmd: a consumer-configured command to read pending mesh mes
 value = { section = "devswarm", key = "inboxCmd", env = "ANTIHALL_DEVSWARM_INBOX_CMD", aliases = [], option = "devswarm_inbox_cmd", default = "" }
 
 [command.setting_allow_read_only_verify]
-doc = "guards.allowReadOnlyVerify: the bounded single-target verification allowance (default on)."
+doc = "the bounded single-target verification allowance (default on)."
 value = { section = "guards", key = "allowReadOnlyVerify", type = "boolean", env = "ANTIHALL_ALLOW_READ_ONLY_VERIFY", aliases = [], option = "guards_allow_read_only_verify", default = true }
 
 [command.setting_allow_read_only_verify_scripts]
-doc = "guards.allowReadOnlyVerifyScripts: the script form of that allowance (default on)."
+doc = "the script form of that allowance (default on)."
 value = { section = "guards", key = "allowReadOnlyVerifyScripts", type = "boolean", env = "ANTIHALL_ALLOW_READ_ONLY_VERIFY_SCRIPTS", aliases = [], option = "guards_allow_read_only_verify_scripts", default = true }
 
 [command.setting_project_command_allow]
-doc = "guards.projectCommandAllow: the per-project command allowlist (default on)."
+doc = "the per-project command allowlist (default on)."
 value = { section = "guards", key = "projectCommandAllow", type = "boolean", env = "ANTIHALL_PROJECT_COMMAND_ALLOW", aliases = [], option = "guards_project_command_allow", default = true }
 
 [command.setting_allow_plain_push]
-doc = "guards.allowPlainPush: the plain git push chain allowance (default on)."
+doc = "the plain git push chain allowance (default on)."
 value = { section = "guards", key = "allowPlainPush", type = "boolean", env = "ANTIHALL_ALLOW_PLAIN_PUSH", aliases = [], option = "guards_allow_plain_push", default = true }
 
 [command.setting_allow_bg_scratch]
-doc = "guards.allowBackgroundScratchScripts: the background scratch script allowance (default on)."
+doc = "Allowance for background scratch scripts (default on)."
 value = { section = "guards", key = "allowBackgroundScratchScripts", type = "boolean", env = "ANTIHALL_ALLOW_BACKGROUND_SCRATCH_SCRIPTS", aliases = [], option = "guards_allow_background_scratch_scripts", default = true }
 
 [command.setting_allow_gcloud_reads]
-doc = "guards.allowGcloudReads: the narrow read-only Google Cloud access (default on)."
+doc = "the narrow read-only Google Cloud access (default on)."
 value = { section = "guards", key = "allowGcloudReads", type = "boolean", env = "ANTIHALL_ALLOW_GCLOUD_READS", aliases = [], option = "guards_allow_gcloud_reads", default = true }
 
 [command.setting_bash_edit_parity]
-doc = "guards.bashEditParity: edit-guard's verdict applied to Bash writes (default on)."
+doc = "edit-guard's verdict applied to Bash writes (default on)."
 value = { section = "guards", key = "bashEditParity", type = "boolean", env = "ANTIHALL_BASH_EDIT_PARITY", aliases = [], option = "", default = true }
 
 [command.setting_project_edit_allow]
-doc = "guards.projectEditAllow: the per-project edit allowlist (default on)."
+doc = "the per-project edit allowlist (default on)."
 value = { section = "guards", key = "projectEditAllow", type = "boolean", env = "ANTIHALL_PROJECT_EDIT_ALLOW", aliases = [], option = "guards_project_edit_allow", default = true }
 
 [command.eg_allow_setting]
-doc = "guards.editGuardAllow: extra file globs edit-guard allows (comma or colon separated, empty by default)."
+doc = "extra file globs edit-guard allows (comma or colon separated, empty by default)."
 value = { section = "guards", key = "editGuardAllow", env = "ANTIHALL_EDIT_GUARD_ALLOW", aliases = [], option = "guards_edit_guard_allow", default = "" }
 
 [command.tier_repos_setting]
@@ -857,6 +898,18 @@ value = 8
 [command.eg_default_allow]
 doc = "Files and globs edit-guard always allows."
 value = ["CLAUDE.md", "AGENTS.md", "GEMINI.md", ".claude/**", ".omc/**", ".anti-hall/**", "**/.anti-hall/history/**", "**/.anti-hall/dogfood/**", "PLAN.md", "plan.md", "STATE.json", "**/.claude/projects/**/memory/**"]
+
+[command.eg_home_allow]
+doc = "Globs, relative to the home directory and written in lower case (paths are folded), that edit-guard allows from any working directory: a narrow named list inside the host's configuration folder (the global instructions file, the memory, the skills and the agents), which the global rule lets the main thread write directly (GH #783). Never the whole folder: plugin code and the usage cache live in it. Empty = none."
+value = [".claude/claude.md", ".claude/projects/*/memory/**", ".claude/skills/**", ".claude/agents/**"]
+
+[command.eg_home_deny_globs]
+doc = "Globs, relative to the home directory, that command.eg_home_allow never reaches, checked first: the installed plugins (their rules, their logic and the usage cache read by the usage relief), and the host's settings and hook configuration under any name."
+value = [".claude/plugins/**", ".claude/settings*.json", ".claude/**/settings*.json", ".claude/hooks.json", ".claude/**/hooks.json"]
+
+[command.eg_home_deny_files]
+doc = "File names (lower case) that command.eg_home_allow never reaches: the host's settings and hook configuration."
+value = ["settings.json", "settings.local.json", "hooks.json"]
 
 [command.eg_project_deny_segments]
 doc = "Path segments the per-project edit allowlist never reaches."
@@ -902,6 +955,14 @@ value = 8
 doc = "git subcommands that label a block a remote push."
 value = ["push"]
 
+[command.pull_light_flags]
+doc = "The only flags a `git pull --ff-only` may carry to stay light in the main thread (it fast-forwards the local branch and nothing else). Any other flag (--squash, --autostash, --no-commit, a rebase, prune or force flag, an unknown one) makes the pull heavy; --ff-only itself must be present."
+value = ["--ff-only", "--quiet", "--verbose", "-q", "-v"]
+
+[command.pull_light_short]
+doc = "The letters a bundled short flag of a light `git pull --ff-only` may hold (-qv); any other letter or a digit makes the pull heavy."
+value = ["q", "v"]
+
 [command.classify_pull_subs]
 doc = "git subcommands that label a block a remote pull or fetch."
 value = ["pull", "fetch"]
@@ -941,8 +1002,8 @@ doc = "Per interpreter family, the flag pattern that means the command is not a 
 value = { shell = '^-[A-Za-z]*[cns]', python = '^-[A-Za-z]*[cm]', node = '^(?:-[A-Za-z]*[epc]|--(?:eval|print|check|interactive)(?:=|$))', rubyperl = '^-[A-Za-z]*[eEc]' }
 
 [command.script_value_flags]
-doc = "Interpreter options whose next word is their value, not the script."
-value = ["-o", "+o", "-O", "+O", "-W", "-X", "-r", "--require", "--import", "--loader", "--experimental-loader", "-I"]
+doc = "Per interpreter family, the options whose next word is their value, not the script. python's -I (isolated mode) takes no value: read as one it made the inline code of 'python3 -I -c ...' the script file, and a $VAR in that code an unresolvable script run, counted as work (#900). -I is a value option only of perl and ruby."
+value = { shell = ["-o", "+o", "-O", "+O"], python = ["-W", "-X"], node = ["-r", "--require", "--import", "--loader", "--experimental-loader"], rubyperl = ["-I", "-r"] }
 
 [command.binary_magics]
 doc = "The first four bytes (hex) of a file that is a compiled binary, not a text script."
@@ -974,3 +1035,25 @@ doc = "How long the `git status` question about a script file may take (command-
 value = 2000
 unit = "ms"
 min = 100
+
+[command.name_segment_setting]
+doc = "Name the heavy segment in command blocks. Off switch (guards.commandNameSegment, default on): a heavy-command block in a chain names the heavy segment and says the other segments are fine to run on their own."
+value = { section = "guards", key = "commandNameSegment", type = "boolean", env = "ANTIHALL_COMMAND_NAME_SEGMENT", aliases = [], option = "", default = true }
+
+[command.segment_label_max]
+doc = "Longest text (characters) of the named heavy segment; a longer one is cut (the visible block text holds 115 characters)."
+value = 24
+min = 8
+
+[command.segment_ellipsis]
+doc = "Appended to a cut segment."
+value = "..."
+
+
+[command.msg_heavy_segment]
+doc = "Added to the heavy-command block of a chain; {seg} is the heavy segment (whitespace collapsed, cut), {n} the number of other segments. The block is all-or-nothing: the hook cannot run part of a command."
+value = " Heavy: {seg}. The other {n} are fine alone."
+
+[metric.command_heavy_segment_named]
+doc = "Heavy-command blocks of a chain that named the heavy segment and said the other segments are fine to run on their own."
+value = { kind = "counter", unit = "blocks", labels = ["kind"] }

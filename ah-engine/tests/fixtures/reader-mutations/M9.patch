@@ -1,0 +1,13 @@
+diff --git a/plugins/anti-hall/engine/logic/task-pair-guard.js b/plugins/anti-hall/engine/logic/task-pair-guard.js
+index c30b324f..e154c75b 100644
+--- a/plugins/anti-hall/engine/logic/task-pair-guard.js
++++ b/plugins/anti-hall/engine/logic/task-pair-guard.js
+@@ -289,7 +289,7 @@ function prgPost(p, on, home) {
+   if (open === null) { prgSuppressed('no_rows'); return 'allow'; }
+   var lc = prgLc(name), paired = open.some(function (t) { return prgLc(t.owner) === lc; });
+   prgObserved(event, paired ? 'paired' : 'unpaired');
+-  if (paired || !on) return 'allow';
++  return 'allow';
+   prgFired(event, 'unpaired');
+   // The visible line may show the name shortened or without its marks (prgInexact): that text only tells what is off. The step that clears it
+   // always carries the FULL name, or, when the visible line cannot carry it exactly, points at the saved details that do.

@@ -74,8 +74,8 @@ No Node.js and no shell script is on a normal hook path. The commands are checke
 (`ah-engine/tests/it/hooks_files.rs`): the plugin ships exactly one `.sh` file and every command equals the template.
 
 The engine binary and the thin client are installed by `sh hooks/install.sh --download` (the setup skill runs it) and
-checked against a sha256 checksum pinned in the plugin. Supported platforms are the same as the plugin: macOS and
-Linux, including WSL.
+checked against a sha256 checksum pinned in the plugin. Supported platforms are the same as the plugin: macOS on
+Apple silicon; Linux (including WSL), Apple Intel and native Windows are coming soon.
 
 ## Binary download and verification
 

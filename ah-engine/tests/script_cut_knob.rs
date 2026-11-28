@@ -9,12 +9,12 @@ const KNOB: &str = "AH_ENGINE_SCRIPT_CUT_AT_DEADLINE";
 fn the_cut_knob_switches_the_deadline_cut_of_scripted_checks() {
     // SAFETY: the only test in this process, so nothing reads the environment concurrently.
     unsafe { std::env::remove_var(KNOB) };
-    assert!(ah_engine::script::cut_at_deadline("sibling-sweep", "Stop"), "cut at the deadline by default");
+    assert!(ah_engine::script::cut_at_deadline("switch-notice", "UserPromptSubmit"), "cut at the deadline by default");
     // SAFETY: as above.
     unsafe { std::env::set_var(KNOB, "0") };
-    assert!(!ah_engine::script::cut_at_deadline("sibling-sweep", "Stop"), "the knob at 0 turns the cut off");
-    assert!(!ah_engine::script::cut_at_deadline("sibling-sweep", "PreToolUse"));
+    assert!(!ah_engine::script::cut_at_deadline("switch-notice", "UserPromptSubmit"), "the knob at 0 turns the cut off");
+    assert!(!ah_engine::script::cut_at_deadline("switch-notice", "SessionStart"));
     // SAFETY: as above.
     unsafe { std::env::set_var(KNOB, "1") };
-    assert!(ah_engine::script::cut_at_deadline("sibling-sweep", "Stop"), "and 1 turns it back on");
+    assert!(ah_engine::script::cut_at_deadline("switch-notice", "UserPromptSubmit"), "and 1 turns it back on");
 }

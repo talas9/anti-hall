@@ -59,7 +59,6 @@ function pgPathField(o, k) {
 // A numeric setting of the gate: its value along the settings chain (the shipped default when nothing sets it).
 function pgSetNum(key) { return ah.settings.num(key); }
 
-function pgShQuote(s) { return "'" + s.replace(/'/g, "'\\''") + "'"; }
 function pgDq(s) { return '"' + s.replace(/["\\$`]/g, function (c) { return '\\' + c; }) + '"'; }
 
 // ---- the Primary's own unread (readOwnUnread) ------------------------------------------------------------------------
@@ -134,9 +133,44 @@ function pgOwnReader(selfKey, id, e, count) {
 }
 
 // The live count of an own reader view read with `count`: `Math.max(countFor, messageCount - own)`.
+// With devswarm.parentGateSharedCount on (default), the count is the ONE shared count `mesh inbox peek-primary` reports (`v.shared`:
+// own-family sends and wake rows left out); a case where the old projection was higher is counted (count_mismatch), never blocked on.
 function pgOwnLive(v, own) {
-  if (v.state !== 'ok' || v.own === null || !piFinite(v.unread) || !piFinite(v.total)) { ah.unable('devswarm-parent-gate:own_live'); return -1; } // not settled: the caller reads it as unknown
-  return Math.max(v.unread, Math.max(0, v.total - own));
+  if (!pgSharedOn()) {
+    // switch off: the old computation, unchanged
+    if (v.state !== 'ok' || v.own === null || !piFinite(v.unread) || !piFinite(v.total)) { ah.unable('devswarm-parent-gate:own_live'); return -1; } // not settled: the caller reads it as unknown
+    return Math.max(v.unread, Math.max(0, v.total - own));
+  }
+  if (v.state !== 'ok') { ah.unable('devswarm-parent-gate:own_live'); return -1; } // not settled: the caller reads it as unknown
+  if (!piFinite(v.shared)) {
+    // the shared count is unknown (unreadable, or read from an impossible floor past the message count): never a confirmed zero.
+    // With an own row the old projection decides, as with the switch off; with none the cached count is kept (-2), as the base did.
+    ah.unable('devswarm-parent-gate:shared_unknown');
+    if (v.own === null) return -2;
+    if (!piFinite(v.unread) || !piFinite(v.total)) { ah.unable('devswarm-parent-gate:own_live'); return -1; }
+    return Math.max(v.unread, Math.max(0, v.total - own));
+  }
+  // the old projection, only to count the cases it would have blocked on more than the shared count shows
+  if (v.own !== null && piFinite(v.unread) && piFinite(v.total) && Math.max(v.unread, Math.max(0, v.total - own)) > v.shared) pgCountMismatch();
+  return v.shared;
+}
+
+// The shared-count switch (devswarm.parentGateSharedCount; off restores the old `max(countFor, messageCount - own)` projection).
+function pgNoiseProvOn() { return ah.settings.bool('devswarm_role.pg_sw_provenance') === true; }
+function pgSharedOn() { return ah.settings.bool('devswarm_role.pg_sw_shared_count') === true; }
+
+// Counters: the registered metrics and the advisory counters of `status`. A lost count never changes a decision.
+function pgCountMismatch() {
+  ah.metric('devswarm_parent_gate_count_mismatch', []);
+  ah.advisory('devswarm_parent_gate', 'count_mismatch');
+}
+function pgCountFired(kind) {
+  ah.metric('devswarm_parent_gate_fired', ['kind', kind]);
+  ah.advisory('devswarm_parent_gate', 'fired_' + kind);
+}
+function pgCountSuppressed(reason) {
+  ah.metric('devswarm_parent_gate_suppressed', ['reason', reason]);
+  ah.advisory('devswarm_parent_gate', 'suppressed_' + reason);
 }
 
 // readOwnUnread's own-instance projection of the summary count `raw` (companion/lib/devswarm-own-reader.js `ownReaderDelta`, then
@@ -162,8 +196,9 @@ function pgOwnCount(selfKey, id, e, raw) {
   if (r.unread > 0) {
     // ownReaderLiveUnread: never block on a cached count when this reader's own row can be read live
     var w = pgOwnReader(selfKey, id, e, true);
-    if (w.reader && w.state === 'ok' && w.own !== null) {
+    if (w.reader && w.state === 'ok' && (w.own !== null || pgSharedOn())) { // shared count: re-checked live with or without an own row
       var lv = pgOwnLive(w, w.own);
+      if (lv === -2) return r; // no own row and no shared count: the cached count stands (the base never re-checked it live)
       if (lv < 0) { r.stale = true; r.unread = 0; return r; }
       r.unread = lv;
       r.live = true;
@@ -379,7 +414,27 @@ function pgBacklog(inbox, cursor) {
   return { rows: rows };
 }
 
-function pgNoise(v) { return typeof v === 'string' && v.replace(/^\s+/, '').indexOf(ah.cfg('devswarm_role.pg_poke_prefix')) === 0; }
+// An inbox-file line is a poke mirror by provenance (devswarm.noiseProvenance, GH #429): the prefix AND a sender that is a Primary id or
+// none; a child's native message that starts with the same words is mail (counted in mesh_noise_lookalike_kept). Off: the text prefix alone.
+function pgNoise(v, row) {
+  if (typeof v !== 'string') return false;
+  // defect 91ab5e1317e2: the engine's wake prompt (`agent_tracker.wake_prefix`, queued into a child's inbox by the Primary's own wake
+  // path) only points at mail, so peek-primary never counts it (union.rs `is_wake_line`: the prefix, and with provenance on a sender
+  // that is absent or a Primary's). The gate reads the same line the same way, or it blocks on mail no read verb shows or clears.
+  if (v.indexOf(ah.cfg('agent_tracker.wake_prefix')) === 0) {
+    if (!pgNoiseProvOn()) { pgCountSuppressed('wake'); return true; }
+    var ws = row ? row[ah.cfg('mesh_write.ndjson_sender_field')] : null;
+    if (typeof ws !== 'string' || ws === '' || ws.indexOf(ah.cfg('mesh_write.primary_prefix')) === 0) { pgCountSuppressed('wake'); return true; }
+    ah.metric('mesh_noise_lookalike_kept', ['kind', 'wake']);
+    return false;
+  }
+  if (v.replace(/^\s+/, '').indexOf(ah.cfg('devswarm_role.pg_poke_prefix')) !== 0) return false;
+  if (ah.settings.bool('devswarm_role.pg_sw_provenance') !== true) return true;
+  var snd = row ? row[ah.cfg('mesh_write.ndjson_sender_field')] : null;
+  if (typeof snd !== 'string' || snd === '' || snd.indexOf(ah.cfg('mesh_write.primary_prefix')) === 0) return true;
+  ah.metric('mesh_noise_lookalike_kept', ['kind', 'poke']);
+  return false;
+}
 function pgBroadcast(row) { return ah.cfg('devswarm_role.pg_broadcast_fields').some(function (k) { return row[k] === ah.cfg('devswarm_role.pg_broadcast'); }); }
 
 // `unreadRowTs(row)`: {at} | {none} | {odd} (a string time only V8 could read).
@@ -506,13 +561,19 @@ function pgGate(p, root, l) {
     fx.extra.push({ rel: ah.cfg('devswarm_role.pg_devswarm_dir') + '/' + ah.cfg('devswarm_role.pg_dir_summaries') + '/' + selfKey + '.json', body: derived });
     }
   }
-  var descriptors = pgDescriptors(home);
+  // GH #809: with no resolvable project (selfKey null: a directory that belongs to no project) there is no scope to compare a workspace
+  // against, so no workspace is this session's to answer for: the machine-global descriptors of other projects are not read at all.
+  // A work tree that resolved (idn.top) with no key of its own (a deleted cwd inside its repo) is the repo's Primary: Node fails open there and
+  // keeps the descriptors, so the project's key is derived from the work tree and only a directory with no work tree reads none.
+  var scopeKey = selfKey !== null ? selfKey : (idn.top === null ? null : ah.mesh.repoKey(idn.top));
+  var descriptors = idn.top === null && selfKey === null ? [] : pgDescriptors(home);
   var qs = pgQuestions(home, own, descriptors, selfKey, fx);
   var unanswered = qs.blocking, informational = qs.informational, truncated = own.truncated;
   var parked = pgParkedSegment(home, own.id, l.cli); // escalation notices the supervisor could not deliver to this Primary block like unread mail
+  var flagged = pgFlaggedSegment(home, scopeKey, ah.clock.now(), sid, fx); // #844 item 4: children the last roster flagged (straying, stale, unpushed)
   var stateRel = ah.cfg('devswarm_role.pg_devswarm_dir') + '/' + ah.cfg('devswarm_role.pg_dir_gate') + '/' + sid.replace(/[^A-Za-z0-9_.-]/g, '_') + '.json';
   var stateFile = home + '/' + stateRel;
-  if (descriptors.length === 0 && own.unread === 0 && !own.unknown && unanswered.length === 0 && !truncated && parked === null) { fx.unlink = stateRel; return fx; }
+  if (descriptors.length === 0 && own.unread === 0 && !own.unknown && unanswered.length === 0 && !truncated && parked === null && flagged === null) { fx.unlink = stateRel; return fx; }
 
   var entries = [];
   if (own.id !== null) {
@@ -536,17 +597,17 @@ function pgGate(p, root, l) {
     var isOwn = own.id === d.id;
     // the own descriptor is the own row's, except when the summary's own count was 0 (not checked at all): then it is counted here
     if (isOwn && !(own.parsed && own.rawZero)) return;
-    var fresh = selfKey !== null ? keyOf(d.worktree) : null;
-    if (selfKey !== null && fresh !== null && selfKey !== fresh) return;
-    var registered = selfKey !== null && fresh === null ? ah.mesh.registeredKey(d.raw, d.id) : fresh;
-    var foreign = selfKey !== null && fresh === null && registered !== null && registered !== selfKey;
+    var fresh = scopeKey !== null ? keyOf(d.worktree) : null;
+    if (scopeKey !== null && fresh !== null && scopeKey !== fresh) return;
+    var registered = scopeKey !== null && fresh === null ? ah.mesh.registeredKey(d.raw, d.id) : fresh;
+    var foreign = scopeKey !== null && fresh === null && registered !== null && registered !== scopeKey;
     if (ignore[d.id] === true) return;
     var done = !isOwn && pgArchiveReady(home, d.id, fresh, readyMemo);
     var e = pgNewEntry(d.id, d.worktree, d.session);
     e.done = done;
     e.doneGate = !isOwn && pgGateDone(readyMemo, fresh, d.id);
     e.foreign = foreign;
-    var ndOldest = null, ownNoInbox = false, ownStoreCounted = false, dead = false;
+    var ndOldest = null, ownNoInbox = false, ownStoreCounted = false, dead = false, ndSenders = [];
     var bl = pgBacklog(d.inbox, d.cursor);
     if (bl.unknown !== undefined) {
       if (isOwn && bl.unknown === 'no-inbox-path') ownNoInbox = true;
@@ -559,12 +620,14 @@ function pgGate(p, root, l) {
     } else {
       bl.rows.forEach(function (row) {
         if (row === null) { e.realUnread += 1; e.ageUnknown = true; return; }
-        if (pgNoise(row.message) || (done && pgBroadcast(row))) return;
+        if (pgNoise(row.message, row) || (done && pgBroadcast(row))) return;
         var ts = pgRowTs(row);
         if (ts.at !== undefined) ndOldest = ndOldest === null ? ts.at : Math.min(ndOldest, ts.at);
         else if (ts.none) e.ageUnknown = true;
         else e.ageOdd = true;
         e.realUnread += 1;
+        var snd = row[ah.cfg('mesh_write.ndjson_sender_field')];
+        ndSenders.push(typeof snd === 'string' ? snd : null);
       });
     }
     var unionKey = fresh !== null ? fresh : (dead ? registered : null);
@@ -574,9 +637,15 @@ function pgGate(p, root, l) {
       else if (u.state === 'ok') {
         ownStoreCounted = true;
         var allOwn = true, real = 0;
+        // the partition's own identity family sent these: not inbound mail (the shared count of peek leaves them out too)
+        var fam = pgSharedOn() && Array.isArray(u.family) ? u.family : [];
+        var famHas = function (s) { return typeof s === 'string' && fam.indexOf(s) >= 0; };
+        ndSenders.forEach(function (s) { if (famHas(s)) { e.realUnread -= 1; pgCountSuppressed('own_send'); } });
         u.storeOnly.forEach(function (row) {
-          if (typeof row.body === 'string' && row.body.replace(/^\s+/, '').indexOf(ah.cfg('devswarm_role.pg_poke_prefix')) === 0) return;
+          // switch on: the host already left out the poke mirrors by provenance (mtype), so only the off path drops by text
+          if (!pgNoiseProvOn() && typeof row.body === 'string' && row.body.replace(/^\s+/, '').indexOf(ah.cfg('devswarm_role.pg_poke_prefix')) === 0) return;
           if (done && pgBroadcast(row)) return;
+          if (famHas(row.sender)) { pgCountSuppressed('own_send'); return; }
           real += 1;
           e.realUnread += 1;
           if (!(own.id !== null && typeof row.sender === 'string' && row.sender === own.id)) allOwn = false;
@@ -584,6 +653,17 @@ function pgGate(p, root, l) {
         if (real > 0 && !allOwn) e.hadStoreOnly = true;
         if (u.age !== null) e.oldestAge = u.age;
         else if (real > 0) e.ageUnknown = true;
+        // defect 91ab5e1317e2: a child's count is capped by the ONE shared count `mesh inbox peek-primary` / `read-primary` report for
+        // this reader (the reader's own bases or the floor, the twin-read run, wake rows and own-family sends left out), as the own row's
+        // is (pgOwnLive). The gate's walk reads the descriptor's cursor file, which an ack only projects best-effort, so it can see mail
+        // the verbs already read; a gate count above the shared one is counted (count_mismatch), never blocked on. The gate's own
+        // stricter filters (pokes, a done child's broadcasts) still apply below the cap. Not settled: the walk's count stands.
+        if (pgSharedOn() && e.realUnread > 0) {
+          var sv = ah.mesh.ownReader(unionKey, d.id, d.inbox, d.cursor, true, now);
+          if (sv && sv.reader === true && sv.state === 'ok' && piFinite(sv.shared)) {
+            if (e.realUnread > sv.shared) { pgCountMismatch(); pgCountSuppressed('shared_count'); e.realUnread = sv.shared; }
+          } else ah.unable('devswarm-parent-gate:child_shared');
+        }
       }
     }
     if (ndOldest !== null) {
@@ -739,13 +819,13 @@ function pgGate(p, root, l) {
     });
   }
   if (archivedUnreadFamilies > 0) fx.err += text.render(ah.cfg('devswarm_role.pg_err_archived_unread'), { n: String(archivedUnreadFamilies) });
-  pgStray(home, sidRaw, selfKey, keyOf, now, fx);
+  pgStray(home, sidRaw, scopeKey, keyOf, now, fx);
 
-  if (blocking.length === 0 && unanswered.length === 0 && !truncated && parked === null) {
+  if (blocking.length === 0 && unanswered.length === 0 && !truncated && parked === null && flagged === null) {
     // a pass that only deferred unread mail keeps the loop state and skips the wake-coverage line; only a clean pass clears the state,
     // after the wake-coverage line (which needs a live child of this project) is known to be silent
     if (!busyAdvisoryHeld) {
-      if (own.id !== null && pgWakeBlock(home, cwd, own.id, now, l, stateFile, stateRel, fx, entries)) return fx;
+      if (own.id !== null && pgWakeBlock(home, cwd, own.id, now, l, stateFile, stateRel, fx, entries, typeof sidRaw === 'string' && sidRaw !== '' ? sidRaw : null, p)) return fx;
       fx.unlink = stateRel;
     }
     return fx;
@@ -754,6 +834,7 @@ function pgGate(p, root, l) {
   // ---- the block: loop state, cap, escalation -----------------------------------------------------------------------
   var kinds = blocking.map(function (b) { return own.id === b.id ? ah.cfg('devswarm_role.pg_kind_mailbox') : ah.cfg('devswarm_role.pg_kind_children'); });
   if (parked !== null) kinds.push(ah.cfg('devswarm_role.pg_kind_parked')); // its arrival opens a fresh budget; its text never enters the signature
+  if (flagged !== null) kinds.push(ah.cfg('devswarm_role.pg_kind_flagged')); // the same budget, cap and one escalation as the other kinds
   kinds.sort();
   kinds = kinds.filter(function (k, i) { return i === 0 || k !== kinds[i - 1]; });
   var sig = ah.sha1(ah.cfg('devswarm_role.pg_sig_prefix') + kinds.join(','));
@@ -783,15 +864,17 @@ function pgGate(p, root, l) {
     var first = pgReason(blocking, own, null, hasIntent,
       { unanswered: unanswered, informational: informational, truncated: truncated, qEscalate: null, waiting: pgWaitingSeg(home, blocking) }).split('\n')[0];
     fx.err += (first.indexOf(ah.cfg('devswarm_role.pg_drain_tag')) >= 0 ? '' : ah.cfg('devswarm_role.pg_drain_prefix')) + first + ah.cfg('devswarm_role.pg_drain_suffix');
+    pgCountSuppressed('drain');
     return fx;
   }
   // an unanswered question or a truncated question list bypasses the neglect cap; the question set has its own ceiling
   var bypassCap = unanswered.length > 0 || !!truncated;
-  if (!bypassCap && effEscalated) return fx; // already escalated once: quiet
+  if (!bypassCap && effEscalated) { pgCountSuppressed('escalated_quiet'); return fx; } // already escalated once: quiet
   // every flagged child is held by anti-hall's own guard, not neglected by the Primary: a notice, no block, and nothing counted toward the
   // forced-acknowledgement cap or the escalation (the loop state is left as it is)
   if (!bypassCap && blocking.length > 0 && blocking.every(function (b) { return b.guardBlocked && own.id !== b.id; })) {
     fx.err += text.render(ah.cfg('devswarm_role.pg_guard_held'), { ids: pgListMore(blocking.map(function (b) { return b.id; }), ah.cfgNum('devswarm_role.pg_max_shown')) });
+    pgCountSuppressed('guard_held');
     return fx;
   }
   var cap = ah.settings.num('devswarm_role.pg_set_cap');
@@ -815,6 +898,7 @@ function pgGate(p, root, l) {
     if (effQEscalated) {
       // the question set already escalated once: quiet, the state kept
       fx.write = { rel: stateRel, body: stateBody(effQBlocks, true) };
+      pgCountSuppressed('escalated_quiet');
       return fx;
     }
     nextQBlocks = effQBlocks + 1;
@@ -826,15 +910,18 @@ function pgGate(p, root, l) {
   fx.write = { rel: stateRel, body: stateBody(nextQBlocks, nextQEscalated) };
 
   // the stale-build downgrade: a plain neglect block is dropped while the host registered a newer version
-  if (blocking.length > 0 && !bypassCap && escalateTimes === null && qEscalateTimes === null && pgVersionStale(root)) return fx;
-  var wake = pgWakeLine(own.id, l);
+  if (blocking.length > 0 && !bypassCap && escalateTimes === null && qEscalateTimes === null && pgVersionStale(root)) { pgCountSuppressed('version_stale'); return fx; }
+  var wake = pgWakeLine(own.id, l, home, cwd, now);
   var base = (blocking.length > 0 || unanswered.length > 0 || truncated)
     ? pgReason(blocking, own, escalateTimes, hasIntent,
       { unanswered: unanswered, informational: informational, truncated: truncated, qEscalate: qEscalateTimes, waiting: pgWaitingSeg(home, blocking) })
     : ah.cfg('devswarm_role.pg_reason_parked_only');
-  var cli = dwEngineCmd('devswarm_role.engine_cli', ah.env.get(ah.cfg('env.home')) || '');
-  var skip = text.render(ah.cfg('devswarm_role.pg_skip_cmd'), { cli: pgShQuote(cli), guard: ah.cfg('devswarm_role.gate_guard') });
-  fx.out = JSON.stringify({ decision: ah.cfg('devswarm_role.pg_decision_block'), reason: pgFrame(base + (parked !== null ? ah.cfg('devswarm_role.pg_parked_joiner') + parked : '') + wake, skip) }) + '\n';
+  var cli = dwEngineCmd('devswarm_role.engine_bin', ah.env.get(ah.cfg('env.home')) || '');
+  var skip = text.render(ah.cfg('devswarm_role.pg_skip_cmd'), { cli: dwShWord(cli), verb: ah.cfg('devswarm_role.engine_verb'), guard: ah.cfg('devswarm_role.gate_guard') });
+  var flagText = flagged !== null ? ah.cfg('devswarm_role.pg_parked_joiner') + flagged : '';
+  fx.out = JSON.stringify({ decision: ah.cfg('devswarm_role.pg_decision_block'), reason: pgFrame(base + (parked !== null ? ah.cfg('devswarm_role.pg_parked_joiner') + parked : '') + flagText + wake, skip) }) + '\n';
+  if (flagged !== null) ah.metric('devswarm_roster_flags', ['action', 'gate_counted']);
+  pgCountFired(escalateTimes !== null || qEscalateTimes !== null ? 'escalation' : 'block');
   return fx;
 }
 
@@ -915,11 +1002,37 @@ function pgDrainMarker(home, id) {
   return { stale: !(age >= 0 && age <= ttl), session: m.sessionId !== null && m.sessionId !== undefined ? String(m.sessionId) : '' };
 }
 
+// #844 item 4: the children the last roster read flagged (devswarm_parent.dir_flags/<key>.json, written by the prompt hook), as the
+// segment the parent Stop gate counts, or null (switch off, no project, no record, a record older than flag_record_fresh_ms, none flagged).
+function pgFlaggedSegment(home, key, now, sid, fx) {
+  if (!ah.settings.bool('devswarm_parent.set_roster_orders') || !pgSafeId(key)) return null;
+  var rec = pgJson(pgDir(home) + '/' + ah.cfg('devswarm_parent.dir_flags') + '/' + key + '.json');
+  if (!jx.isObj(rec) || !piFinite(rec.at) || rec.at > now || now - rec.at > ah.cfgNum('devswarm_parent.flag_record_fresh_ms')) return null;
+  var ws = Array.isArray(rec.ws) ? rec.ws.filter(function (w) { return jx.isObj(w) && typeof w.id === 'string' && Array.isArray(w.reasons) && w.reasons.length; }) : [];
+  if (!ws.length) return null;
+  // one block per flagged set and session: asking a child does not clear its flag until it reports or pushes, so the same set seen
+  // again is a stderr notice, never a block loop (the minutes in a reason do not make a new set)
+  var sig = ah.sha1(JSON.stringify(ws.map(function (w) { return [w.id, w.reasons.map(function (x) { return String(x).replace(/[0-9]+/g, '#'); })]; })));
+  var seenRel = ah.cfg('devswarm_role.pg_devswarm_dir') + '/' + ah.cfg('devswarm_parent.dir_flags') + '/' + ah.cfg('devswarm_role.pg_flagged_seen_prefix') + ah.sha1(String(sid)).slice(0, ah.cfgNum('devswarm_role.pg_stray_seen_hash_len')) + '.json';
+  var seen = pgJson(home + '/' + seenRel);
+  if (jx.isObj(seen) && seen.sig === sig) {
+    fx.err += text.render(ah.cfg('devswarm_role.pg_flagged_notice'), { n: String(ws.length) }) + '\n';
+    ah.metric('devswarm_roster_flags', ['action', 'gate_notice']);
+    return null;
+  }
+  fx.extra.push({ rel: seenRel, body: JSON.stringify({ sig: sig, at: now }) });
+  var max = ah.cfgNum('devswarm_parent.flag_list_max');
+  var list = ws.slice(0, max).map(function (w) { return text.render(ah.cfg('devswarm_parent.flag_item'), { title: typeof w.label === 'string' && w.label ? w.label : w.id, reasons: w.reasons.join(ah.cfg('devswarm_parent.flag_reason_sep')) }); });
+  var more = ws.length > max ? text.render(ah.cfg('devswarm_parent.flag_more'), { n: String(ws.length - max) }) : '';
+  return text.render(ah.cfg('devswarm_role.pg_flagged_text'), { n: String(ws.length), list: list.join(ah.cfg('devswarm_parent.flag_item_sep')) + more });
+}
+
 // `emitStrayingAdvisory(home, sessionId, repoKeyOf, selfKey)`: the straying warnings of this project's children (devswarm-plan.js
 // listStray) this Primary session was not shown yet, as one capped stderr line (devswarm-supervision.js strayingLine), and the shown
 // set (stray-seen/<sha1(session)>.json, bounded) written once the gate settles. Advisory only: it never blocks.
 function pgStray(home, sidRaw, selfKey, keyOf, now, fx) {
   if (!ah.settings.bool('devswarm_prompt.plan_tracking_setting')) return;
+  if (selfKey === null) return; // GH #809: no resolvable project, no child of this session's own project to warn about
   var dir = pgDir(home) + '/' + ah.cfg('devswarm_role.pg_dir_stray'), entries = [];
   (pgNames(dir) || []).forEach(function (n) {
     if (!/\.json$/.test(n)) return;
@@ -979,11 +1092,11 @@ function pgRawName(home, id) {
 // The clean pass's mailbox-wake block (`wakeCoverage` + `noWakePathLine`): a Claude Primary with a live child of this project, no live
 // watcher and no recent cron tick is told to arm both, under its own loop-state signature and the same forced-acknowledgement cap,
 // then quiet. True when it decided (a block written to `fx`, or the spent cap's quiet pass); false when nothing is missing.
-function pgWakeBlock(home, cwd, ownId, now, l, stateFile, stateRel, fx, entries) {
+function pgWakeBlock(home, cwd, ownId, now, l, stateFile, stateRel, fx, entries, sid, payload) {
   if (!pgSafeId(ownId)) return false; // wakeCoverage: an id it cannot use is "unknown"
   var raw = ah.env.get(ah.cfg('devswarm_role.agent_env'));
   if ((raw === null ? '' : raw.trim().toLowerCase()) !== ah.cfg('devswarm_role.claude_agent')) return false;
-  var ctx = { home: home, now: now };
+  var ctx = { home: home, now: now, key: ah.mesh.repoKey(cwd) };
   var lc = piLiveChildren(ctx, cwd);
   if (!lc.known || !lc.live) return false;
   // only a child that can still send mail needs a wake path: a done (archive-ready) workspace, a waiting-on-human one and an idle one
@@ -991,8 +1104,14 @@ function pgWakeBlock(home, cwd, ownId, now, l, stateFile, stateRel, fx, entries)
   var rows = (entries || []).filter(function (e) { return e.id !== ownId && !e.stateSkipped && !e.held; });
   if (rows.length > 0 && !rows.some(function (e) { return !e.done && !e.doneGate && !e.waiting && !e.idleKnown; })) return false;
   var tick = piJson(pgDir(home) + '/' + ah.cfg('devswarm_parent.dir_wake_tick') + '/' + ownId + '.json');
-  var ageMin = tick && piFinite(tick.ts) ? Math.max(0, Math.floor((now - tick.ts) / ah.cfgNum('devswarm_prompt.ms_per_minute'))) : null;
+  var ageMin = piTickAge(tick, now, sid);
   var warn = piSetDefault('devswarm_parent.set_cron_warn');
+  // the Stop payload lists the tick job (devswarm.cronFromPayload): it exists even though its first fire is not yet due, so no tick marker
+  // is expected; the sighting is kept for the prompt line, whose own payload has no cron list
+  if (piPayloadCron(payload) === true) {
+    ageMin = 0;
+    if (sid) fx.extra.push({ rel: piWakeCtlRel(sid), body: JSON.stringify(Object.assign(piWakeCtlRead(sid), { cronSeen: now })) });
+  }
   if (!(ageMin === null || ageMin > warn)) return false;
   if (ah.settings.bool('wake_watch.set_enabled') === false) return false;
   if (piWatcherLive(home, ownId, now)) return false;
@@ -1024,17 +1143,19 @@ function pgVersionStale(root) {
 // ---- texts -------------------------------------------------------------------------------------------------------------
 
 // `wakeReassertLine(env, false, ownId)`: the Primary's mailbox-wake re-verify line (Claude only).
-function pgWakeLine(ownId, l) {
+function pgWakeLine(ownId, l, home, cwd, now) {
   var raw = ah.env.get(ah.cfg('devswarm_role.agent_env'));
   var agent = raw === null ? '' : raw.trim().toLowerCase();
   if (agent !== ah.cfg('devswarm_role.claude_agent')) return '';
+  // devswarm.wakeCronOnlyWithChild: with no live child the cron is deliberately absent, so it is not re-verified
+  if (dwCronOnlyWithChild()) { var lc = piLiveChildren({ home: home, now: now }, cwd); if (lc.known && !lc.alive) return ''; }
   var extra = ah.cfg('devswarm_role.id_extra_chars');
   var valid = function (v) { return typeof v === 'string' && v !== '' && v.split('').every(function (c) { return /[A-Za-z0-9]/.test(c) || extra.indexOf(c) >= 0; }); };
   var id;
   if (ownId !== null && valid(ownId)) id = ownId;
   else { var b = ah.env.get(ah.cfg('devswarm_role.builder_env')); id = valid(b) ? b : ah.cfg('devswarm_role.id_placeholder'); }
-  var tick = text.render(ah.cfg('devswarm_role.pg_wake_tick'), { id: id }), watch = text.render(ah.cfg('devswarm_role.pg_wake_watch'), { watcher: pgDq(l.watcher) });
-  return text.render(ah.cfg('devswarm_role.pg_wake_line'), { cli: pgDq(l.cli), cron: dwWakeCron(), tick: tick, watch: watch, id: id });
+  var tick = text.render(ah.cfg('devswarm_role.pg_wake_tick'), { id: id, verb: l.verb }), watch = text.render(ah.cfg('devswarm_role.pg_wake_watch'), { watcher: pgDq(l.bin), wverb: l.wverb });
+  return text.render(ah.cfg('devswarm_role.pg_wake_line'), { cli: pgDq(l.bin), verb: l.verb, cron: dwWakeCron(), tick: tick, watch: watch, id: id });
 }
 
 // `frame({ guard, headline, why, override, body })` of hooks/lib/block-message.js.

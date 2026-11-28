@@ -29,18 +29,25 @@
 //! | `lstat(path)` | JSON `{kind,size,mtimeMs,mode}` of the path itself (links not followed), or `null`: see [`lstat`] |
 //! | `realpathEx(path)` | JSON `{path}` or `{error}`: the canonical path, or why there is none: see [`realpath_ex`] |
 //! | `uid()` / `fileSha256(path)` / `readHeadHex(path, n)` | the numeric user id; SHA-256 hex of a regular file; the first bytes of a regular file as hex |
+//! | `readRangeHex(path, from, n)` | `n` bytes of a regular file from byte `from` as hex (fewer at its end): see [`read_range_hex`] |
+//! | `rangeSha1Hex(path, from, n)` | SHA-1 hex of the lowercase-hex text of exactly `n` bytes from byte `from`, `null` when fewer exist: see [`range_sha1_hex`] |
 //! | `isDir(path)` | whether `path` is a directory (links followed) |
 //! | `readdir(path)` | sorted entry names of a directory, or `null` (not a directory, or over `script.readdir_max`) |
 //! | `readlink(path)` | the target text of a symbolic link, or `null` |
 //! | `lockAcquire(rel, group, waitMs?)` / `lockRelease(handle)` | the cross-process lock file (Node lock protocol) under the state directory: see [`lock_acquire`] |
+//! | `flockAcquire(rel, group, waitMs?)` | a kernel `flock` on a file no Node peer locks (released with `lockRelease`); handle, `0` busy, `null` unavailable: see [`flock_acquire`] |
+//! | `fenceSweep(rel, infix)` / `writeFenced(rel, text, handle, infix, guard?)` | the fenced commit of a file guarded by a lock taken in this call, optionally discarded when a watched value moved past its bound: see [`write_fenced`] |
 //! | `memory()` | JSON `{available, total}` bytes of the machine: see [`memory`] |
 //! | `agents(path)` | the running agents of a transcript (id, description, launching input): see [`agents`] |
 //! | `repoContext(dir)` | JSON `{unsure, toplevel, root}` of the checkout around `dir`: see [`repo_context`] |
 //! | `cfgLive(key)` | the effective value of a defaults key through the owner's editable layers (`settings.json`, `config.toml`, shipped): see [`cfg_live`] |
 //! | `sha1(text)` | lowercase hex SHA-1 of the UTF-8 text |
+//! | `ownerNamed(text)` | whether a `blockedOn` reason names the owner or a human (a word of `dispatch_tier.owner_values`): the one matcher the tracker uses too, see [`crate::agents::owner_named`] |
 //! | `tailLines(path, windowBytes, lineMax)` | the last lines of a file with their byte offsets, bounded: see [`tail_lines`] |
 //! | `tailEntries(path, windowBytes, lineMax, keep, maxLines)` | the newest lines parsed by the engine, cut down to the paths `keep` names: see [`tail_entries`] |
+//! | `rangeEntries(path, from, windowBytes, lineMax, keep, maxLines)` | an incremental forward read from a saved offset, bounded per call and per line: see [`range_entries`] |
 //! | `pruneState(prefix, keep)` | the state-file retention sweep of one writer prefix in the state directory (stale files older than the TTL, throttled; `keep` is never removed) |
+//! | `metric(name, labels)` | add one to the registered counter `name` (`[metric.<name>]` in a defaults file); `labels` is a flat `[label, value, ...]` array; an unregistered name is ignored |
 //! | `log(kind, text)` | one line in the engine's event log (rate-limited by the engine) |
 //! | `now()` | milliseconds since the epoch from the engine's one clock (injectable for tests): see [`now_ms`] |
 //! | `stateRead(rel)`, `stateRemove(rel)`, `stateSweep(dir, prefix, maxAgeMs, maxRemove)` | scoped read, single-file delete and bounded prefix/age sweep under the state root: see [`state_read`], [`state_remove`], [`state_sweep`] |
@@ -120,6 +127,10 @@ pub fn with_call<R>(st: Settings, f: impl FnOnce() -> R) -> R {
     super::host_parentinbox::reset_call();
     super::host_spawn::reset_call();
     let r = f();
+    // per-call read caches (open store handles, rosters, the marker index, app states) are released when the call ends, so an idle
+    // worker thread holds no file handle or index; the next call's reset clears them too, which also covers a call that unwound
+    super::host_mesh::drop_store_cache();
+    super::host_parentinbox::end_call();
     // a lock a script still holds when its call ends (an exception, an interrupt) is released here, never left to go stale
     for (_, held, _guard) in HELD.with(|h| std::mem::take(&mut *h.borrow_mut())).into_iter().rev() {
         held.release();
@@ -151,9 +162,9 @@ pub(super) fn regex_totals() -> (u64, u64, u64, u64) {
 }
 
 /// Run `f` on the compiled pattern for `flags` (shared cache, see [`super::recache`]).
-pub(super) fn with_re<R>(src: &str, flags: &str, f: impl FnOnce(&Regex) -> R) -> rquickjs::Result<R> {
+pub(super) fn with_re<R: super::recache::Kept>(src: &str, flags: &str, f: impl FnOnce(&Regex) -> R) -> rquickjs::Result<R> {
     let re = super::recache::get(src, flags)?;
-    Ok(f(&re))
+    Ok(re.searched(f))
 }
 
 /// UTF-16 length of `s[..byte]`.
@@ -313,18 +324,20 @@ fn scoped_target(home: &str, rel: &str, len: usize, want_dir: bool) -> rquickjs:
     let root: PathBuf = Path::new(home).join(parts[0]);
     let mut cur = root.clone();
     let last = parts.len() - 1;
+    let mut parent_is_dir = false; // the walk below just saw the directory the file goes in (not a link): no need to make it
     for (i, part) in parts.iter().enumerate().skip(1) {
         cur.push(part);
         match std::fs::symlink_metadata(&cur) {
             Ok(m) if m.file_type().is_symlink() => return Err(refused(defaults::text("script.write_why_link"))),
             // a file where a directory is needed, or a directory where the file goes: the disk cannot take the write
             Ok(m) if (i < last && !m.is_dir()) || (i == last && (want_dir != m.is_dir() || (!want_dir && !m.is_file()))) => return Ok(None),
+            Ok(_) if i + 1 == last && !want_dir => parent_is_dir = true,
             _ => {}
         }
     }
     // the root itself may be a link the owner set up (a state directory on another disk); what is refused is a link BELOW it
     let Some(parent) = (if want_dir { Some(cur.as_path()) } else { cur.parent() }) else { return Ok(None) };
-    if std::fs::create_dir_all(parent).is_err() {
+    if !parent_is_dir && std::fs::create_dir_all(parent).is_err() {
         return Ok(None);
     }
     let (Ok(real_root), Ok(real_parent)) = (std::fs::canonicalize(&root), std::fs::canonicalize(parent)) else { return Ok(None) };
@@ -381,6 +394,60 @@ pub fn read_head_hex(path: &str, n: f64) -> Option<String> {
     Some(b.iter().map(|x| format!("{x:02x}")).collect())
 }
 
+/// `readRangeHex(path, from, n)`: up to `n` bytes (at most `script.read_max_bytes`) of a regular file starting at byte `from`, as
+/// lowercase hex (fewer when the file ends first, empty from past its end), or `null` when it cannot be read. A script fingerprints
+/// the start and a fixed middle of a transcript with it, one small read each.
+pub fn read_range_hex(path: &str, from: f64, n: f64) -> Option<String> {
+    use std::os::unix::fs::FileExt;
+    let want = (n.max(0.0) as u64).min(defaults::num("script.read_max_bytes"));
+    let start = from.max(0.0) as u64;
+    let f = std::fs::File::open(path).ok()?;
+    f.metadata().ok().filter(std::fs::Metadata::is_file)?;
+    let mut b = vec![0u8; want as usize];
+    let mut got = 0usize;
+    while got < b.len() {
+        let n = f.read_at(b.get_mut(got..)?, start + got as u64).ok()?;
+        if n == 0 {
+            break;
+        }
+        got += n;
+    }
+    b.truncate(got);
+    Some(b.iter().map(|x| format!("{x:02x}")).collect())
+}
+
+/// `rangeSha1Hex(path, from, n)`: the lowercase hex SHA-1 of the lowercase hex TEXT of exactly `n` bytes of a regular file starting at
+/// byte `from` - the very digest a script got by hashing `readRangeHex(path, from, n)`, so a stored fingerprint stays valid - without
+/// building or returning the hex. `null` when the file cannot be read, holds fewer than `n` bytes from `from`, or `n` is over
+/// `script.read_max_bytes`.
+pub fn range_sha1_hex(path: &str, from: f64, n: f64) -> Option<String> {
+    use std::os::unix::fs::FileExt;
+    let want = n.max(0.0) as u64;
+    if want > defaults::num("script.read_max_bytes") {
+        return None;
+    }
+    let start = from.max(0.0) as u64;
+    let f = std::fs::File::open(path).ok()?;
+    f.metadata().ok().filter(std::fs::Metadata::is_file)?;
+    let mut b = vec![0u8; want as usize];
+    let mut got = 0usize;
+    while got < b.len() {
+        let r = f.read_at(b.get_mut(got..)?, start + got as u64).ok()?;
+        if r == 0 {
+            return None;
+        }
+        got += r;
+    }
+    let nib = |x: u8| char::from_digit(u32::from(x), 16).map_or(b'0', |c| c as u8); // a nibble (0..=15) as lowercase hex
+    let mut text = Vec::with_capacity(b.len() * 2);
+    for x in &b {
+        text.push(nib(x >> 4));
+        text.push(nib(x & 15));
+    }
+    let d = ring::digest::digest(&ring::digest::SHA1_FOR_LEGACY_USE_ONLY, &text);
+    Some(d.as_ref().iter().flat_map(|x| [nib(x >> 4) as char, nib(x & 15) as char]).collect())
+}
+
 /// `realpathEx(path)`: the canonical path as `{"path":s}`, or `{"error":"NotFound"}` / `{"error":"<io error kind>"}` when it cannot be
 /// resolved, so a script can tell a path that does not exist from one it could not examine.
 pub fn realpath_ex(path: &str) -> String {
@@ -411,7 +478,26 @@ static IN_PROCESS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 /// A held lock: the handle number, the lock file, and the in-process guard (only the first lock of a call holds it; the ones taken
 /// after it in the same call are covered by it).
-type Held = (u64, crate::checks::guardkit::nodelock::Held, Option<std::sync::MutexGuard<'static, ()>>);
+type Held = (u64, Kind, Option<std::sync::MutexGuard<'static, ()>>);
+
+/// What a handle holds: a lock file of the Node protocol, or the open file of a kernel `flock` (closing it releases the lock, also
+/// when the process dies).
+enum Kind {
+    Node(crate::checks::guardkit::nodelock::Held),
+    Flock(std::fs::File),
+}
+
+impl Kind {
+    fn release(self) -> bool {
+        match self {
+            Kind::Node(h) => h.release(),
+            Kind::Flock(f) => {
+                crate::health::flock(&f, libc::LOCK_UN);
+                true
+            }
+        }
+    }
+}
 
 thread_local! {
     static CLOCK: RefCell<Option<f64>> = const { RefCell::new(None) };
@@ -446,8 +532,112 @@ pub fn lock_acquire(home: &str, rel: &str, group: &str, wait_ms: Option<f64>) ->
     let Some(held) = taken else { return Ok(None) };
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    HELD.with(|h| h.borrow_mut().push((id, held, guard)));
+    HELD.with(|h| h.borrow_mut().push((id, Kind::Node(held), guard)));
     Ok(Some(id as f64))
+}
+
+/// `flockAcquire(rel, group, waitMs?)`: like [`lock_acquire`] with a kernel `flock(LOCK_EX)` on the file `rel` (created if absent,
+/// never deleted, never truncated, opened `O_NOFOLLOW` with mode 0600) in place of the Node lock protocol: no owner record, no
+/// staleness, no takeover, and a holder that dies drops it. Only for a file no Node peer locks. The step is `<group>.lock_step_ms`.
+/// Returns the handle number (the lock is held), `0` when the wait ran out (held elsewhere), `-1` when the lock could not be acquired
+/// (the file cannot be opened or is a link, the count of held locks is spent, or flock failed with an errno that is not "unsupported":
+/// the script must write nothing), or `null` when, and only when, the filesystem or platform has no flock at all (`ENOTSUP`,
+/// `EOPNOTSUPP`, `ENOSYS`): only then may the script fall back to [`lock_acquire`], whose own file lock is a different protocol
+/// that does not exclude a holder of this one. Released by [`lock_release`] or at the end of the call.
+pub fn flock_acquire(home: &str, rel: &str, group: &str, wait_ms: Option<f64>) -> rquickjs::Result<Option<f64>> {
+    let failed = || Ok(Some(-1.0)); // the handle number's "not acquired" answer (see the doc above)
+    let Some(mut params) = crate::checks::guardkit::nodelock::Params::from_group(group) else {
+        return Err(err("flockAcquire", defaults::render("script.msg_unknown_key", &[("key", &group)])));
+    };
+    if let Some(w) = wait_ms.filter(|w| w.is_finite() && *w >= 0.0) {
+        params.wait_ms = (w as u64).min(defaults::num("script.lock_wait_max_ms"));
+    }
+    let held_now = HELD.with(|h| h.borrow().len());
+    if held_now as u64 >= defaults::num("script.lock_max_held") {
+        return failed();
+    }
+    let Some(path) = scoped_target(home, rel, 0, false)? else { return failed() };
+    let Ok(file) = open_flock_file(&path) else { return failed() };
+    let started = std::time::Instant::now();
+    let guard = (held_now == 0).then(|| IN_PROCESS.lock().unwrap_or_else(|e| e.into_inner()));
+    let deadline = started + std::time::Duration::from_millis(params.wait_ms);
+    let outcome = loop {
+        match try_flock(&file) {
+            Ok(()) => break Ok(true),
+            Err(e) if e == libc::EWOULDBLOCK || e == libc::EINTR => {}
+            Err(e) if e == libc::ENOTSUP || e == libc::EOPNOTSUPP || e == libc::ENOSYS => break Err(true),
+            Err(_) => break Err(false), // ENOLCK, EBADF, EIO, ...: the lock was not taken, and no one said flock does not exist here
+        }
+        if std::time::Instant::now() >= deadline {
+            break Ok(false);
+        }
+        std::thread::sleep(std::time::Duration::from_millis(params.step_ms.max(1)));
+    };
+    credit_blocking(started);
+    match outcome {
+        Err(true) => Ok(None),
+        Err(false) => failed(),
+        Ok(false) => Ok(Some(0.0)),
+        Ok(true) => {
+            static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1_000_000);
+            let id = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            HELD.with(|h| h.borrow_mut().push((id, Kind::Flock(file), guard)));
+            Ok(Some(id as f64))
+        }
+    }
+}
+
+/// The one open of a flock file: created if absent, never truncated, mode 0600, `O_NOFOLLOW` (a link in the file's place is refused even
+/// when it appears after [`scoped_target`] looked).
+fn open_flock_file(path: &Path) -> std::io::Result<std::fs::File> {
+    std::fs::OpenOptions::new().create(true).truncate(false).read(true).write(true).mode_0600().nofollow().open(path)
+}
+
+/// Test seam: the production open of a flock file (see [`open_flock_file`]).
+#[cfg(test)]
+pub(crate) fn open_flock_file_for_test(path: &Path) -> std::io::Result<std::fs::File> {
+    open_flock_file(path)
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Test seam: the errno the next `try_flock` calls of this thread fail with (the kernel's own answers cannot be forced).
+    static FLOCK_ERRNO: std::sync::atomic::AtomicI32 = const { std::sync::atomic::AtomicI32::new(0) };
+}
+
+/// Test seam: make the `flock` calls of this thread fail with `errno` (`None`: the real call again).
+#[cfg(test)]
+pub(crate) fn set_flock_errno(errno: Option<i32>) {
+    FLOCK_ERRNO.with(|f| f.store(errno.unwrap_or(0), std::sync::atomic::Ordering::Relaxed));
+}
+
+/// One non-blocking `flock(LOCK_EX)`: `Ok` when taken, else the errno.
+fn try_flock(file: &std::fs::File) -> Result<(), i32> {
+    use std::os::unix::io::AsRawFd;
+    #[cfg(test)]
+    match FLOCK_ERRNO.with(|f| f.load(std::sync::atomic::Ordering::Relaxed)) {
+        0 => {}
+        e => return Err(e),
+    }
+    // SAFETY: `file` is open and owned by the caller, so its descriptor is valid; flock takes only it and flags.
+    if unsafe { libc::flock(file.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error().raw_os_error().unwrap_or(libc::EIO))
+    }
+}
+
+trait Mode0600 {
+    fn mode_0600(&mut self) -> &mut Self;
+    fn nofollow(&mut self) -> &mut Self;
+}
+impl Mode0600 for std::fs::OpenOptions {
+    fn mode_0600(&mut self) -> &mut Self {
+        std::os::unix::fs::OpenOptionsExt::mode(self, 0o600)
+    }
+    fn nofollow(&mut self) -> &mut Self {
+        std::os::unix::fs::OpenOptionsExt::custom_flags(self, libc::O_NOFOLLOW)
+    }
 }
 
 /// `lockRelease(handle)`: release a lock taken in this call; `false` when it was not held (or no longer ours).
@@ -455,6 +645,52 @@ pub fn lock_release(id: f64) -> bool {
     let Some(i) = HELD.with(|h| h.borrow().iter().position(|(n, _, _)| *n as f64 == id)) else { return false };
     let (_, held, _guard) = HELD.with(|h| h.borrow_mut().remove(i));
     held.release()
+}
+
+/// `fenceSweep(rel, infix)`: remove every staged copy (`<rel><infix>*`) of the scoped file `rel`; a holder of the lock that guards
+/// `rel` runs it right after taking the lock, before reading `rel` (see `nodelock::fence_sweep`). Returns how many were removed.
+pub fn fence_sweep(home: &str, rel: &str, infix: &str) -> rquickjs::Result<f64> {
+    let Some(path) = scoped_target(home, rel, 0, false)? else { return Ok(0.0) };
+    Ok(crate::checks::guardkit::nodelock::fence_sweep(&path, infix) as f64)
+}
+
+/// `writeFenced(rel, text, handle, infix)`: the fenced commit of `text` to the scoped file `rel` under the lock `handle` taken in
+/// this call (see `nodelock::fenced_write`): `true` when published, `false` when the lock is not held by this call or was taken
+/// over before the commit (nothing of ours lands over the new holder's write), or on an I/O failure. `guard` (optional): a JSON
+/// array of `[rel, key, max]` triples, re-read after the ownership check immediately before the rename; when the number at `key`
+/// of any scoped JSON file `rel` is greater than `max`, the stage is discarded and `false` returned (GH #426: an idle AFK entry
+/// loses to an owner presence or `back` newer than its decision). A malformed guard publishes nothing.
+pub fn write_fenced(home: &str, rel: &str, text: &str, id: f64, infix: &str, guard: Option<&str>) -> rquickjs::Result<bool> {
+    let Some(path) = scoped_target(home, rel, text.len(), false)? else { return Ok(false) };
+    let mut watch: Vec<(std::path::PathBuf, String, f64)> = Vec::new();
+    if let Some(g) = guard {
+        let Ok(serde_json::Value::Array(rows)) = serde_json::from_str::<serde_json::Value>(g) else { return Ok(false) };
+        for row in rows {
+            let (Some(r), Some(k), Some(max)) =
+                (row.get(0).and_then(|v| v.as_str()), row.get(1).and_then(|v| v.as_str()), row.get(2).and_then(serde_json::Value::as_f64))
+            else {
+                return Ok(false);
+            };
+            let Some(wp) = scoped_target(home, r, 0, false)? else { return Ok(false) };
+            watch.push((wp, k.to_string(), max));
+        }
+    }
+    let still_valid = || {
+        watch.iter().all(|(wp, k, max)| {
+            let v = std::fs::read_to_string(wp).ok().and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok());
+            v.as_ref().and_then(|v| v.get(k.as_str())).and_then(serde_json::Value::as_f64).is_none_or(|n| n <= *max)
+        })
+    };
+    let started = std::time::Instant::now();
+    let sync = defaults::num("script.write_sync") != 0;
+    let r = HELD.with(|h| {
+        h.borrow().iter().find(|(n, _, _)| *n as f64 == id).and_then(|(_, held, _)| match held {
+            Kind::Node(held) => Some(crate::checks::guardkit::nodelock::fenced_write_if(held, &path, text, infix, sync, &still_valid)),
+            Kind::Flock(_) => None,
+        })
+    });
+    credit_blocking(started);
+    Ok(matches!(r, Some(Ok(true))))
 }
 
 /// `memory()`: `{"available": bytes|null, "total": bytes}` of this machine (available counts reclaimable cache; `null` when the
@@ -466,19 +702,34 @@ pub fn memory() -> String {
 
 /// `agents(path)`: the agents a transcript shows as running, from the engine's streaming transcript scan (widened to a longer
 /// window when the default one shows none): `null` (unreadable, or the count cannot be trusted), `{"unsure":true}` (a line JavaScript might read differently, or a relative path), else
-/// `{"rows":[{"id","description","spawnInput"}]}` (`spawnInput`: the input of the launching tool call when it was in the
-/// window, else `null`).
+/// `{"rows":[{"id","description","spawnInput"}],"truncated":bool}` (`spawnInput`: the input of the launching tool call when it was
+/// in the window, else `null`; `truncated`: the rows came from a tail of a longer transcript, so an agent launched before that
+/// window is not in them and their absence proves nothing).
 pub fn agents(path: &str) -> String {
     use crate::checks::agent_scan;
     let opts = agent_scan::Opts { now_ms: crate::checks::replykit::io::now_ms(), ignore_unanswered_stops: false };
-    match agent_scan::running_agents_or_null(path, &opts) {
+    match agent_scan::agent_count_proof(path, &opts) {
         Err(_) => r#"{"unsure":true}"#.into(),
-        Ok(None) => "null".into(),
-        Ok(Some(rows)) => {
+        Ok(agent_scan::Proof { rows: None, .. }) => "null".into(),
+        Ok(agent_scan::Proof { rows: Some(rows), complete, .. }) => {
             let rows: Vec<serde_json::Value> = rows.iter().map(|r| super::host_d::rec_json(&r.id, &r.rec)).collect();
-            serde_json::json!({"rows": rows}).to_string()
+            serde_json::json!({"rows": rows, "truncated": !complete}).to_string()
         }
     }
+}
+
+/// The tracker's current liveness facts, reconciled without persisting state.
+pub fn tracked_agents(session: &str, transcript: &str, cwd: &str) -> rquickjs::Result<String> {
+    let settings = with_settings(Clone::clone)?;
+    let env = crate::agents::Env {
+        home: std::path::PathBuf::from(&settings.home),
+        now_ms: now_ms() as u64,
+        plugin_root: defaults::root(),
+        use_cli: false,
+        settings,
+        act: false,
+    };
+    Ok(serde_json::to_string(&crate::agents::guard_rows(&env, session, transcript, cwd)).unwrap_or_default())
 }
 
 /// `agentsWindow(path)`: the agents a transcript shows as running in its default window only, the way the Node `runningAgents` reads
@@ -627,14 +878,37 @@ pub fn cfg_live(key: &str) -> rquickjs::Result<String> {
     Ok(cfgstore::resolve_one(requested, &layers, &|_| None).value.to_string())
 }
 
+/// `metric(name, labels, by)`: add `by` (a finite, non-negative whole number) to the registered counter `name`, labelled by the
+/// string members of the JSON object `labels` in the order the metric registers its labels. Goes through [`crate::metrics::bump_by`],
+/// so a count made outside the daemon is dropped, and an unregistered name is ignored.
+pub fn metric_add(name: &str, labels: &str, by: f64) {
+    if !by.is_finite() || by < 0.0 {
+        return;
+    }
+    let obj: serde_json::Map<String, serde_json::Value> = serde_json::from_str(labels).unwrap_or_default();
+    let order =
+        defaults::raw(&format!("metric.{name}")).get("labels").map(|v| v.strings().into_iter().map(str::to_string).collect::<Vec<_>>()).unwrap_or_default();
+    let pairs: Vec<(String, String)> = order.iter().filter_map(|l| obj.get(l).and_then(|v| v.as_str()).map(|v| (l.clone(), v.to_string()))).collect();
+    let refs: Vec<(&str, &str)> = pairs.iter().map(|(a, b)| (a.as_str(), b.as_str())).collect();
+    crate::metrics::bump_by(name, &refs, by as u64);
+}
+
 /// `tailLines(path, windowBytes, lineMax)`: the last `windowBytes` (clamped to `script.tail_max_bytes`) of a file as lines, the
 /// partial first line dropped when the window starts inside the file: JSON `{"lines":[[offset, text|null], ...]}`, `offset` the
 /// byte position of the line in the file; `text` is `null` for a line over `lineMax` bytes (never stored) or not valid UTF-8.
 /// `null` when the file cannot be read.
 pub fn tail_lines(path: &str, window: f64, line_max: f64) -> Option<String> {
-    let mut lines: Vec<serde_json::Value> = Vec::new();
-    tail_scan(path, window, line_max, |at, text| lines.push(serde_json::json!([at, text])))?;
-    Some(serde_json::json!({ "lines": lines }).to_string())
+    // the answer is written as the lines are read: no list of values beside the text (the window was held three times over)
+    let mut out: Vec<u8> = br#"{"lines":["#.to_vec();
+    let mut first = true;
+    tail_scan(path, window, line_max, |at, text| {
+        if !std::mem::take(&mut first) {
+            out.push(b',');
+        }
+        crate::discard::harmless(serde_json::to_writer(&mut out, &(at, text))); // keep: a write into a Vec cannot fail
+    })?;
+    out.extend_from_slice(b"]}");
+    String::from_utf8(out).ok()
 }
 
 /// `tailEntries(path, windowBytes, lineMax, keep, maxLines)`: the newest `maxLines` lines of [`tail_lines`], each parsed as JSON by the engine and cut down
@@ -652,41 +926,32 @@ pub fn tail_entries(path: &str, window: f64, line_max: f64, keep: &str, max_line
     let max_lines = if max_lines.is_finite() && max_lines >= 1.0 { max_lines as usize } else { usize::MAX };
     // only the newest `max_lines` lines are parsed and returned; the older ones are counted (`dropped`, and `droppedUnread`
     // for those that were over `lineMax` or not UTF-8)
-    let mut ring: std::collections::VecDeque<(u64, Option<String>)> = std::collections::VecDeque::new();
+    let mut ring: std::collections::VecDeque<(u64, serde_json::Value, bool)> = std::collections::VecDeque::new();
     let (mut dropped, mut dropped_unread) = (0u64, 0u64);
+    // each line is cut down to `keep` as it is read (never parsed into a tree, never kept as text), so the window is not held
     tail_scan(path, window, line_max, |at, text| {
+        let unread = text.is_none();
+        let v = project_line(&trie, text);
         if ring.len() == max_lines
-            && let Some((_, old)) = ring.pop_front()
+            && let Some((_, _, old_unread)) = ring.pop_front()
         {
             dropped += 1;
-            dropped_unread += u64::from(old.is_none());
+            dropped_unread += u64::from(old_unread);
         }
-        ring.push_back((at, text));
+        ring.push_back((at, v, unread));
     })?;
-    let mut lines: Vec<serde_json::Value> = Vec::with_capacity(ring.len());
-    for (at, text) in ring {
-        let v = match text {
-            None => serde_json::Value::Null,
-            Some(t) if t.bytes().all(|b| matches!(b, b' ' | b'\t' | b'\n' | b'\x0c' | b'\r')) => serde_json::json!(0),
-            Some(t) => match serde_json::from_str::<serde_json::Value>(&t) {
-                Ok(serde_json::Value::Object(m)) => trie.project_object(&m),
-                Ok(_) => serde_json::json!(0),
-                Err(_) => serde_json::Value::String(t),
-            },
-        };
-        lines.push(serde_json::json!([at, v]));
-    }
+    let lines: Vec<serde_json::Value> = ring.into_iter().map(|(at, v, _)| serde_json::json!([at, v])).collect();
     Some(serde_json::json!({ "lines": lines, "dropped": dropped, "droppedUnread": dropped_unread }).to_string())
 }
 
 /// The paths of a `tailEntries` projection, as a tree.
 #[derive(Default)]
-struct KeepNode {
+pub(super) struct KeepNode {
     kids: std::collections::BTreeMap<String, KeepNode>,
 }
 
 impl KeepNode {
-    fn parse(keep: &str) -> Option<KeepNode> {
+    pub(super) fn parse(keep: &str) -> Option<KeepNode> {
         let paths: Vec<Vec<String>> = serde_json::from_str(keep).ok()?;
         let mut root = KeepNode::default();
         for p in paths {
@@ -698,7 +963,8 @@ impl KeepNode {
         Some(root)
     }
 
-    fn project_object(&self, m: &serde_json::Map<String, serde_json::Value>) -> serde_json::Value {
+    #[cfg(test)]
+    pub(super) fn project_object(&self, m: &serde_json::Map<String, serde_json::Value>) -> serde_json::Value {
         let mut out = serde_json::Map::new();
         for (k, kid) in &self.kids {
             if let Some(v) = m.get(k) {
@@ -708,6 +974,7 @@ impl KeepNode {
         serde_json::Value::Object(out)
     }
 
+    #[cfg(test)]
     fn project(&self, v: &serde_json::Value) -> serde_json::Value {
         match v {
             serde_json::Value::Object(m) => self.project_object(m),
@@ -720,23 +987,204 @@ impl KeepNode {
     }
 }
 
+/// One line of a `tailEntries` / `rangeEntries` answer: `null` for a line the reader skipped, `0` for a blank line or JSON that is not
+/// an object, the cut-down object, or the line's own text when the parser refused it.
+fn project_line(trie: &KeepNode, text: Option<String>) -> serde_json::Value {
+    match text {
+        None => serde_json::Value::Null,
+        Some(t) if t.bytes().all(|b| matches!(b, b' ' | b'\t' | b'\n' | b'\x0c' | b'\r')) => serde_json::json!(0),
+        Some(t) => match trie.project_str(&t) {
+            Ok(Some(v)) => v,
+            Ok(None) => serde_json::json!(0),
+            Err(_) => serde_json::Value::String(t),
+        },
+    }
+}
+
+impl KeepNode {
+    /// The line's object cut down to this tree, read straight from the text: the parts the tree does not name are skipped with
+    /// `IgnoredAny` (never built, never copied), so a multi-megabyte tool result costs the line text and nothing beside it.
+    /// `Ok(None)` when the JSON is not an object; `Err` when the parser refuses the text (as a full parse would).
+    pub(super) fn project_str(&self, text: &str) -> Result<Option<serde_json::Value>, serde_json::Error> {
+        use serde::de::DeserializeSeed;
+        // only an object is cut down; any other JSON reads as nothing, and is rare enough to take the plain parse
+        if !text.trim_start_matches([' ', '\t', '\n', '\r']).starts_with('{') {
+            return serde_json::from_str::<serde_json::Value>(text).map(|_| None);
+        }
+        let mut de = serde_json::Deserializer::from_str(text);
+        let v = Cut { node: self }.deserialize(&mut de)?;
+        de.end()?;
+        Ok(Some(v))
+    }
+}
+
+/// A value read through a `keep` tree: [`KeepNode::project`] without the tree of values.
+struct Cut<'a> {
+    node: &'a KeepNode,
+}
+
+impl<'de> serde::de::DeserializeSeed<'de> for Cut<'_> {
+    type Value = serde_json::Value;
+    fn deserialize<D: serde::Deserializer<'de>>(self, d: D) -> Result<Self::Value, D::Error> {
+        d.deserialize_any(self)
+    }
+}
+
+impl<'de> serde::de::Visitor<'de> for Cut<'_> {
+    type Value = serde_json::Value;
+
+    fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("any JSON value")
+    }
+    fn visit_bool<E>(self, v: bool) -> Result<Self::Value, E> {
+        Ok(serde_json::Value::Bool(v))
+    }
+    fn visit_i64<E>(self, v: i64) -> Result<Self::Value, E> {
+        Ok(v.into())
+    }
+    fn visit_u64<E>(self, v: u64) -> Result<Self::Value, E> {
+        Ok(v.into())
+    }
+    fn visit_f64<E>(self, v: f64) -> Result<Self::Value, E> {
+        Ok(serde_json::Number::from_f64(v).map_or(serde_json::Value::Null, serde_json::Value::Number))
+    }
+    fn visit_str<E>(self, v: &str) -> Result<Self::Value, E> {
+        Ok(serde_json::Value::String(v.to_owned()))
+    }
+    fn visit_string<E>(self, v: String) -> Result<Self::Value, E> {
+        Ok(serde_json::Value::String(v))
+    }
+    fn visit_unit<E>(self) -> Result<Self::Value, E> {
+        Ok(serde_json::Value::Null)
+    }
+    fn visit_none<E>(self) -> Result<Self::Value, E> {
+        Ok(serde_json::Value::Null)
+    }
+    fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+        match self.node.kids.get("*") {
+            Some(kid) => {
+                let mut out = Vec::new();
+                while let Some(v) = seq.next_element_seed(Cut { node: kid })? {
+                    out.push(v);
+                }
+                Ok(serde_json::Value::Array(out))
+            }
+            None => {
+                while seq.next_element::<serde::de::IgnoredAny>()?.is_some() {}
+                Ok(serde_json::Value::Array(Vec::new()))
+            }
+        }
+    }
+    fn visit_map<A: serde::de::MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+        let mut out = serde_json::Map::new();
+        while let Some(key) = map.next_key::<std::borrow::Cow<'de, str>>()? {
+            match self.node.kids.get(key.as_ref()) {
+                // a repeated key keeps its last value, as the full parse does
+                Some(kid) => {
+                    let v = map.next_value_seed(Cut { node: kid })?;
+                    out.insert(key.into_owned(), v);
+                }
+                None => {
+                    map.next_value::<serde::de::IgnoredAny>()?;
+                }
+            }
+        }
+        Ok(serde_json::Value::Object(out))
+    }
+}
+
+/// `rangeEntries(path, from, windowBytes, lineMax, keep, maxLines)`: an incremental forward read. The whole lines from byte `from`
+/// (a line start a previous call returned as `next`) on, at most `windowBytes` (clamped to `script.tail_max_bytes`) and `maxLines`
+/// of them, each parsed and cut down to `keep` as [`tail_entries`] does; a line over `lineMax` bytes is never buffered (`null`).
+/// When more than the window was appended since `from`, the read jumps to the last window (`jumped`, its partial first line
+/// dropped), so one call never reads more than the window. A last line with no newline yet is left for the next call. `from`
+/// below 0 reads the last window (as `tailEntries`). JSON `{"lines":[[offset, value], ...], "start", "next", "size", "jumped",
+/// "shrunk", "read", "peak"}`: `next` the offset to pass next time, `shrunk` true (nothing read) when `from` is past the end of
+/// the file (rewritten: start again), `read` the bytes read, `peak` the largest line buffer held. `null` when the file cannot
+/// be read or `keep` is not a list of paths.
+pub fn range_entries(path: &str, from: f64, window: f64, line_max: f64, keep: &str, max_lines: f64) -> Option<String> {
+    let trie = KeepNode::parse(keep)?;
+    let max_lines = if max_lines.is_finite() && max_lines >= 1.0 { max_lines as usize } else { usize::MAX };
+    let from = if from.is_finite() && from >= 0.0 { Some(from as u64) } else { None };
+    let mut lines: Vec<serde_json::Value> = Vec::new();
+    let info = range_scan(path, from, window, line_max, false, max_lines, |at, text| {
+        let v = project_line(&trie, text);
+        lines.push(serde_json::json!([at, v]));
+    })?;
+    Some(
+        serde_json::json!({ "lines": lines, "start": info.start, "next": info.next, "size": info.size, "jumped": info.jumped,
+            "shrunk": info.shrunk, "read": info.next.saturating_sub(info.start), "peak": info.peak })
+        .to_string(),
+    )
+}
+
+/// Where a [`range_scan`] read: its first byte, the offset after its last whole line, the file size, whether it jumped past
+/// unread bytes or found the file shorter than `from`, and the largest line buffer it held (bytes).
+struct ScanInfo {
+    start: u64,
+    next: u64,
+    size: u64,
+    jumped: bool,
+    shrunk: bool,
+    peak: usize,
+}
+
 /// The line reader of [`tail_lines`] and [`tail_entries`]: `each(offset, text)` for every whole line of the window, `text`
 /// `None` for a line over `line_max` bytes or not UTF-8. `None` when the file cannot be read.
-fn tail_scan(path: &str, window: f64, line_max: f64, mut each: impl FnMut(u64, Option<String>)) -> Option<()> {
-    use std::io::{Seek, SeekFrom};
+fn tail_scan(path: &str, window: f64, line_max: f64, each: impl FnMut(u64, Option<String>)) -> Option<()> {
+    range_scan(path, None, window, line_max, true, usize::MAX, each).map(|_| ())
+}
+
+/// The bounded line reader: from `from` (else the last window), at most `window` bytes and `max_lines` lines; a line over
+/// `line_max` is skipped without being buffered. `partial_last`: hand a last line with no newline to `each` too (a tail read);
+/// else it is left unread (`next` stops before it).
+fn range_scan(
+    path: &str,
+    from: Option<u64>,
+    window: f64,
+    line_max: f64,
+    partial_last: bool,
+    max_lines: usize,
+    mut each: impl FnMut(u64, Option<String>),
+) -> Option<ScanInfo> {
+    use std::io::{Read, Seek, SeekFrom};
     let cap = defaults::num("script.tail_max_bytes");
     let window = if window.is_finite() && window > 0.0 { (window as u64).min(cap) } else { cap };
     let line_max = if line_max.is_finite() && line_max > 0.0 { line_max as usize } else { usize::MAX / 2 };
+    let _turn = crate::transcript::scan::permit();
     let mut f = std::fs::File::open(path).ok()?;
     let size = f.metadata().ok()?.len();
-    let start = size.saturating_sub(window);
+    if let Some(at) = from
+        && at > size
+    {
+        return Some(ScanInfo { start: at, next: at, size, jumped: false, shrunk: true, peak: 0 });
+    }
+    let (start, jumped) = match from {
+        Some(at) if size - at > window => (size - window, true),
+        Some(at) => (at, false),
+        None => (size.saturating_sub(window), false),
+    };
+    // a forward read starting on a line boundary keeps its first line; a tail window or a jump drops the partial one
+    let mut first = match from {
+        None => start > 0,
+        Some(_) if start == 0 => false,
+        Some(_) => {
+            let mut b = [0u8];
+            f.seek(SeekFrom::Start(start - 1)).ok()?;
+            f.read_exact(&mut b).ok()?;
+            b[0] != b'\n'
+        }
+    };
     f.seek(SeekFrom::Start(start)).ok()?;
     crate::load::note_scan(size - start);
     let mut r = std::io::BufReader::with_capacity(defaults::num("script.tail_buf_bytes") as usize, f.take(size - start));
     let mut offset = start;
     let mut buf: Vec<u8> = Vec::new();
-    let mut first = start > 0;
+    let (mut peak, mut emitted) = (0usize, 0usize);
     loop {
+        if emitted >= max_lines {
+            break;
+        }
         buf.clear();
         let mut total = 0usize;
         let mut over = false;
@@ -756,6 +1204,7 @@ fn tail_scan(path: &str, window: f64, line_max: f64, mut each: impl FnMut(u64, O
                     buf.clear();
                 } else {
                     buf.extend_from_slice(chunk.get(..take).unwrap_or_default());
+                    peak = peak.max(buf.capacity());
                 }
             }
             std::io::BufRead::consume(&mut r, take);
@@ -767,6 +1216,10 @@ fn tail_scan(path: &str, window: f64, line_max: f64, mut each: impl FnMut(u64, O
             break;
         }
         let at = offset;
+        let ended = over || buf.last() == Some(&b'\n');
+        if !partial_last && !ended && at + total as u64 >= size {
+            break; // a line still being written: the next read starts at it
+        }
         offset += total as u64;
         if first {
             first = false; // the window starts inside a line: that partial line is not a line
@@ -776,9 +1229,10 @@ fn tail_scan(path: &str, window: f64, line_max: f64, mut each: impl FnMut(u64, O
             buf.pop();
         }
         let text = if over { None } else { String::from_utf8(std::mem::take(&mut buf)).ok() };
+        emitted += 1;
         each(at, text);
     }
-    Some(())
+    Some(ScanInfo { start, next: offset, size, jumped, shrunk: false, peak })
 }
 
 /// `deadlineLeftMs()`: milliseconds left of the request the engine is answering (the caller is not waiting past it), or `null`
@@ -807,7 +1261,16 @@ pub fn exec(prog: &str, args: &[String], cwd: Option<&str>, env_pairs: &[String]
         return Ok("null".into());
     }
     let base = with_settings(|st| st.env.clone())?;
-    let mut cmd = std::process::Command::new(prog);
+    let path = env_pairs
+        .as_chunks::<2>()
+        .0
+        .iter()
+        .rev()
+        .find(|kv| kv.first().is_some_and(|k| k == "PATH"))
+        .and_then(|kv| kv.get(1))
+        .map(String::as_str)
+        .or(base.get("PATH").map(String::as_str));
+    let mut cmd = std::process::Command::new(crate::proc::resolve_git(prog, path));
     cmd.args(args).env_clear();
     if let Some(c) = cwd {
         cmd.current_dir(c);
@@ -869,7 +1332,19 @@ fn passwd_home() -> Option<String> {
 pub fn install(c: &Ctx<'_>) -> rquickjs::Result<()> {
     let h = Object::new(c.clone())?;
     h.set("cfg", Function::new(c.clone(), |key: String| -> rquickjs::Result<String> { Ok(entry(&key)?.value.to_json().to_string()) })?)?;
-    h.set("cfgGen", Function::new(c.clone(), || defaults::generation() as f64)?)?;
+    // `cfgGen(hits, misses)`: the generation; the optional counts are the previous check call's `ah.cfg` / `ah.settings` memo hits and
+    // misses, folded into `cfg_cache{result}` here so counting them costs no host call of its own
+    h.set(
+        "cfgGen",
+        Function::new(c.clone(), |hits: rquickjs::function::Opt<f64>, misses: rquickjs::function::Opt<f64>| {
+            for (n, key) in [(hits.0, "recent_tel.cfg_hit"), (misses.0, "recent_tel.cfg_miss")] {
+                if let Some(n) = n.filter(|n| *n >= 1.0 && crate::metrics::recent_on()) {
+                    crate::metrics::bump_by("cfg_cache", &[("result", defaults::text(key))], n as u64);
+                }
+            }
+            defaults::generation() as f64
+        })?,
+    )?;
     h.set("now", Function::new(c.clone(), now_ms)?)?;
     h.set("commit", Function::new(c.clone(), lift_deadline)?)?;
     h.set(
@@ -1006,17 +1481,41 @@ pub fn install(c: &Ctx<'_>) -> rquickjs::Result<()> {
             lock_acquire(&home, &rel, &group, wait)
         })?,
     )?;
+    h.set(
+        "flockAcquire",
+        Function::new(c.clone(), |rel: String, group: String, wait: Option<f64>| -> rquickjs::Result<Option<f64>> {
+            let home = with_settings(|st| st.home.clone())?;
+            flock_acquire(&home, &rel, &group, wait)
+        })?,
+    )?;
     h.set("lockRelease", Function::new(c.clone(), |id: f64| lock_release(id))?)?;
+    h.set(
+        "fenceSweep",
+        Function::new(c.clone(), |rel: String, infix: String| -> rquickjs::Result<f64> {
+            let home = with_settings(|st| st.home.clone())?;
+            fence_sweep(&home, &rel, &infix)
+        })?,
+    )?;
+    h.set(
+        "writeFenced",
+        Function::new(c.clone(), |rel: String, text: String, id: f64, infix: String, guard: Option<String>| -> rquickjs::Result<bool> {
+            let home = with_settings(|st| st.home.clone())?;
+            write_fenced(&home, &rel, &text, id, &infix, guard.as_deref())
+        })?,
+    )?;
     h.set("memory", Function::new(c.clone(), memory)?)?;
     h.set("agents", Function::new(c.clone(), |p: String| agents(&p))?)?;
+    h.set("trackedAgents", Function::new(c.clone(), |s: String, p: String, d: String| tracked_agents(&s, &p, &d))?)?;
     h.set("agentsWindow", Function::new(c.clone(), |p: String| agents_window(&p))?)?;
     h.set("repoContext", Function::new(c.clone(), |d: String, anc: Option<bool>| -> rquickjs::Result<String> { repo_context(&d, anc.unwrap_or(true)) })?)?;
     h.set("scrubSecrets", Function::new(c.clone(), |t: String| crate::jev::scrub::scrub_secrets(&t))?)?;
     h.set("cfgLive", Function::new(c.clone(), |k: String| -> rquickjs::Result<String> { cfg_live(&k) })?)?;
     h.set("now", Function::new(c.clone(), now_ms)?)?; // documented (`ah.clock.now()`) but not installed by the host API commit
     h.set("sha1", Function::new(c.clone(), |t: String| crate::checks::replykit::io::sha1_hex(&t))?)?;
+    h.set("ownerNamed", Function::new(c.clone(), |t: String| crate::agents::owner_named(&t))?)?;
     h.set("tailLines", Function::new(c.clone(), |p: String, w: f64, l: f64| unless_cut(tail_lines(&p, w, l)))?)?;
     h.set("tailEntries", Function::new(c.clone(), |p: String, w: f64, l: f64, k: String, m: f64| tail_entries(&p, w, l, &k, m))?)?;
+    h.set("rangeEntries", Function::new(c.clone(), |p: String, from: f64, w: f64, l: f64, k: String, m: f64| range_entries(&p, from, w, l, &k, m))?)?;
     h.set(
         "pruneState",
         Function::new(c.clone(), |prefix: String, keep: Option<String>| -> rquickjs::Result<()> {
@@ -1040,6 +1539,10 @@ pub fn install(c: &Ctx<'_>) -> rquickjs::Result<()> {
     )?;
     // one advisory event for advisory kind `kind` (flagged, asked, confirmed, injected, suppressed, jev_error)
     h.set("advisory", Function::new(c.clone(), |kind: String, metric: String| crate::obs::counters::advisory(&kind, &metric))?)?;
+    // add `by` to the registered counter `name` with the labels of the JSON object `labels` (an unregistered name is ignored)
+    h.set("metric", Function::new(c.clone(), |name: String, labels: String, by: f64| metric_add(&name, &labels, by))?)?;
+    // the recorded guard blocks of one session and of the latest other session, as JSON (`ui.banner`, `ui.sessionSummary`)
+    h.set("sessionBlocks", Function::new(c.clone(), |session: String| session_blocks(&session))?)?;
     h.set("log", Function::new(c.clone(), |kind: String, text: String| crate::discard::note("script_log", &format!("{kind}: {text}")))?)?;
     h.set("deadlineLeftMs", Function::new(c.clone(), deadline_left_ms)?)?;
     h.set("realpathEx", Function::new(c.clone(), |p: String| realpath_ex(&p))?)?;
@@ -1049,6 +1552,8 @@ pub fn install(c: &Ctx<'_>) -> rquickjs::Result<()> {
     h.set("uid", Function::new(c.clone(), || crate::checks::jsport::home::uid() as f64)?)?;
     h.set("fileSha256", Function::new(c.clone(), |p: String| file_sha256(&p))?)?;
     h.set("readHeadHex", Function::new(c.clone(), |p: String, n: f64| read_head_hex(&p, n))?)?;
+    h.set("readRangeHex", Function::new(c.clone(), |p: String, from: f64, n: f64| read_range_hex(&p, from, n))?)?;
+    h.set("rangeSha1Hex", Function::new(c.clone(), |p: String, from: f64, n: f64| range_sha1_hex(&p, from, n))?)?;
     h.set("readlink", Function::new(c.clone(), |p: String| std::fs::read_link(p).ok().map(|r| r.to_string_lossy().into_owned()))?)?;
     h.set(
         "exec",
@@ -1104,4 +1609,103 @@ pub fn install(c: &Ctx<'_>) -> rquickjs::Result<()> {
     super::host_transcript::install(c, &h)?;
     c.globals().set("ahHost", h)?;
     Ok(())
+}
+
+/// `{"current": n, "top": [[rule, n], ..], "last": n}`: blocks recorded for `session`, its most frequent rules, and the block
+/// count of the session that started before it (0 when it had none, or none is known). Sessions are known from their own
+/// start records (`guard_rules.sessions_key`, written here on the first call for a session), not from block rows, so a
+/// session without a block is still the previous one. Empty counts when the telemetry store cannot be opened.
+fn session_blocks(session: &str) -> String {
+    let days = defaults::num("guard_rules.blocks_window_days");
+    let since = crate::health::now_ms().saturating_sub(days.saturating_mul(defaults::num("web.query_day_ms")));
+    let rows = crate::telemetry::cli::open_existing().map(|t| t.blocks(since, defaults::num("guard_rules.blocks_limit") as usize)).unwrap_or_default();
+    let marks = with_settings(|st| crate::checks::guardkit::state::FileState::new(&st.home))
+        .ok()
+        .flatten()
+        .map(|s| touch_session(&s, session, crate::health::now_ms()))
+        .unwrap_or_default();
+    session_counts(&rows, &marks, session)
+}
+
+/// Record `session`'s start (first sight wins) in the bounded session list and answer the list as `(session, start_ms)`.
+fn touch_session(store: &dyn crate::checks::guardkit::state::SessionState, session: &str, now: u64) -> Vec<(String, u64)> {
+    let (ns, key) = (defaults::text("guard_rules.sessions_ns"), defaults::text("guard_rules.sessions_key"));
+    let keep = defaults::num("guard_rules.sessions_keep") as usize;
+    let mut out = Vec::new();
+    store.update(ns, key, &mut |cur| {
+        let mut list: Vec<(String, u64)> = cur.and_then(|c| serde_json::from_str(c).ok()).unwrap_or_default();
+        if !session.is_empty() && !list.iter().any(|(s, _)| s == session) {
+            list.push((session.to_string(), now));
+        }
+        if list.len() > keep {
+            list.sort_by_key(|(_, t)| std::cmp::Reverse(*t));
+            list.truncate(keep);
+        }
+        out = list.clone();
+        serde_json::to_string(&list).ok()
+    });
+    out
+}
+
+/// The counts for `session`: its blocks and top rules, and the blocks of the latest session that started before it.
+fn session_counts(rows: &[crate::storage::BlockRow], marks: &[(String, u64)], session: &str) -> String {
+    let own_start = marks.iter().find(|(s, _)| s == session).map(|(_, t)| *t);
+    let previous = marks.iter().filter(|(s, t)| s != session && own_start.is_none_or(|o| *t <= o)).max_by_key(|(_, t)| *t).map(|(s, _)| s.as_str());
+    let mut per_rule: std::collections::BTreeMap<String, u64> = std::collections::BTreeMap::new();
+    let (mut current, mut last) = (0u64, 0u64);
+    for b in rows.iter().filter(|b| !b.session.is_empty()) {
+        if b.session == session {
+            current += 1;
+            *per_rule.entry(b.rule.clone()).or_insert(0) += 1;
+        } else if Some(b.session.as_str()) == previous {
+            last += 1;
+        }
+    }
+    let mut top: Vec<(String, u64)> = per_rule.into_iter().collect();
+    top.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+    serde_json::json!({"current": current, "top": top, "last": last}).to_string()
+}
+
+#[cfg(test)]
+mod session_blocks_tests {
+    use super::*;
+    use crate::checks::guardkit::state::MemoryState;
+
+    fn row(session: &str, rule: &str) -> crate::storage::BlockRow {
+        crate::storage::BlockRow { session: session.into(), rule: rule.into(), ..Default::default() }
+    }
+
+    fn last(rows: &[crate::storage::BlockRow], marks: &[(String, u64)], me: &str) -> u64 {
+        serde_json::from_str::<serde_json::Value>(&session_counts(rows, marks, me)).unwrap()["last"].as_u64().unwrap()
+    }
+
+    fn marks(v: &[(&str, u64)]) -> Vec<(String, u64)> {
+        v.iter().map(|(s, t)| (s.to_string(), *t)).collect()
+    }
+
+    #[test]
+    fn the_previous_session_is_the_one_that_started_last_even_with_no_block_rows() {
+        // old = 3 blocks, mid = started later and had none, me = now: the banner says 0, not old's 3
+        let rows = [row("old", "a"), row("old", "a"), row("old", "b")];
+        assert_eq!(last(&rows, &marks(&[("old", 10), ("mid", 20), ("me", 30)]), "me"), 0);
+        // when mid did block, its count is reported
+        let rows = [row("mid", "a"), row("old", "a"), row("old", "a")];
+        assert_eq!(last(&rows, &marks(&[("old", 10), ("mid", 20), ("me", 30)]), "me"), 1);
+        // no other known session: nothing to report
+        assert_eq!(last(&rows, &marks(&[("me", 30)]), "me"), 0);
+    }
+
+    #[test]
+    fn a_session_started_after_this_one_is_not_its_previous() {
+        let rows = [row("later", "a"), row("old", "a")];
+        assert_eq!(last(&rows, &marks(&[("old", 10), ("me", 20), ("later", 30)]), "me"), 1);
+    }
+
+    #[test]
+    fn the_first_call_for_a_session_records_its_start_and_a_second_call_keeps_it() {
+        let st = MemoryState::new();
+        assert_eq!(touch_session(&st, "a", 5), marks(&[("a", 5)]));
+        assert_eq!(touch_session(&st, "b", 9), marks(&[("a", 5), ("b", 9)]));
+        assert_eq!(touch_session(&st, "a", 99), marks(&[("a", 5), ("b", 9)]));
+    }
 }

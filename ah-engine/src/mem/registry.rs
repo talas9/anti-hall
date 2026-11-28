@@ -29,17 +29,25 @@ pub struct Spec {
     pub low_pct: &'static str,
     /// Key of the entry-count cap, for caches that have one.
     pub entries: Option<&'static str>,
+    /// Key of the bytes this holder may still fill while the process-wide hard latch is on (0 or no key: every insert is refused).
+    pub latch_cap: Option<&'static str>,
 }
 
 impl Spec {
     /// A spec with no entry-count cap.
     pub const fn new(name: &'static str, soft: &'static str, hard: &'static str, low_pct: &'static str) -> Spec {
-        Spec { name, soft, hard, low_pct, entries: None }
+        Spec { name, soft, hard, low_pct, entries: None, latch_cap: None }
     }
 
     /// The same spec with an entry-count cap read from `key`.
     pub const fn with_entries(mut self, key: &'static str) -> Spec {
         self.entries = Some(key);
+        self
+    }
+
+    /// The same spec that keeps admitting inserts under the global hard latch while it holds at most the bytes at `key`.
+    pub fn with_latch_cap(mut self, key: &'static str) -> Spec {
+        self.latch_cap = Some(key);
         self
     }
 }
@@ -127,6 +135,13 @@ impl InstanceSum {
     }
 }
 
+impl InstanceSum {
+    /// How many instances are alive.
+    fn count(&self) -> usize {
+        self.lock().iter().filter(|w| w.strong_count() > 0).count()
+    }
+}
+
 impl Owner for InstanceSum {
     fn bytes(&self) -> usize {
         let mut s = self.lock();
@@ -188,6 +203,11 @@ impl Registry {
 
     fn ms(&self) -> u64 {
         self.0.epoch.elapsed().as_millis() as u64
+    }
+
+    /// True while the process total is over the global hard limit (every insert is refused, but for a holder's latch cap).
+    pub fn hard_latched(&self) -> bool {
+        self.0.g.hard_active.load(SeqCst)
     }
 
     fn get(&self, key: &str) -> usize {
@@ -366,7 +386,7 @@ impl Registry {
                     "ok"
                 };
                 Some(json!({"name": e.spec.name, "bytes": bytes, "soft_bytes": l.soft, "hard_bytes": l.hard, "low_water_bytes": l.low,
-                    "per_instance": e.sum.is_some(), "level": level,
+                    "per_instance": e.sum.is_some(), "instances": e.sum.as_ref().map_or(1, |x| x.count()), "level": level,
                     "soft_trips": e.n.soft.load(SeqCst), "hard_trips": e.n.hard.load(SeqCst), "refused": e.n.refused.load(SeqCst),
                     "recycles": e.n.recycles.load(SeqCst)}))
             })
@@ -386,6 +406,11 @@ pub struct Budget {
 }
 
 impl Budget {
+    /// The holder's hard limit in bytes (0 = none), read from its config key.
+    pub fn hard_bytes(&self) -> usize {
+        self.reg.get(self.e.spec.hard)
+    }
+
     /// The holder's entry-count cap (0 = none), read from its config key.
     pub fn max_entries(&self) -> usize {
         self.e.spec.entries.map_or(0, |k| self.reg.get(k))
@@ -434,8 +459,13 @@ impl Budget {
             return Admit::Refused;
         }
         if self.reg.0.g.hard_active.load(SeqCst) {
-            self.e.n.refused.fetch_add(1, SeqCst);
-            return Admit::Refused;
+            // the latch stops a holder from growing the process; a holder with a latch cap may still keep what fits in it, so a
+            // pattern is compiled once for the whole excursion instead of on every call
+            let cap = self.e.spec.latch_cap.map_or(0, |k| self.reg.get(k));
+            if usage.saturating_add(add) > cap {
+                self.e.n.refused.fetch_add(1, SeqCst);
+                return Admit::Refused;
+            }
         }
         Admit::Ok
     }

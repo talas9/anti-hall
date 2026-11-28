@@ -103,6 +103,9 @@ pub(crate) struct PullRes {
     pub imported: usize,
     pub duplicate: usize,
     pub native_count: f64,
+    /// How many of the messages the native queue still holds for this pane are the engine's own wake prompts: `Some` when this
+    /// pull settled it (the queue was empty, or its batch was read), `None` when it did not (a failed count or read).
+    pub native_wake: Option<usize>,
     pub lost: f64,
     pub native_timeout: bool,
     pub error: Option<String>,
@@ -890,6 +893,8 @@ pub(crate) struct Ingested {
     pub imported: usize,
     pub duplicate: usize,
     pub parsed: usize,
+    /// How many of the batch's messages (new or already seen) are the engine's own wake prompts ([`wake_messages`]).
+    pub wake: usize,
 }
 
 /// The hashes the inbox already holds (`collectExistingHashes`): the embedded content hash of each line; a torn line is skipped.
@@ -953,6 +958,29 @@ fn batch_lines(p: &Plan, batch: &import::Batch, seen: &mut std::collections::Has
     (lines, imported, duplicate)
 }
 
+/// How many messages of one native batch are the engine's own wake prompts: a native `task` the Primary's `workspace reactivate-child`
+/// queued, which only points at mail and which nothing ever accepts, so the native queue keeps counting it. Classified as
+/// [`union::is_wake_line`] classifies the inbox line the message becomes (the wake prefix and a Primary or unresolved sender, the
+/// `devswarm.noiseProvenance` rule), so this count and the unread count agree on what a wake prompt is.
+fn wake_messages(inv: &Inv, p: &Plan, batch: &import::Batch) -> usize {
+    let registry = if batch.messages.is_empty() { Vec::new() } else { import::registry_pairs(p.feed_store().reader()) };
+    let provenance = union::provenance_of_process(&inv.home);
+    batch.messages.iter().filter(|m| is_wake_message(m, &registry, p.sender.as_deref(), provenance)).count()
+}
+
+/// Whether one native message is a wake prompt: `is_wake_line` over the message's body and its resolved sender (the registered
+/// workspace checked out under its branch, else the pull's own sender).
+fn is_wake_message(m: &OVal, registry: &[(String, String)], fallback_sender: Option<&str>, provenance: bool) -> bool {
+    let Some(OVal::Str(body)) = m.get(defaults::text("mesh_write.ndjson_message_field")) else { return false };
+    let resolved = match m.get(defaults::text("devswarm_ingest.from_branch_key")) {
+        None | Some(OVal::Null) => None,
+        Some(b) => import::branch_sender(registry, &import::js_string(b)),
+    };
+    let sender = resolved.or_else(|| fallback_sender.map(str::to_string));
+    body.starts_with(defaults::text("agent_tracker.wake_prefix"))
+        && (!provenance || sender.is_none_or(|s| s.starts_with(defaults::text("mesh_write.primary_prefix"))))
+}
+
 /// What ingesting `raws` in order (the open batches, then the new one) would make of the LAST one: its imported and duplicate
 /// counts and the number of messages it parsed, without writing.
 pub(crate) fn preview(p: &Plan, raws: &[&str]) -> (usize, usize, usize) {
@@ -999,7 +1027,7 @@ fn ingest_raw(inv: &Inv, p: &Plan, raw: &str, at: &dyn Fn(&str)) -> Result<Inges
     {
         crate::meshw::log_summary_failure(defaults::text("mesh_write.verb_inbox"), &why);
     }
-    Ok(Ingested { imported, duplicate, parsed: batch.messages.len() })
+    Ok(Ingested { imported, duplicate, parsed: batch.messages.len(), wake: wake_messages(inv, p, &batch) })
 }
 
 /// The ensure's writes (cache, descriptor, pre-created files, registry row, declared reader, summary), the caller holding the
@@ -1014,7 +1042,7 @@ pub(crate) fn ensure_locked(inv: &Inv, p: &Plan) -> bool {
     precreate(&p.ensured);
     // the id-collision guard: an ensure over an existing registration may not move the id to another worktree (Node skips that write
     // and says so on stderr); a registration the ensure creates may
-    let same = |a: &str, b: &str| a == b || ident::realpath(a).is_some_and(|x| ident::realpath(b) == Some(x));
+    let same = ident::same_registry_worktree;
     let upserted = if p.create { p.store.upsert_registry(&p.row, inv.now, |_, _| true) } else { p.store.upsert_registry(&p.row, inv.now, same) };
     if upserted.is_err() {
         return false;
@@ -1336,7 +1364,7 @@ fn pull_locked(inv: &Inv, p: &Plan) -> Outcome {
     };
     if native <= 0.0 {
         wal::maybe_rotate(&p.wal, inv.now);
-        return Outcome { res: PullRes { ok: true, locked: true, ..PullRes::default() }, ..Outcome::default() };
+        return Outcome { res: PullRes { ok: true, locked: true, native_wake: Some(0), ..PullRes::default() }, ..Outcome::default() };
     }
     // ONE bounded read-messages (finite timeout, never monitor)
     let r = hivecontrol::call_in(&defaults::list("mesh_write.hc_read_messages"), &inv.env, Some(&inv.cwd), defaults::millis("mesh_write.pull_read_timeout_ms"));
@@ -1404,11 +1432,20 @@ fn pull_locked(inv: &Inv, p: &Plan) -> Outcome {
             imported: got.imported,
             duplicate: got.duplicate,
             native_count: native,
+            native_wake: Some(got.wake),
             lost: native - recovered,
             ..PullRes::default()
         }
     } else {
-        PullRes { ok: !wal_error, locked: true, imported: got.imported, duplicate: got.duplicate, native_count: native, ..PullRes::default() }
+        PullRes {
+            ok: !wal_error,
+            locked: true,
+            imported: got.imported,
+            duplicate: got.duplicate,
+            native_count: native,
+            native_wake: Some(got.wake),
+            ..PullRes::default()
+        }
     };
     Outcome { wal_blocked: wal_error, res, ..Outcome::default() }
 }
@@ -1417,6 +1454,23 @@ fn pull_locked(inv: &Inv, p: &Plan) -> Outcome {
 mod tests {
     use super::*;
     use crate::meshw::ident::fifo_kit::*;
+
+    /// A native `task` the Primary's `reactivate-child` queued is a wake prompt; a child's message with the same words, or any
+    /// other message, is not (the native queue counts the wake tasks for ever, so the gate subtracts exactly these).
+    #[test]
+    fn a_native_wake_task_is_counted_as_a_wake_prompt_and_other_mail_is_not() {
+        let wake = defaults::text("agent_tracker.wake_prefix");
+        let primary = format!("{}aaaa1111", defaults::text("mesh_write.primary_prefix"));
+        let msg =
+            |text: &str| OVal::parse(&serde_json::json!({"fromBranch": "main", "kind": "task", "status": "unread", "message": text}).to_string()).unwrap();
+        let registry: Vec<(String, String)> = Vec::new();
+        let wake_msg = msg(&format!("{wake} a mesh message is waiting for workspace w1."));
+        assert!(is_wake_message(&wake_msg, &[], Some(&primary), true), "the Primary's wake task");
+        assert!(is_wake_message(&wake_msg, &[], None, true), "no resolved sender: the engine's own prompt shape");
+        assert!(!is_wake_message(&wake_msg, &registry, Some("child-b"), true), "a non-Primary sender is mail");
+        assert!(!is_wake_message(&msg("please review PR 5"), &[], Some(&primary), true), "ordinary mail");
+        assert!(!is_wake_message(&OVal::parse("{\"kind\":\"task\"}").unwrap(), &[], None, true), "no body");
+    }
 
     #[test]
     fn a_fifo_inbox_or_descriptor_returns_at_once_instead_of_blocking() {

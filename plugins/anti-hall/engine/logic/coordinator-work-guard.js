@@ -264,8 +264,12 @@ function cwMeshSend(command) {
 function cwMinutes(cfg) { return Math.round(cfg.tMs / 60000); }
 function cwBlock(count, cfg, clearMin) {
   var vars = { clear_min: clearMin };
+  // R-inline (guards.inlineRule): the headline names the step count (the stopped step included) and the limit; off, the older text stays
+  var inline = ah.settings.bool('inline_rule.sw');
   return text.message('block', ah.cfg('coordinator_work.guard_name'), {
-    what: text.render(ah.cfg('coordinator_work.block_what'), { count: count, minutes: cwMinutes(cfg) }),
+    what: inline
+      ? text.render(ah.cfg('inline_rule.window_what'), { count: count + 1, minutes: cwMinutes(cfg), block_at: cfg.blockAt })
+      : text.render(ah.cfg('coordinator_work.block_what'), { count: count, minutes: cwMinutes(cfg) }),
     why: text.render(ah.cfg('coordinator_work.block_why'), vars), instead: text.render(ah.cfg('coordinator_work.block_instead'), vars), allowed: ah.cfg('coordinator_work.block_allowed'),
     override: text.render(ah.cfg('coordinator_work.block_override'), { skip: LIB['./lib/skip-cmd.js'].skipCommand(ah.cfg('coordinator_work.guard_name')) }),
   });
@@ -312,6 +316,7 @@ function cwMain(payload, post) {
 
   if (!post) {
     var r = classify();
+    if (!r.work) { var mr = new RegExp(ah.cfg('coordinator_work.mesh_read_re')).exec(command); if (mr) ah.metric('coordinator_work_mesh_read_pass', ['verb', mr[1]]); } // #900: a mesh mailbox read/ack/peek is never a file-changing step
     if (S.unsure) { ah.unable('coordinator-work-guard:classify_unsure'); S.unsure = false; r = { work: true, blockable: true }; } // unreadable: counted as blockable work (the stricter side)
     var v = { work: r.work, blockable: r.blockable };
     var pre = cwCheckPre(st, { now: now, work: r.work, blockable: r.blockable }, cfg);
@@ -327,6 +332,7 @@ function cwMain(payload, post) {
     if (cwUpdate(sid, function (s) { s.blocks++; s.lastBlockAt = now; }) === null) ah.unable('coordinator-work-guard:lock_not_taken'); // the block still stands
     cwBumpMetrics(function (m) { m.blocks++; });
     cwLogTrip({ event: ah.cfg('coordinator_work.trip_block'), count: pre.count });
+    if (ah.settings.bool('inline_rule.sw')) ah.metric('inline_rule_blocked', ['guard', ah.cfg('inline_rule.guard_cwork'), 'kind', ah.cfg('inline_rule.kind_window')]); // R-inline
     return { exact: { code: 2, out: JSON.stringify({ decision: 'block', reason: cwBlock(pre.count, cfg, pre.clearMin) }) + '\n', err: '' } };
   }
 

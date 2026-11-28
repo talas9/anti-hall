@@ -227,7 +227,7 @@ impl MeshReader {
     /// The registry (Node's `listRegistry`), one descriptor per row in id order.
     pub fn roster(&self) -> Res<Vec<Value>> {
         let mut st = self.conn.prepare_cached(sql::MESH_REGISTRY)?;
-        let names: Vec<String> = st.column_names().iter().map(|s| s.to_string()).collect();
+        let names: Vec<String> = st.column_names().map(|s| s.to_string()).collect();
         let col = |n: &str| names.iter().position(|c| c == n);
         let (id, wt, sess, inbox, cur, nudge, upd, wseq) = (
             col("id"),
@@ -276,7 +276,8 @@ impl MeshReader {
     }
 
     /// How many messages of workspace `id` were not sent by one of `senders` (its own identity family); a message with no sender
-    /// counts. Rows whose body starts with `skip_prefix` (the engine's own wake prompts, which DevSwarm stores as mail) are not counted.
+    /// counts. Rows whose body starts with `skip_prefix` and that carry no `mtype` (the engine's own wake prompts, which DevSwarm stores as mail and
+    /// the native ingest writes without one) are not counted; a `mesh send` row (it always has an `mtype`) counts whatever its body says.
     pub fn message_count_from_others(&self, id: &str, senders: &std::collections::HashSet<String>, skip_prefix: &str) -> Res<u64> {
         let marks = if senders.is_empty() { "''".to_string() } else { vec!["?"; senders.len()].join(",") };
         let q = sql::MESH_MESSAGE_COUNT_FROM_OTHERS.replace("%s", &marks);
@@ -285,6 +286,38 @@ impl MeshReader {
         args.extend(senders.iter().map(String::as_str));
         args.extend([skip_prefix; 3]);
         Ok(st.query_row(rusqlite::params_from_iter(args), |r| r.get::<_, i64>(0))? as u64)
+    }
+
+    /// [`message_count_from_others`](Self::message_count_from_others) without the rows of chat kind `skip_kind` (GH #845: an ack-only
+    /// message wakes no one). A store whose `messages` table has no `chat_kind` column yet (an older writer opened it) has no such
+    /// rows: the plain count.
+    pub fn message_count_from_others_except(&self, id: &str, senders: &std::collections::HashSet<String>, skip_prefix: &str, skip_kind: &str) -> Res<u64> {
+        let marks = if senders.is_empty() { "''".to_string() } else { vec!["?"; senders.len()].join(",") };
+        let q = sql::MESH_MESSAGE_COUNT_FROM_OTHERS_EXCEPT_KIND.replace("%s", &marks);
+        let Ok(mut st) = self.conn.prepare(&q) else {
+            return self.message_count_from_others(id, senders, skip_prefix);
+        };
+        let mut args: Vec<&str> = vec![id];
+        args.extend(senders.iter().map(String::as_str));
+        args.extend([skip_prefix; 3]);
+        args.push(skip_kind);
+        Ok(st.query_row(rusqlite::params_from_iter(args), |r| r.get::<_, i64>(0))? as u64)
+    }
+
+    /// The seq and hash of every row of partition `id` whose chat kind is `kind`; none on a store without the column.
+    pub fn rows_of_kind(&self, id: &str, kind: &str) -> Res<Vec<(Option<i64>, Option<String>)>> {
+        let Ok(mut st) = self.conn.prepare_cached(sql::MESH_ROWS_OF_KIND) else { return Ok(Vec::new()) };
+        // a row with no seq (a legacy import) cannot be told apart by seq; its hash still matches an NDJSON twin
+        let rows = st.query_map(params![id, kind], |r| Ok((r.get::<_, Option<i64>>(0)?, r.get::<_, Option<String>>(1)?)))?;
+        Ok(rows.collect::<Result<Vec<_>, _>>()?)
+    }
+
+    /// The GH #845 columns (`chat_kind`, `wake_audience`) of workspace `id`'s rows with seq above `since`, by seq; rows with neither
+    /// are left out (a legacy row). None at all on a store without the columns.
+    pub fn extras_of(&self, id: &str, since: i64) -> Res<std::collections::HashMap<i64, (Option<String>, Option<String>)>> {
+        let Ok(mut st) = self.conn.prepare_cached(sql::MESH_EXTRAS_OF) else { return Ok(std::collections::HashMap::new()) };
+        let rows = st.query_map(params![id, since], |r| Ok((r.get::<_, i64>(0)?, (r.get::<_, Option<String>>(1)?, r.get::<_, Option<String>>(2)?))))?;
+        Ok(rows.collect::<Result<std::collections::HashMap<_, _>, _>>()?)
     }
 
     fn message(r: &Row<'_>, index: u64) -> Res<Value> {
@@ -311,16 +344,36 @@ impl MeshReader {
     /// with `sinceCursor`), one row at a time. `f` returns false to stop. Each message carries its 1-based positional
     /// `index`.
     pub fn for_each_message(&self, id: &str, since: u64, mut f: impl FnMut(Value) -> bool) -> Res<()> {
+        // GH #845: a row a declared identity (admin, ah-engine) sent carries its stored sender_kind, so its kind and rank are read
+        // from the store, never from the sender's name
+        let kinds = self.sender_kinds(id);
+        let kind_field = crate::defaults::text("mesh_identity.row_kind_field");
         let mut st = self.conn.prepare_cached(sql::MESH_MESSAGES)?;
         let mut rows = st.query(params![id, since as i64])?;
         let mut index = since;
         while let Some(r) = rows.next()? {
             index += 1;
-            if !f(Self::message(r, index)?) {
+            let mut m = Self::message(r, index)?;
+            if !kinds.is_empty()
+                && let Some(k) = m["storeSeq"].as_i64().and_then(|q| kinds.get(&q))
+                && let Value::Object(o) = &mut m
+            {
+                o.insert(kind_field.into(), Value::from(k.clone()));
+            }
+            if !f(m) {
                 break;
             }
         }
         Ok(())
+    }
+
+    /// The stored sender_kind of partition `id`'s rows that a declared identity sent, by seq; none on a store without the column.
+    fn sender_kinds(&self, id: &str) -> std::collections::HashMap<i64, String> {
+        let Ok(mut st) = self.conn.prepare_cached(sql::MESH_SENDER_KINDS_OF) else { return std::collections::HashMap::new() };
+        let agent = crate::defaults::text("mesh_identity.kind_agent");
+        st.query_map(params![id, agent], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))
+            .map(|rows| rows.filter_map(Result::ok).collect())
+            .unwrap_or_default()
     }
 
     /// The newest `n` messages of workspace `id`, oldest first, with their positional index.
@@ -742,7 +795,7 @@ mod tests {
 
     /// A store in Node's schema with `n` messages of workspace `w`, each body `len` bytes.
     fn store(n: usize, len: usize) -> (PathBuf, MeshReader) {
-        let dir = std::env::temp_dir().join(format!("ah-mesh-unit-{}-{n}-{len}", std::process::id()));
+        let dir = crate::testtmp::path(format!("ah-mesh-unit-{}-{n}-{len}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&dir)); // keep: cleanup that raced; an absent directory is the goal state
         std::fs::create_dir_all(&dir).unwrap();
         let db = dir.join("devswarm.db");

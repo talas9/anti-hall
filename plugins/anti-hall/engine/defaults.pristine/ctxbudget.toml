@@ -86,6 +86,22 @@ value = "token_count"
 doc = "Substring that a Claude transcript line must hold to be parsed as an assistant usage reading."
 value = '"usage"'
 
+[ctxbudget.usage_iterations_key]
+doc = "The key of an assistant usage object that lists the model requests of one message (a message holding a server-tool call, such as an advisor call, reports the SUM of its main-model requests at the top level)."
+value = "iterations"
+
+[ctxbudget.usage_iteration_type_key]
+doc = "The key of one usage iteration that names its kind."
+value = "type"
+
+[ctxbudget.usage_context_iteration_types]
+doc = "The iteration kinds whose last member is the real context size of the session. The top-level usage stays the billing sum; an empty list reads the top-level fields only."
+value = ["message"]
+
+[ctxbudget.codex_usage_key]
+doc = "The key of a Codex token_count info object that holds the LAST request's usage (the context size). total_token_usage is the cumulative billing total over the whole session and passes the model's context window; it is read only when this key is absent."
+value = "last_token_usage"
+
 # ---- limit-conserve-inject -------------------------
 
 [ctxbudget.summary_limit_conserve]
@@ -97,7 +113,7 @@ doc = "The OMC usage cache file, relative to the home directory."
 value = ".claude/plugins/oh-my-claudecode/.usage-cache-anthropic.json"
 
 [ctxbudget.usage_max_stale_ms]
-doc = "Snapshot age beyond which a bucket without a usable reset time counts as 0 percent."
+doc = "Snapshot age beyond which a usage reading is unknown (GH #981: whatever its reset times say); limit conservation, the spawn stand-down and the small-edit relief do not act on it, and doctor warns."
 value = 21600000
 unit = "ms"
 
@@ -154,9 +170,13 @@ doc = "The emit-dedupe key of the limit-conservation directive."
 value = "limit-conserve"
 
 [ctxbudget.lc_keepalive_turns]
-doc = "The emit-dedupe keepalive of the directive: an unchanged, delivered directive is re-sent after this many turns."
-value = 10
+doc = "The emit-dedupe keepalive of the directive: an unchanged, delivered directive is re-sent after this many turns. 0 = state-only, never re-sent while delivered: the directive is said when conservation turns on (or its reason changes, or the context was lost) and once more, as lc_off, when it turns off."
+value = 0
 unit = "turns"
+
+[ctxbudget.lc_off]
+doc = "The line said once when limit conservation turns off (the directive was delivered earlier in this context)."
+value = "limit conservation is over; use the normal model and effort routing again."
 
 [ctxbudget.lc_what]
 doc = "The first line of the directive; {reason} is the tripped buckets joined with + (or the manual reason)."
@@ -216,6 +236,10 @@ value = { section = "autoHandover", key = "pct", kind = "num", env = "ANTIHALL_A
 doc = "The autoHandover.maxTokens setting: an absolute token ceiling that also triggers the handover (0 means none)."
 value = { section = "autoHandover", key = "maxTokens", kind = "num", env = "ANTIHALL_AUTO_HANDOVER_MAX_TOKENS", aliases = [], option = "auto_handover_max_tokens", manifest_default = "500000", default = 500000, min = 0 }
 
+[ctxbudget.set_ah_ws_max_tokens]
+doc = "The autoHandover.workspaceMaxTokens setting (GH #884): the context ceiling of a DevSwarm workspace (child) session, in tokens (0 means none). A workspace that crosses it gets the auto-handover fire as an order to finish and push its current PR, write a handover and continue the next PR in a fresh session, once per session. A main session is not affected (autoHandover.pct and maxTokens apply there and here)."
+value = { section = "autoHandover", key = "workspaceMaxTokens", kind = "num", env = "ANTIHALL_AUTO_HANDOVER_WORKSPACE_MAX_TOKENS", aliases = [], option = "", manifest_default = "150000", default = 150000, min = 0 }
+
 [ctxbudget.set_ah_nag]
 doc = "The autoHandover.nag setting: remind when a handover is due."
 value = { section = "autoHandover", key = "nag", kind = "bool", env = "", aliases = [], option = "auto_handover_nag", manifest_default = "true", default = true }
@@ -267,6 +291,30 @@ value = { section = "autoHandover", key = "decisivePrompt", kind = "bool", env =
 [ctxbudget.set_ah_markers]
 doc = "The autoHandover.gateHousekeepingMarkers setting: extra comma-separated housekeeping prompt markers (a text)."
 value = { section = "autoHandover", key = "gateHousekeepingMarkers", kind = "str", env = "", aliases = [], option = "", manifest_default = "", default = "" }
+
+[ctxbudget.set_h_task_budget]
+doc = "Most active tasks the session task list may hold at a handover."
+value = { section = "handover", key = "taskListBudget", kind = "num", env = "", aliases = [], option = "", manifest_default = "12", default = 12, min = 1 }
+
+[ctxbudget.set_h_task_subject]
+doc = "Longest task subject (characters) allowed at a handover."
+value = { section = "handover", key = "taskSubjectMax", kind = "num", env = "", aliases = [], option = "", manifest_default = "60", default = 60, min = 1 }
+
+[ctxbudget.set_h_task_enforce]
+doc = "The handover.taskListEnforce setting: what happens when a created task subject is over handover.taskSubjectMax or the open-task count is over handover.taskListBudget. off = silent, advisory = one line with the numbers, block = the TaskCreate/TaskUpdate call is refused."
+value = { section = "handover", key = "taskListEnforce", kind = "enum", values = ["off", "advisory", "block"], env = "", aliases = [], option = "", manifest_default = "advisory", default = "advisory" }
+
+[ctxbudget.set_h_task_done_note]
+doc = "The handover.taskDoneNote setting: when a task is marked completed, tell the agent once, in one line, that the session's task entries are not user data: record the outcome in the named history ledger path (.anti-hall/history/<date>/<session>.md), then delete the task from the session list."
+value = { section = "handover", key = "taskDoneNote", kind = "bool", env = "", aliases = [], option = "", manifest_default = "true", default = true }
+
+[ctxbudget.set_h_mem_lines]
+doc = "Most lines the MEMORY.md index may hold at a handover."
+value = { section = "handover", key = "memoryIndexMaxLines", kind = "num", env = "", aliases = [], option = "", manifest_default = "100", default = 100, min = 1 }
+
+[ctxbudget.set_h_mem_chars]
+doc = "Most characters the MEMORY.md index may hold at a handover."
+value = { section = "handover", key = "memoryIndexMaxChars", kind = "num", env = "", aliases = [], option = "", manifest_default = "12000", default = 12000, min = 1 }
 
 [ctxbudget.ah_housekeeping]
 doc = "The built-in markers (case-insensitive substrings) of a scheduled housekeeping prompt that never gets the new-work gate."
@@ -523,6 +571,30 @@ value = 16
 doc = "The firedVia word of a percent crossing."
 value = "pct"
 
+[ctxbudget.ah_via_workspace]
+doc = "The firedVia word of a workspace context-ceiling crossing (autoHandover.workspaceMaxTokens)."
+value = "workspace"
+
+[ctxbudget.ah_what_workspace]
+doc = "The first line of the workspace ceiling order; {usedK} is the context in thousands of tokens, {k} the ceiling in thousands."
+value = "start the next PR in a fresh session: this workspace's context is ~{usedK}K tokens, over its {k}K ceiling."
+
+[ctxbudget.ah_why_workspace]
+doc = "The Why line of the workspace ceiling order."
+value = "A workspace that carries one PR's context into the next pays for the old context on every turn; a fresh session per PR starts small."
+
+[ctxbudget.ah_instead_workspace]
+doc = "The instructions of the workspace ceiling order; {skill} names the handover skill, {file} the expected handover file clause (ctxbudget.ah_fire_main_file or empty)."
+value = "(1) finish and push the current PR (or its current step) first; (2) write an anti-hall session handover YOURSELF following {skill}{file}; (3) tell the Primary over the mesh that this workspace reached its context ceiling and that the next PR should start in a fresh session (a new workspace, or this one cleared with the handover), not in this context. This fires once per session."
+
+[metric.auto_handover_fired]
+doc = "Auto-handover fires (the once-per-arm handover order), by via: pct (the percent line), tokens (autoHandover.maxTokens), workspace (a DevSwarm workspace past autoHandover.workspaceMaxTokens, GH #884: ordered to a fresh session), and the same words with the Stop-side prefix (ctxbudget.ah_via_stop_prefix) when the Stop check fired it."
+value = { kind = "counter", unit = "fires", labels = ["via"] }
+
+[ctxbudget.ah_gate_profile]
+doc = "The on-change profile (tool_advisory.profiles) of the post-handover new-work gate (GH #894)."
+value = "handover_gate"
+
 [ctxbudget.ah_via_tokens]
 doc = "The firedVia word of a token-ceiling crossing."
 value = "tokens"
@@ -637,6 +709,50 @@ value = "{pct}%"
 doc = "The context clause of the instructions when the percent is unknown."
 value = "low"
 
+[ctxbudget.hb_done_statuses]
+doc = "Task statuses that count as finished: a finished task still in the session task list at a restart-ready declaration is over budget."
+value = ["completed", "deleted"]
+
+[ctxbudget.hb_mem_dir]
+doc = "The directory beside the session transcript that holds the project's memory files."
+value = "memory"
+
+[ctxbudget.hb_mem_file]
+doc = "The memory index file inside hb_mem_dir."
+value = "MEMORY.md"
+
+[ctxbudget.hb_tasks_over]
+doc = "Reason: the session task list holds {n} active tasks, more than the {max} budget (handover.taskListBudget)."
+value = "the task list holds {n} active tasks (budget {max})"
+
+[ctxbudget.hb_tasks_done]
+doc = "Reason: {n} finished tasks are still in the session task list."
+value = "{n} finished tasks are still in the task list"
+
+[ctxbudget.hb_subjects_over]
+doc = "Reason: {n} task subjects are longer than {max} characters (handover.taskSubjectMax)."
+value = "{n} task subjects exceed {max} characters"
+
+[ctxbudget.hb_mem_lines_over]
+doc = "Reason: the MEMORY.md index has {n} lines, more than {max} (handover.memoryIndexMaxLines)."
+value = "the MEMORY.md index has {n} lines (budget {max})"
+
+[ctxbudget.hb_mem_chars_over]
+doc = "Reason: the MEMORY.md index has {n} characters, more than {max} (handover.memoryIndexMaxChars)."
+value = "the MEMORY.md index has {n} characters (budget {max})"
+
+[ctxbudget.hb_what]
+doc = "The first line of the handover-budget block; {phrase} is the declaration, {why} the breaches."
+value = 'your reply declares ready to compact/restart ("{phrase}") but the handover is not consolidated: {why}.'
+
+[ctxbudget.hb_why]
+doc = "The Why line of the handover-budget block."
+value = "A restart-ready declaration needs a consolidated task list and memory index, or the next session inherits the clutter."
+
+[ctxbudget.hb_instead]
+doc = "The instructions of the handover-budget block."
+value = "consolidate the task list and the MEMORY.md index within the budgets (handover skill, step 3), then declare again."
+
 [ctxbudget.advice_needs_safe]
 doc = "Words that, together with the word safe, can form a compact recommendation (safe to compact, safe to /clear, safe for a reset or /new); a final text with none of the pairs holds no recommendation."
 value = ["compact", "/clear", "reset", "/new"]
@@ -660,3 +776,34 @@ value = ["compact", "clear", "/new"]
 [ctxbudget.advice_prefilter]
 doc = "Substrings whose absence from the whole transcript tail (and from every unicode escape) proves that no assistant text of it can hold a compact recommendation."
 value = ["compact", "clear", "reset", "/new"]
+
+# ---- quiet mode (GH #958 (b)): no stopping-point, /compact or /clear advice while the session must keep working ----
+# While the machine-wide AFK flag or the session's no-stop state (afk.toml) is on, or the session has an open task, a context warning is
+# never "reach a good stopping point" and never advises /compact or /clear (auto-compact proceeds on its own). The one message left is the
+# refresh nudge: update the handover with what changed, sent only when the saved handover is older than the last task or milestone change.
+
+[ctxbudget.refresh_stale_ms]
+doc = "How much older than the session's last task-store or progress-file change the saved handover must be before the refresh nudge is sent (a handover with no newer change is current). 0 = any newer change."
+value = 300000
+unit = "ms"
+min = 0
+max = 86400000
+
+[ctxbudget.refresh_interval_ms]
+doc = "Least time between two refresh nudges of one session (the nudge is an order, so it is not repeated while the model is on it)."
+value = 900000
+unit = "ms"
+min = 0
+max = 86400000
+
+[ctxbudget.refresh_what]
+doc = "The refresh nudge's first line; {pct} is the rounded context percent."
+value = "context is ~{pct}% and the saved handover is behind the work."
+
+[ctxbudget.refresh_instead]
+doc = "The refresh nudge's action (an order, \"Do now:\"); {min} is how many minutes ago the handover was saved."
+value = "update the handover with what changed since it was saved {min} min ago; keep working, compaction runs on its own."
+
+[ctxbudget.refresh_instead_none]
+doc = "The refresh nudge's action when the session has no saved handover yet."
+value = "write the handover with the work so far; keep working, compaction runs on its own."

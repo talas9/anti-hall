@@ -7,6 +7,7 @@
 
 pub const NUMS: &[(&str, u64)] = &[
     ("launcher.stdin_idle_ms", 1000),
+    ("launcher.stale_notice_on", 1),
     ("launcher.write_timeout_ms", 1000),
     ("launcher.connect_timeout_ms", 50),
     ("launcher.spawn_retry_max", 2),
@@ -32,6 +33,8 @@ pub const NUMS: &[(&str, u64)] = &[
     ("launcher.log_rotate_min_s", 60),
     ("launcher.io_drain_ms", 100),
     ("launcher.spool_max_bytes", 67108864),
+    ("launcher.notice_sessions_max", 64),
+    ("launcher.notice_counters", 1),
     ("launcher.selftest_engine_timeout_ms", 3000),
     ("launcher.reaper", 1),
     ("launcher.cli_lowercase_verbs", 1),
@@ -154,6 +157,7 @@ pub const STRS: &[(&str, &str)] = &[
     ),
     ("launcher.knob_update_git_url", "AH_UPDATE_GIT_URL"),
     ("launcher.knob_update_triple", "AH_UPDATE_TRIPLE"),
+    ("launcher.knob_stale_noticed", "AH_STALE_NOTICED"),
     ("launcher.knob_update_no_attest", "AH_UPDATE_NO_ATTEST"),
     ("launcher.arg_auto", "--auto"),
     ("launcher.knob_uname_s", "AH_BOOTSTRAP_UNAME_S"),
@@ -272,11 +276,21 @@ pub const STRS: &[(&str, &str)] = &[
     ("paths.base_dir", ".anti-hall"),
     ("paths.state_dir", "ah-engine"),
     ("paths.socket_file", "e.sock"),
+    ("paths.fallback_tmp", "/tmp"),
+    ("paths.private_dir_prefix", "anti-hall-"),
+    ("paths.short_socket_ext", ".sock"),
     ("files.daemon_down_marker", "daemon.down.until"),
+    ("files.daemon_slow_marker", "daemon.slow.until"),
     ("files.breaker_until", "breaker.until"),
     ("files.crashloop_until", "crashloop.until"),
     ("files.cold_guard_notice", "cold-guard.notice"),
     ("files.unreachable_notice", "unreachable.notice"),
+    ("files.launcher_stale_notice", "stale-engine.notice"),
+    (
+        "msg.launcher_stale_engine",
+        "anti-hall: the installed engine ({have}) is older than this plugin expects ({want}), so some guards may not run. Run `ah-hook install -v` (or the anti-hall setup skill) to update it; if the update fails, the reason is in ~/.anti-hall/ah-engine/bootstrap.log.",
+    ),
+    ("install.file_marker", "bootstrap.installed"),
     ("client.cold_guard_kick_event", "ColdStartKick"),
     (
         "msg.cold_guard_notice",
@@ -293,6 +307,10 @@ pub const STRS: &[(&str, &str)] = &[
     (
         "msg.launcher_unreachable_why_down",
         "the engine is marked down",
+    ),
+    (
+        "msg.launcher_unreachable_why_slow",
+        "the engine is too busy right now (several late replies in a row)",
     ),
     (
         "msg.launcher_unreachable_why_handed_back",
@@ -317,16 +335,22 @@ pub const STRS: &[(&str, &str)] = &[
 ];
 
 /// Per-field number tables (`{ default = .., <Event> = .. }`).
-pub const TABLES: &[(&str, &[(&str, u64)])] = &[(
-    "launcher.wall_soft_ms",
-    &[
-        ("default", 0),
-        ("SessionStart", 1100),
-        ("UserPromptSubmit", 900),
-        ("SessionEnd", 800),
-        ("Stop", 3000),
-    ],
-)];
+pub const TABLES: &[(&str, &[(&str, u64)])] = &[
+    (
+        "launcher.wall_soft_ms",
+        &[
+            ("default", 0),
+            ("SessionStart", 1100),
+            ("UserPromptSubmit", 900),
+            ("SessionEnd", 800),
+            ("Stop", 3000),
+        ],
+    ),
+    (
+        "client.slow_fallback_event_ms",
+        &[("Stop", 9000), ("SubagentStop", 9000)],
+    ),
+];
 
 pub const LISTS: &[(&str, &[&str])] = &[
     ("cli.help_flags", &["--help", "-h"]),

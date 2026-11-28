@@ -19,8 +19,10 @@ Contributions are welcome: bug reports, false positives, docs fixes and code.
 
 - **Open pull requests against `dev`.** `main` only changes through a pull request from
   `dev`, and that is what users install.
-- Run the test suite before you push: `node --test` from the repository root. It uses
-  only Node's built-in test runner; there is nothing to install.
+- Run the tests for what you changed before you push: the engine is Rust, so use
+  `ah-engine/test.sh` (cargo-nextest when installed, plain `cargo test` otherwise) or a narrowed
+  `cargo test --locked --test it -- <name>::` from `ah-engine/`, plus `cargo fmt --check`
+  and clippy. See [DEVELOPMENT.md](DEVELOPMENT.md) for the full flow.
 - Commits follow conventional commit style (`fix(git-guard): ...`, `docs(site): ...`) and
   carry no AI co-author lines.
 

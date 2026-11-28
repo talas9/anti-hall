@@ -63,8 +63,12 @@ fn remember(key: &str, out: &str) -> bool {
     }
     // an answer that says "not found / unknown" depends on what is installed, which the key cannot see: never kept
     let unkept = defaults::text("host_spawn.cache_skip_stdout");
-    if !unkept.is_empty() && jsre::compile(unkept, false).is_match(v["stdout"].as_str().unwrap_or("")) {
-        return false;
+    if !unkept.is_empty() {
+        // an unreadable pattern keeps nothing: an uncachable answer costs a re-probe, a wrongly kept one is stale
+        let Some(re) = jsre::config_re("host_spawn.cache_skip_stdout", false) else { return false };
+        if re.is_match(v["stdout"].as_str().unwrap_or("")) {
+            return false;
+        }
     }
     let expires = crate::health::now_ms().saturating_add(defaults::num("host_spawn.cache_ttl_ms"));
     cache().insert_with_ttl(key.to_string(), out.to_string(), out.len(), Some(expires))
@@ -91,6 +95,7 @@ fn budget(asked_ms: f64) -> Option<Duration> {
     let mut d = budget_ceiling(asked_ms);
     if let Some(left) = crate::deadline::remaining() {
         d = d.min(left.saturating_sub(defaults::millis("host_spawn.deadline_reserve_ms")));
+        d = crate::deadline::share(d);
     }
     (d >= defaults::millis("host_spawn.min_run_ms")).then_some(d)
 }
@@ -225,7 +230,8 @@ struct Run {
 impl Run {
     /// Run it for at most `limit`: the result JSON and whether the program finished by itself.
     fn exec(&self, limit: Duration) -> (String, bool) {
-        let scrub = jsre::compile(defaults::text("host_spawn.scrub_env"), true);
+        // an unreadable scrub pattern would pass every variable through to the program: nothing runs, as if it were not installed
+        let Some(scrub) = jsre::config_re("host_spawn.scrub_env", true) else { return (json!({"found": false}).to_string(), false) };
         let mut cmd = std::process::Command::new(&self.bin);
         cmd.args(&self.args).env_clear();
         for (k, v) in self.env.iter().filter(|(k, _)| !scrub.is_match(k)) {
@@ -305,7 +311,7 @@ mod tests {
     use std::collections::HashMap;
 
     fn interp(tag: &str, body: &str) -> String {
-        let d = std::env::temp_dir().join(format!("ah-sp-{tag}-{}", std::process::id()));
+        let d = crate::testtmp::path(format!("ah-sp-{tag}-{}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&d));
         std::fs::create_dir_all(&d).unwrap();
         let p = d.join("py");
@@ -319,6 +325,23 @@ mod tests {
 
     fn args() -> Vec<String> {
         vec!["--version".into()]
+    }
+
+    /// #957: a settings pattern that does not compile is counted and answers safely (nothing kept, nothing run); never an abort.
+    #[test]
+    fn sp_08_an_invalid_pattern_in_the_settings_is_counted_and_never_aborts() {
+        let bad = |k: &str| crate::defaults::set_overlay(&[(k, json!("(unbalanced"))]);
+        let before = crate::metrics::bumped_on_this_thread("script_regex_invalid", &[]);
+        bad("host_spawn.cache_skip_stdout");
+        assert!(!remember("sp08-key", &done("Python 3.12.1")), "an unreadable skip pattern keeps nothing");
+        assert_eq!(crate::metrics::bumped_on_this_thread("script_regex_invalid", &[]), before + 1);
+        bad("host_spawn.scrub_env");
+        let run = Run { prog: "sh".into(), bin: "/bin/sh".into(), args: vec!["-c".into(), "echo hi".into()], env: HashMap::new(), cwd: None };
+        let (out, completed) = run.exec(Duration::from_secs(5));
+        crate::defaults::set_overlay(&[]);
+        assert_eq!(out, json!({"found": false}).to_string());
+        assert!(!completed);
+        assert_eq!(crate::metrics::bumped_on_this_thread("script_regex_invalid", &[]), before + 2);
     }
 
     #[test]
@@ -370,7 +393,7 @@ mod tests {
 
     fn fake_python(tag: &str, body: &str) -> HashMap<String, String> {
         use std::os::unix::fs::PermissionsExt;
-        let d = std::env::temp_dir().join(format!("ah-sp-{tag}-{}", std::process::id()));
+        let d = crate::testtmp::path(format!("ah-sp-{tag}-{}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&d));
         std::fs::create_dir_all(&d).unwrap();
         let p = d.join("python3");
@@ -427,17 +450,24 @@ mod tests {
             }),
             "earlier workers drain"
         );
-        let count = std::env::temp_dir().join(format!("ah-sp-warm-count-{}", std::process::id()));
+        let count = crate::testtmp::path(format!("ah-sp-warm-count-{}", std::process::id()));
         crate::discard::harmless(std::fs::remove_file(&count));
-        let env = fake_python("warm", &format!("#!/bin/sh\necho x >>{}\necho Python 3.12.1\n", count.display()));
+        // the probe blocks on a gate file, so "the request never waits on the warm worker" is proved by structure (the request has
+        // returned while the worker is still held), not by how long a cold start happens to take on a loaded machine
+        let gate = std::env::temp_dir().join(format!("ah-sp-warm-gate-{}", std::process::id()));
+        crate::discard::harmless(std::fs::remove_file(&gate));
+        let env = fake_python(
+            "warm",
+            &format!("#!/bin/sh\nwhile [ ! -f {g} ]; do /bin/sleep 0.02; done\necho x >>{}\necho Python 3.12.1\n", count.display(), g = gate.display()),
+        );
         let a = vec!["--version".to_string()];
-        let t = Instant::now();
         // no request time left: the call answers skipped at once, and a worker still warms the cache
         request(env.clone(), 0, || {
             let out = spawn_probe_cached("python3", &a, None, 15000.0).unwrap();
             assert!(out.contains("skipped"), "{out}");
         });
-        assert!(t.elapsed() < Duration::from_millis(500), "the request never waits on the warm worker: {:?}", t.elapsed());
+        assert_eq!(WORKERS.load(std::sync::atomic::Ordering::SeqCst), 1, "the request returned while the warm worker was still held");
+        std::fs::write(&gate, b"go").unwrap();
         let warmed = (0..100).any(|_| {
             std::thread::sleep(Duration::from_millis(50));
             WORKERS.load(std::sync::atomic::Ordering::SeqCst) == 0 && inflight().iter().all(|k| !k.contains("ah-sp-warm"))

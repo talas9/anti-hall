@@ -530,7 +530,7 @@ pub fn plan_store(home: &Path, hash: &str, rules: Rules, now: f64, holds: &[Hold
             let mut out = Vec::with_capacity(kept.len());
             for cand in kept {
                 let body: Option<String> = c
-                    .query_row(crate::sql::RT_BODY, params![cand.id], |r| {
+                    .query_row(defaults::text("mesh_events.sql_body"), params![cand.id], |r| {
                         r.get_ref(0).map(|v| match v {
                             ValueRef::Text(t) => Some(String::from_utf8_lossy(t).into_owned()),
                             _ => None,

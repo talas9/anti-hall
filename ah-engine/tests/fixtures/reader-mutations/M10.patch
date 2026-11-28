@@ -1,0 +1,13 @@
+diff --git a/plugins/anti-hall/engine/logic/task-pair-guard.js b/plugins/anti-hall/engine/logic/task-pair-guard.js
+index c30b324f..7c475dab 100644
+--- a/plugins/anti-hall/engine/logic/task-pair-guard.js
++++ b/plugins/anti-hall/engine/logic/task-pair-guard.js
+@@ -197,7 +197,7 @@ function prgByTaskId(p, home) {
+   if (t.owner !== undefined && t.owner !== null && typeof t.owner !== 'string') return { result: 'unnamed_owner_unverified' };
+   var owner = prgLc(t.owner), name = prgLc(prgInputName(p.tool_input));
+   if (owner === '' || (name !== '' && owner === name)) return { result: 'paired_by_task_id' };
+-  return { result: 'unnamed_other_owner', task: t };
++  return { result: 'paired_by_task_id' };
+ }
+ 
+ // The task files of one store directory as raw records [{id, status, owner}] (owner as the file holds it: a non-text owner is kept so the

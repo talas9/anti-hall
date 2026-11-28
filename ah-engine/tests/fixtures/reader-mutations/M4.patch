@@ -1,0 +1,17 @@
+diff --git a/ah-engine/src/checks/taskstate/mod.rs b/ah-engine/src/checks/taskstate/mod.rs
+index bf8b08eb..7f26383a 100644
+--- a/ah-engine/src/checks/taskstate/mod.rs
++++ b/ah-engine/src/checks/taskstate/mod.rs
+@@ -251,9 +251,10 @@ impl TaskMap {
+ /// settled) are skipped. Any other type (unknown, empty, missing, null, numeric) is read: a wrongly skipped row can drop a real open task
+ /// and let a Stop through, a wrongly read one at worst keeps a task visible.
+ pub fn is_conversation_row(entry: &Value) -> bool {
++    // MUTATION M4: only the known conversation row types are read; an unknown, empty or missing type is dropped (the #438 round-1 bug)
+     match entry.get("type").and_then(Value::as_str) {
+-        Some(t) => !defaults::list("taskstate.skipped_row_types").contains(&t),
+-        None => true,
++        Some(t) => !defaults::list("taskstate.skipped_row_types").contains(&t) && matches!(t, "user" | "assistant" | "system" | "attachment" | "summary"),
++        None => false,
+     }
+ }
+ 

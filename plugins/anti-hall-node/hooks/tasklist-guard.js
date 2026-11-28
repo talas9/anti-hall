@@ -832,6 +832,7 @@ function hasTaskActivityInText(text) {
     if (!trimmed) continue;
     let entry;
     try { entry = JSON.parse(trimmed); } catch (_) { continue; }
+    if (!require('./lib/task-state.js').isConversationRow(entry)) continue;
     const toolUses = collectToolUses(entry);
     for (const tu of toolUses) {
       const name = tu.name || '';
@@ -909,6 +910,7 @@ function scanTranscript(filePath, opts) {
     } catch (_) {
       continue;
     }
+    if (!require('./lib/task-state.js').isConversationRow(entry)) continue;
 
     // TaskCreate results carry the harness-assigned numeric id.
     if (entry.type === 'user') {

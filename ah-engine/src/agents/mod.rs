@@ -16,19 +16,23 @@
 // - an absent field is the empty value
 // A failure that must be seen goes through `crate::discard` instead.
 
+mod compliance;
 mod ctl;
 mod escalate;
 mod facts;
+mod lead_wait;
 mod live;
 mod lockwatch;
 pub(crate) mod native_wake;
 pub mod nudge;
 mod procs;
+mod repo;
 mod signals;
 mod sinks;
 mod sources;
 mod status;
-mod wake;
+pub(crate) use compliance::{note_task_list, owner_named};
+pub(crate) mod wake;
 pub use status::cost_report;
 #[cfg(test)]
 mod tests;
@@ -37,6 +41,7 @@ pub mod waste;
 use crate::checks::git::util::Settings;
 use crate::defaults::{self, V};
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
@@ -201,6 +206,24 @@ pub struct Pending {
     /// A push command: a successful result counts a push (alongside `class`, which a `commit && push` line keeps as `commit`).
     #[serde(default)]
     pub push: bool,
+    /// A background subagent launch: its result is only the launch acknowledgement, the report comes later as a task notice.
+    #[serde(default)]
+    pub ack: bool,
+    /// Files the shell command creates or appends (`>`, `>>`, `tee`, a download's output option; patterns.shell_write): each new one is
+    /// an outcome when the command succeeds (GH #458).
+    #[serde(default)]
+    pub writes: Vec<String>,
+    /// A shell command with a segment backgrounded by a top-level `&` (agent_tracker.bg_delims, found by the engine shell splitter):
+    /// its success is only the launching shell's, so it earns no HARD outcome (PR #472).
+    #[serde(default)]
+    pub amp: bool,
+    /// The directory the call ran in: the transcript line's working directory, its literal `cd`s followed (PR #472 round 5: its
+    /// repository's state decides HARD credit).
+    #[serde(default)]
+    pub cwd: String,
+    /// A task update that writes this task's blocker fields: recorded in `Agent::blocker_writes` only when its result is no error.
+    #[serde(default)]
+    pub blocker_task: String,
 }
 
 /// A raised signal on one agent.
@@ -227,6 +250,12 @@ pub struct Flag {
     /// The session key the delivered row names (the parent that got it).
     #[serde(default)]
     pub delivered_to: String,
+    /// The agent's task-list calls when it was raised (GH #958).
+    #[serde(default)]
+    pub base_task_calls: u64,
+    /// Already counted `undeliverable` (once per raised flag).
+    #[serde(default)]
+    pub undeliverable: bool,
 }
 
 /// The wake-watch and plan facts of a DevSwarm workspace.
@@ -240,6 +269,26 @@ pub struct Ws {
     pub step: String,
     /// Plan steps done.
     pub done: u64,
+    /// The workspace is the Primary checkout of its project (judged by the checkout, whatever id the app registered it under).
+    #[serde(default)]
+    pub primary: bool,
+}
+
+/// One hold a hold_expired reminder names (GH #959): its clock key, the task, and whether it names the owner.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HoldDue {
+    /// The hold clock key (task id and reason hash).
+    #[serde(default)]
+    pub key: String,
+    /// The task id.
+    #[serde(default)]
+    pub id: String,
+    /// The task subject the reminder names.
+    #[serde(default)]
+    pub subject: String,
+    /// The reason names the owner: a delivered reminder confirms it.
+    #[serde(default)]
+    pub owner: bool,
 }
 
 /// Everything the tracker keeps about one agent.
@@ -365,12 +414,47 @@ pub struct Agent {
     pub pending: BTreeMap<String, Pending>,
     /// Message ids already counted (the transcript repeats a message's usage on every line).
     pub ids: Vec<String>,
+    /// When the newest assistant line of the transcript was written (GH #884): the gap to the next message is how long the prompt cache sat idle.
+    #[serde(default)]
+    pub last_asst_ms: u64,
+    /// A turn opened by a wake (a user line whose origin is one of `agent_waste.poke.origins`) is running and has not ended (GH #884).
+    #[serde(default)]
+    pub poke_open: bool,
+    /// Weighted tokens of that turn's assistant messages (counted the way the burn and waste figures count).
+    #[serde(default)]
+    pub poke_tokens: u64,
+    /// That turn made a tool call: it did work, so it is no poke.
+    #[serde(default)]
+    pub poke_tools: bool,
+    /// Who sent the wake that opened that turn (GH #884): a word of `agent_waste.poke.senders`, else `default_sender`.
+    #[serde(default)]
+    pub poke_sender: String,
     /// The last tool calls: signature, label, is-edit, time.
     pub recent: Vec<(String, String, bool, u64)>,
     /// The last error texts: hash, label, time.
     pub errs: Vec<(u64, String, u64)>,
     /// Files it edited.
     pub files: Vec<String>,
+    /// When its soft outcomes happened (a file the shell wrote, a passing check, a completed live probe; GH #458): they never reset the
+    /// burn accounting, they may only hold off the pause (burn.soft_hold).
+    #[serde(default)]
+    pub soft_ts: Vec<u64>,
+    /// The burn episode the pause hold-offs belong to: the progress (hard outcomes) it started at, when it started (the last hard outcome,
+    /// or when the agent was first seen) and how many events (soft outcomes, build launches) came since. A hard outcome (progress moves)
+    /// starts a new episode; burn.soft_hold caps the events and the length of an episode (PR #472).
+    #[serde(default)]
+    pub soft_episode: (u64, u64, u64),
+    /// Real changes seen (PR #472 round 4): a successful edit, a fresh shell write, a commit. Outside a repository (or with git
+    /// unavailable) a passing check, build or test with no change since the last HARD credit is no HARD credit (PR #472 round 5).
+    #[serde(default)]
+    pub changes: u64,
+    /// The repo state (agents::repo::state) at the last HARD credit in each repository, by its top-level directory (PR #472 round 5):
+    /// a passing check, build or test, or a verified write, earns HARD only when its repository's state differs.
+    #[serde(default)]
+    pub repo_states: BTreeMap<String, String>,
+    /// `changes` at the last HARD credit (PR #472 round 5): outside a repository a check, build or test earns HARD only after a change.
+    #[serde(default)]
+    pub hard_changes: Option<u64>,
     /// The declared step.
     pub step: String,
     /// The task whose subject is the declared step (empty when the step came from elsewhere).
@@ -397,6 +481,20 @@ pub struct Agent {
     /// Background shell tasks it started and has not seen end: task id, when it started.
     #[serde(default)]
     pub bg_ids: BTreeMap<String, u64>,
+    /// Background tasks among `bg_ids` whose command is of a doubt class (burn.doubt.classes: a build), GH #458.
+    #[serde(default)]
+    pub bg_builds: Vec<String>,
+    /// Background tasks among `bg_ids` whose command checks or watches CI (agent_tracker.patterns.ci_wait): a CI wait still outstanding.
+    #[serde(default)]
+    pub bg_ci: Vec<String>,
+    /// The outcome a background shell task among `bg_ids` stands to earn once it ends with success (PR #472): it is a check, and the
+    /// files it writes. A background launch is at most a SOFT outcome; its completion notice with a success status is the HARD one.
+    #[serde(default)]
+    pub bg_outcomes: BTreeMap<String, (bool, Vec<String>)>,
+    /// When the call that launched each task in `bg_outcomes` began and its working directory: a file it claims counts only when
+    /// modified at or after that.
+    #[serde(default)]
+    pub bg_starts: BTreeMap<String, (u64, String)>,
     /// Background shell tasks that ended and are not yet reported: task id, when it ended.
     #[serde(default)]
     pub exited: Vec<(String, u64)>,
@@ -410,6 +508,13 @@ pub struct Agent {
     pub hb_step: String,
     /// Series samples.
     pub samples: Vec<Sample>,
+    /// When the agent's progress (its outcome count) last changed, as the sampler saw it; 0 = not sampled yet. Unlike `samples` it is not
+    /// trimmed with the window, so the time since the last outcome stays true for an agent quiet for hours (the runtime steps read it).
+    #[serde(default)]
+    pub progress_at: u64,
+    /// The agent's total spend (`signals::total_spent`) at `progress_at`: what it spent before its last outcome.
+    #[serde(default)]
+    pub progress_spent: u64,
     /// When the last series record was written.
     pub last_series: u64,
     /// The waste sensor's last evaluation of this agent (score, judge verdict, action).
@@ -417,10 +522,113 @@ pub struct Agent {
     pub waste: waste::Mark,
     /// Signals up now.
     pub flags: BTreeMap<String, Flag>,
+    /// Its last distinct progress lines (the first line of each reply text), newest last (GH #518, `nudges.stall_limits.lines_kept`).
+    #[serde(default)]
+    pub said: Vec<String>,
+    /// When the newest of `said` first appeared, and its progress units then.
+    #[serde(default)]
+    pub said_since: u64,
+    /// Progress units when the newest line of `said` first appeared.
+    #[serde(default)]
+    pub said_progress: u64,
+    /// Its last reply text, cut at `nudges.parallel_limits.reply_chars` (GH #517: the gap lines).
+    #[serde(default)]
+    pub last_reply: String,
+    /// The observable stall fingerprint of the last sample (transcript offset, tool calls, commits, changes, progress, edits, line).
+    #[serde(default)]
+    pub stall_obs: Vec<u64>,
+    /// Since when `stall_obs` holds.
+    #[serde(default)]
+    pub stall_since: u64,
+    /// The CPU (ms) of the process tree below the agent's session the last time it moved by `cpu_step_ms` (`None`: not read yet).
+    #[serde(default)]
+    pub stall_cpu: Option<u64>,
+    /// When that CPU last moved (0: never): the agent was doing work no transcript line shows.
+    #[serde(default)]
+    pub stall_cpu_at: u64,
     /// When each signal was last reminded.
     pub last_sent: BTreeMap<String, u64>,
     /// Reminders queued (signal, time), for the daily cap.
     pub sent_log: Vec<(String, u64)>,
+    /// When the owner last sent this session a message (0 = not seen); only read for main and workspace sessions.
+    #[serde(default)]
+    pub owner_ms: u64,
+    /// Work tool calls since the last task-list call (TaskCreate, TaskUpdate or a list rewrite), GH #958.
+    #[serde(default)]
+    pub calls_since_task: u64,
+    /// Tool calls since the owner's last prompt, counted while no task-list call has answered it (`ask_open`), GH #958.
+    #[serde(default)]
+    pub calls_since_ask: u64,
+    /// The owner's last prompt has had no task-list call since.
+    #[serde(default)]
+    pub ask_open: bool,
+    /// Task-list calls made, cumulative: a signal that cleared with this higher than when it was raised was acted on (GH #958).
+    #[serde(default)]
+    pub task_calls: u64,
+    /// Task id -> when it was first seen in progress with no live agent and no background job; any cover clears the entry (GH #958).
+    #[serde(default)]
+    pub ip_since: BTreeMap<String, u64>,
+    /// Held-task key (id and `blockedOn` hash) -> when the engine first saw that reason on an open task: the clock of `nudges.hold.hold_max_ms`.
+    #[serde(default)]
+    pub held_since: BTreeMap<String, u64>,
+    /// Held-task key -> hold_expired reminders sent about that exact reason: the count of "N reminders unanswered". Per task, and gone
+    /// with the key, so a rewritten `blockedOn` (a confirmed blocker) starts again at zero.
+    #[serde(default)]
+    pub hold_n: BTreeMap<String, u64>,
+    /// Task id of an owner-held task (its `blockedOn` names the owner or a human) the session was already asked to confirm once (a
+    /// reminder that reached the session itself): the agent hears nothing further. The value is no longer read (state from before
+    /// `owner_noticed` kept the last owner notice here; it seeds that map).
+    #[serde(default)]
+    pub hold_owner: BTreeMap<String, u64>,
+    /// Task id -> when the engine first saw ANY `blockedOn` reason on that open task (a rewrite does not restart it; clearing the
+    /// reason or closing the task drops it): the total blocked time of the owner notice (GH #959).
+    #[serde(default)]
+    pub blocked_since: BTreeMap<String, u64>,
+    /// Task id of an open owner-held task -> when the owner was last told about it (GH #959: the notice is due on the task's total
+    /// blocked time, not on the session's confirmation, so a rewritten reason never holds it back). Seeded from `hold_owner`'s times.
+    #[serde(default)]
+    pub owner_noticed: BTreeMap<String, u64>,
+    /// The holds past `hold_max_ms` that the next hold_expired reminder names (at most `tasks_shown`), as of the last tick: the only
+    /// counts it reads, bumps and confirms (GH #959: another task's count leaked into "N reminders unanswered").
+    #[serde(default)]
+    pub hold_due: Vec<HoldDue>,
+    /// Held-task key -> when a hold_expired reminder that named it last reached the session (GH #959): the second sort key of the
+    /// rotation (least reminded, then the longest since its last reminder), so a long list rotates and no task starves the others.
+    #[serde(default)]
+    pub hold_last: BTreeMap<String, u64>,
+    /// Task id -> when a hold_expired reminder naming that task last reached the session, kept across a rewrite of its reason (unlike
+    /// `hold_last`, which goes with the key): a write of the task after it is the session's answer (#972, #961).
+    #[serde(default)]
+    pub hold_told: BTreeMap<String, u64>,
+    /// When a stop of this child was first seen (an answered `TaskStop`, a terminal notice; 0 = none): sticky, so the stop outlives the
+    /// launching transcript's tail window that showed it (#972 class 1). Cleared when the child writes again past
+    /// `limits.stop_resume_ms`.
+    #[serde(default)]
+    pub stopped_at: u64,
+    /// Hashes of the reports (messages to its lead) this child already earned credit for, newest last (`report_to.dedupe_max`, #972).
+    #[serde(default)]
+    pub report_keys: Vec<String>,
+    /// Task id -> when this session last wrote that task's blocker fields (blockedOn, owner or status) with a task update: the answer
+    /// that confirms a hold reminder (#972 round 2).
+    #[serde(default)]
+    pub blocker_writes: BTreeMap<String, u64>,
+    /// When the agent last received a message that opened a turn (a user line that is not a tool result): a stopped teammate resumes
+    /// only by a new turn after its stop; its later lines without one are the tail of the killed turn (#972 round 3).
+    #[serde(default)]
+    pub inbound_ms: u64,
+    /// Task id -> the hold key the session confirmed by writing the task after a reminder named it, and when (#972, #961): that hold is
+    /// silent for `nudges.hold.confirm_ms`, tied to the reason it confirmed (a later new reason without a reminder runs the plain clock).
+    #[serde(default)]
+    pub hold_confirmed: BTreeMap<String, (String, u64)>,
+    /// Subagent results returned to this agent (a foreground launch's result, a completed task notice), counted as outcomes.
+    #[serde(default)]
+    pub reports: u64,
+    /// Task ids whose notice was already counted as a result (a task may notify more than once).
+    #[serde(default)]
+    pub report_ids: Vec<String>,
+    /// Hash of the step text the drift reminder was last sent for (0 = none): one drift reminder per declared step.
+    #[serde(default)]
+    pub drift_step: u64,
 }
 
 /// One day's totals.
@@ -489,6 +697,19 @@ pub struct State {
     /// Children the health judge called busy: no nudge until the time given.
     #[serde(default)]
     pub nudge_hold: BTreeMap<String, u64>,
+    /// Children the health judge called done (#430): held while idle, read only with agents.nudgeScope on.
+    #[serde(default)]
+    pub nudge_done_hold: BTreeMap<String, nudge::DoneHold>,
+    /// Snoozes by child and trigger (`<child>|<trigger>`): they outlive the nudge they were given to (#333).
+    #[serde(default)]
+    pub nudge_snooze: BTreeMap<String, nudge::Snooze>,
+    /// Suppressions already counted (`<child>|<reason>`), so a held child is counted once per reason, not once per tick (GH #923).
+    #[serde(default)]
+    pub nudge_supp_seen: std::collections::BTreeSet<String>,
+    /// Children whose launching session just stopped them (the stop not answered yet): no health or runtime nudge until the time given
+    /// (GH #923). Kept apart from nudge_hold so a busy verdict of the health judge never holds a runtime step.
+    #[serde(default)]
+    pub nudge_stop_hold: BTreeMap<String, u64>,
 }
 
 impl State {
@@ -508,6 +729,145 @@ pub(crate) fn load_state(env: &Env) -> State {
         Ok(m) if m.len() <= lim("state_max_bytes") => std::fs::read_to_string(&p).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default(),
         _ => State::default(),
     }
+}
+
+/// The signal names up now, per agent id, on the agents of one session (itself, its children and theirs; agents that are gone,
+/// finished or dead raise none, and an agent with no signal up is not listed), read from the tracker's persisted state for the nudge
+/// ladder's fact check. The agent id is the subject a reminder names (`Reminder::agent`), so a fact is checked per agent, never over
+/// the union of them. `None`: the file is absent, over its size cap or not valid state, so nothing can be said (the ladder then
+/// blocks nothing on a signal it cannot verify).
+pub(crate) fn live_flags(
+    home: &std::path::Path,
+    session: &str,
+    transcript: &str,
+) -> Option<std::collections::BTreeMap<String, std::collections::BTreeSet<String>>> {
+    let p = home.join(pth("base")).join(pth("dir")).join(pth("state"));
+    if std::fs::metadata(&p).ok()?.len() > lim("state_max_bytes") {
+        return None;
+    }
+    let st: State = serde_json::from_str(&std::fs::read_to_string(&p).ok()?).ok()?;
+    let owner = st.agents.values().find(|a| !transcript.is_empty() && a.path == transcript).map_or_else(|| session.to_string(), |a| a.id.clone());
+    let mut mine: std::collections::BTreeSet<String> = std::collections::BTreeSet::from([owner]);
+    loop {
+        let before = mine.len();
+        let more: Vec<String> = st.agents.values().filter(|a| mine.contains(&a.parent)).map(|a| a.id.clone()).collect();
+        mine.extend(more);
+        if mine.len() == before {
+            break;
+        }
+    }
+    Some(
+        st.agents
+            .values()
+            .filter(|a| mine.contains(&a.id) && !(a.gone || a.finished || a.dead) && !a.flags.is_empty())
+            .map(|a| (a.id.clone(), a.flags.keys().cloned().collect()))
+            .collect(),
+    )
+}
+
+/// One reminder row a hook event put in front of the agent that owns a queue.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Delivered {
+    /// The agent the reminder is about (`Reminder::agent`).
+    pub agent: String,
+    /// The signal that raised it.
+    pub signal: String,
+    /// The reminder's text.
+    pub text: String,
+}
+
+/// The reminders the `agent-reminders` check took from the queue of `key` (an agent or session id) since line `prev`, and the line the
+/// queue's cursor stands at now: `(cursor, rows)`. The check counts the non-empty lines of the queue file and keeps the number it
+/// took in `<queue>.cursor`, so the lines before the cursor are the delivered ones. With no `prev` (the caller never looked) the last
+/// `first` of them are returned; at most `most` rows are ever returned. `None`: the queue file is over `max_bytes` or cannot be
+/// read, so nothing can be said about who a reminder was about.
+pub(crate) fn delivered_since(home: &std::path::Path, key: &str, prev: Option<u64>, first: u64, most: u64, max_bytes: u64) -> Option<(u64, Vec<Delivered>)> {
+    let dir = home.join(pth("base")).join(pth("dir")).join(pth("reminders"));
+    let queue = dir.join(format!("{}{}", sinks::key_of(key), pth("queue_ext")));
+    let cursor_file = dir.join(format!("{}{}{}", sinks::key_of(key), pth("queue_ext"), pth("cursor_ext")));
+    let cursor: u64 = std::fs::read_to_string(&cursor_file).ok().and_then(|t| t.trim().parse().ok()).unwrap_or(0);
+    let text = match std::fs::metadata(&queue) {
+        Ok(m) if m.len() > max_bytes => return None,
+        Ok(_) => std::fs::read_to_string(&queue).ok()?,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(_) => return None,
+    };
+    let lines: Vec<&str> = text.split('\n').filter(|l| !l.is_empty()).collect();
+    let end = cursor.min(lines.len() as u64);
+    let from = prev.filter(|p| *p <= end).map_or_else(|| end.saturating_sub(first), |p| p.max(end.saturating_sub(most)));
+    let field = |v: &Value, k: &str| v.get(k).and_then(Value::as_str).unwrap_or("").to_string();
+    let rows = lines
+        .iter()
+        .skip(from as usize)
+        .take(end.saturating_sub(from) as usize)
+        .filter_map(|l| serde_json::from_str::<Value>(l).ok())
+        .map(|v| Delivered { agent: field(&v, "agent"), signal: field(&v, "signal"), text: field(&v, "text") })
+        .collect();
+    Some((end, rows))
+}
+
+/// A child's launch identity for the guards: (the tool call id that launched it, its agent type), each "" when unknown. Both come
+/// from the host's meta file (`agent_tracker.meta` tool_use_id, `agent_tracker.no_work` agent_type_fields); a child the tracker
+/// knows as a Codex rescue wrapper has the rescue type even when its meta names none (hosts that keep the type in the launch input).
+fn launch_of(a: &Agent) -> (String, String) {
+    let meta = if is_child(a) { sources::json_of(std::path::Path::new(&facts::meta_path(&a.path))) } else { None };
+    let field = |k: &str| meta.as_ref().and_then(|m| m.get(k)).and_then(Value::as_str).unwrap_or("").to_string();
+    let nw = defaults::raw("agent_tracker.no_work");
+    let tool_use_id = field(defaults::raw("agent_tracker.meta").str_field("tool_use_id"));
+    let named = nw.get("agent_type_fields").map(V::strings).unwrap_or_default().iter().map(|k| field(k)).find(|t| !t.is_empty()).unwrap_or_default();
+    // an explicit type in the meta wins (a general-purpose child that merely runs Codex stays general-purpose); the rescue type is inferred only when none is named
+    let agent_type = if named.is_empty() && a.codex_rescue { nw.str_field("rescue_type").to_string() } else { named };
+    (tool_use_id, agent_type)
+}
+
+/// A read-only, request-local reconciliation of retained tracker rows for guards.
+/// Reuse the tracker's ingestion and state rules; never tick, save, probe a CLI,
+/// deliver reminders or rewrite the user's history from a hook decision.
+pub(crate) fn guard_rows(env: &Env, session: &str, transcript: &str, cwd: &str) -> Vec<Value> {
+    let mut st = load_state(env);
+    let owner = st.agents.values().find(|a| a.path == transcript).map(|a| a.id.clone()).unwrap_or_else(|| session.to_string());
+    st.agents.retain(|_, a| a.id == owner || a.parent == owner || (!cwd.is_empty() && a.cwd == cwd));
+    let sessions = live::registry(env);
+    live::apply(&mut st, sessions.as_deref(), false);
+    let mut readable = std::collections::BTreeSet::new();
+    for a in st.agents.values_mut() {
+        let mtime = crate::checks::agent_scan::mtime_ms(std::path::Path::new(&a.path));
+        if a.kind == kind_name("codex") {
+            if let Some(mtime) = mtime {
+                live::codex_state(env, a, mtime as u64);
+                if std::fs::File::open(&a.path).is_ok() {
+                    readable.insert(a.id.clone());
+                }
+            }
+        } else if mtime.is_some() {
+            facts::ingest(a, env.now_ms);
+            if a.transcript_complete {
+                readable.insert(a.id.clone());
+            }
+            if is_child(a)
+                && let Some(meta) = sources::json_of(std::path::Path::new(&facts::meta_path(&a.path)))
+                && let Some(finished) = meta.get(defaults::raw("agent_tracker.meta").str_field("finished")).and_then(Value::as_bool)
+            {
+                a.finished |= finished;
+            }
+        }
+    }
+    sources::reconcile_children(env, &mut st);
+    sources::mark_dead(env, &mut st);
+    let mut out = Vec::new();
+    for a in st.agents.values() {
+        let state = signals::state_of(a);
+        let known = readable.contains(&a.id) && a.last_output_ms > 0 && env.now_ms.saturating_sub(a.last_output_ms) <= lim("active_window_ms");
+        let (tool_use_id, agent_type) = launch_of(a);
+        out.push(serde_json::json!({"id": a.id, "name": a.name, "parent": a.parent, "kind": a.kind,
+            "state": state, "known": known, "lastSeenMs": a.last_output_ms, "toolUseId": tool_use_id, "agentType": agent_type}));
+        for (id, started) in &a.bg_ids {
+            out.push(serde_json::json!({"id": id, "name": id, "parent": a.id,
+                "kind": defaults::text("agent_tracker.guard_job_kind"), "state": if a.dead || a.gone || a.finished { state } else { state_name("running") },
+                "known": known && env.now_ms.saturating_sub(*started) <= lim("bg_bash_ms"), "lastSeenMs": a.last_output_ms}));
+        }
+    }
+    out
 }
 
 pub(crate) fn save_state(env: &Env, st: &State) {

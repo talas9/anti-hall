@@ -833,7 +833,7 @@ fn register_locked(inv: &Inv, id: &str, op: &str, f: &RegFlags, require_new: boo
         crate::meshw::pull::precreate(&out_desc);
         // the ensure's upsert keeps the id-collision guard: a row at another worktree is left alone (the descriptor is still written);
         // a registration over its own id may move the worktree (`allowPathChange`)
-        let guarded = |have: &str, incoming: &str| create || have == incoming || ident::realpath(have).is_some_and(|r| ident::realpath(incoming) == Some(r));
+        let guarded = |have: &str, incoming: &str| create || ident::same_registry_worktree(have, incoming);
         match store.upsert_registry(&row, inv.now, guarded) {
             // the ensure's collision guard leaves a row at another worktree alone, as Node's ensure ignores the skip
             Ok(false) if create => failure = Some(defaults::render("devswarm_cli.msg_reg_upsert_skipped", &[("id", &quote(id))])),
@@ -1613,7 +1613,7 @@ mod tests {
     use std::path::{Path, PathBuf};
 
     fn scratch(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("ah-lifeverbs-{tag}-{}", std::process::id()));
+        let d = crate::testtmp::path(format!("ah-lifeverbs-{tag}-{}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&d)); // keep: a stale directory of an earlier run of this test
         std::fs::create_dir_all(&d).unwrap();
         d

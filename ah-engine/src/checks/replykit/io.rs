@@ -17,6 +17,7 @@ pub struct Tail {
 
 /// Read at most the last `window` bytes of `path`. `None` on any error (the Node reader fails open the same way).
 pub fn read_window(path: &str, window: u64) -> Option<Tail> {
+    let _turn = crate::transcript::scan::permit();
     let size = std::fs::metadata(path).ok()?.len();
     crate::load::note_scan(size.min(window));
     if size <= window {
@@ -28,6 +29,19 @@ pub fn read_window(path: &str, window: u64) -> Option<Tail> {
     let mut buf = Vec::with_capacity(window as usize);
     f.take(window).read_to_end(&mut buf).ok()?;
     Some(Tail { data: crate::checks::guardkit::text::lossy_owned(buf), truncated: true })
+}
+
+/// The lines of the last `window` bytes of `path` as [`read_window`] plus [`crate::checks::replykit::transcript::tail_lines`] give them
+/// (`\r?\n` separators, the cut first line dropped), one at a time, read in blocks: nothing but a block and one line is held. Returns
+/// whether the window cut the file; `None` on any error or when no turn at reading came in time (`transcript::scan`).
+pub fn for_each_line(path: &str, window: u64, mut each: impl FnMut(&str) -> crate::transcript::scan::Flow) -> Option<bool> {
+    let mut w = crate::transcript::scan::Window::open(path, window)?;
+    w.lines_ex(|piece, last| {
+        let piece = if last { piece } else { piece.strip_suffix(b"\r").unwrap_or(piece) };
+        each(&String::from_utf8_lossy(piece))
+    })
+    .ok()?;
+    Some(w.truncated())
 }
 
 /// `data.split(/\r?\n/)`: a line ends at `\n`, and one `\r` just before it belongs to the separator.

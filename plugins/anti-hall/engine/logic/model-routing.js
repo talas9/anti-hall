@@ -110,15 +110,15 @@ function mrTip(what, instead, why) {
 function mrPass(key, args) { return text.render(ah.cfg(key), args); }
 
 function mrBounded(s) {
-  var limit = ah.cfgNum('telemetry.token_max_len'), out = '', used = 0;
+  var limit = ah.cfgNum('telemetry.token_max_len'), out = [], used = 0;
   var cps = Array.from(s);
   for (var i = 0; i < cps.length; i++) {
     var n = jx.utf8Len(cps[i]);
     if (used + n > limit) break;
-    out += cps[i];
+    out.push(cps[i]);
     used += n;
   }
-  return out;
+  return out.join('');
 }
 
 // The spawn identity a retry keeps: the session, the parent agent, the subagent type and a hash of a bounded prefix of the prompt
@@ -182,7 +182,7 @@ function mrHandover(p, corpus) {
   var rel = ah.cfg('model_routing.state_dir') + '/' + ah.cfg('model_routing.handover_state_prefix') + safe + ah.cfg('model_routing.handover_state_suffix');
   if (ah.fs.kind(home + '/' + rel) !== null) return null; // already advised this session
   if (!ah.state.writeAtomic(rel, ah.cfg('model_routing.handover_state_json'))) return null; // cannot persist the cap: stay silent
-  return mrAdvise(text.message('tip', ah.cfg('model_routing.handover_guard'), {
+  return mrAdvise(text.message('order', ah.cfg('model_routing.handover_guard'), {
     what: ah.cfg('model_routing.msg_handover_what'), why: ah.cfg('model_routing.msg_handover_why'), instead: ah.cfg('model_routing.msg_handover_instead'),
   }));
 }
@@ -207,6 +207,34 @@ function mrJevRelaxes(corpus, p) {
     },
   });
   return r === false;
+}
+
+// The advisor-mode review rule: the block verdict, or null (rule off, no advisor tool, not review-shaped, flagship or unknown model,
+// already blocked once for this spawn, a Stop continuation). Fails open.
+function mrAdvisorReview(p, model, omitted, description, subagentType, flagship) {
+  try {
+    if (!ah.settings.bool('advisor.sw_review') || p.stop_hook_active === true) return null;
+    var dTokens = mrTokenize(description + ' ' + subagentType);
+    if (!(mrSig(dTokens, new Set(dTokens), 'advisor.review_signals') > 0)) return null; // the description and agent type only: a brief that merely mentions a review is no review
+    // A named agent without an explicit model runs on the model its own definition sets, not the session's: unknown, so allowed.
+    if (omitted && ah.cfg('advisor.generic_agent_types').indexOf(jx.asciiLower(subagentType)) < 0) return null;
+    var tier = omitted ? mrInheritedTier(p) : model;
+    if (omitted) { if (tier === null || ah.cfg('model_routing.flagship_models').indexOf(tier) >= 0) return null; }
+    else if (flagship) return null;
+    var ok = advisorKit.locked(p, function () { // the per-agent fold the advisor-guard rules use, under the same state lock
+      var st = advisorKit.load(p), view = advisorKit.fold(p, st);
+      var has = advisorKit.present(p, view === null ? null : view.scan, view);
+      advisorKit.save(p, st);
+      return has;
+    }, false);
+    if (!ok) return null;
+    var key = typeof p.session_id === 'string' ? p.session_id : '';
+    if (!advisorKit.gate('advisor.kind_review', p, key + '|' + (typeof p.agent_id === 'string' ? p.agent_id : '') + '|' + description)) return null;
+    var shown = omitted ? text.render(ah.cfg('advisor.unknown_model_label'), { model: tier }) : model;
+    return mrBlock(text.message('block', ah.cfg('advisor.guard_name'), {
+      what: text.render(ah.cfg('advisor.msg_review_what'), { model: shown }), why: ah.cfg('advisor.msg_why'), instead: ah.cfg('advisor.msg_review_instead'), override: '',
+    }));
+  } catch (e) { return null; }
 }
 
 function decide(p) {
@@ -238,13 +266,21 @@ function decide(p) {
   var tokenSet = new Set(tokens);
   var mechanical = mrSig(tokens, tokenSet, 'model_routing.mechanical'), complex = mrSig(tokens, tokenSet, 'model_routing.complex');
   // any planning signal (or heavy reading) vetoes the rows that steer to haiku
-  var mechanicalOnly = mechanical > 0 && complex === 0 && !mrReasoning(corpus);
+  var neverRoutine = mrSig(tokens, tokenSet, 'model_routing.never_routine');
+  var mechanicalOnly = mechanical > 0 && complex === 0 && neverRoutine === 0 && !mrReasoning(corpus);
+  if (mechanical > 0 && complex === 0 && neverRoutine > 0 && !mrReasoning(corpus)) {
+    try { ah.metric('model_routing_never_routine', []); } catch (e) { /* counting never fails a hook */ }
+  }
   var strict = routingMode !== ah.cfg('model_routing.advisory_mode');
   var exempt = mrT('model_routing.role_word_re', description);
   var researchExempt = !(mrSig(tokens, tokenSet, 'model_routing.hard_execution') > 0) && mrT('model_routing.research_re', corpus);
   var generic = subagentType === '' || subagentType === ah.cfg('model_routing.generic_type');
   var custom = subagentType !== '' && subagentType !== ah.cfg('model_routing.generic_type');
   var flagship = ah.cfg('model_routing.flagship_models').indexOf(model) >= 0;
+
+  // Advisor mode (GH #404): a review-shaped spawn on a non-flagship model is blocked once when the session has an advisor tool.
+  var advisorReview = mrAdvisorReview(p, model, omitted, description, subagentType, flagship);
+  if (advisorReview !== null) return mrRouted(advisorReview, p, input, 'planning', tierOpus, 'up');
 
   var suppressHaiku = false;
   var floorName = ah.settings.enum('model_routing.deploy_floor_setting');
@@ -307,8 +343,22 @@ function decide(p) {
   // Row 6: a research-shaped generic spawn that writes nothing is nudged toward Explore, which cannot recurse.
   var writeShaped = mrT('model_routing.write_phrase_re', corpus) || mrT('model_routing.commit_phrase_re', corpus.replace(jx.re('model_routing.negated_commit_re', 'gi'), ' ')) ||
     mrT('model_routing.strong_write_re', corpus.replace(jx.re('model_routing.negated_write_re', 'gi'), ' ')) ||
+    mrT('model_routing.delete_re', corpus.replace(jx.re('model_routing.negated_delete_re', 'gi'), ' ')) || // #965: deleting or cleaning up is write work
     (!mrT('model_routing.readonly_override_re', corpus) && (mrT('model_routing.write_re', corpus) || mrT('model_routing.write_imperative_re', corpus)));
-  if (generic && mrT('model_routing.research_re', corpus) && !writeShaped) {
+  // a brief that writes a file or report or runs a script or shell commands needs a type that can: no Explore hint (it has no Write/Edit)
+  var execShaped = ah.settings.bool('model_routing.explore_exec_setting') && (mrT('model_routing.exec_report_re', corpus.replace(jx.re('model_routing.negated_write_re', 'gi'), ' ')) || mrT('model_routing.build_exec_re', corpus.replace(jx.re('model_routing.negated_write_re', 'gi'), ' ')) || mrT('model_routing.design_ask_re', corpus));
+  // #336: a review seat or a brief that runs tests is no read-only research, whatever else it says: no Explore hint
+  var skipReason = null;
+  if (generic && ah.settings.bool('model_routing.explore_hint_skip_setting')) {
+    var skipRe = ah.cfg('model_routing.explore_hint_skip_re');
+    if (ah.re.test(skipRe.reviewer, 'r', corpus)) skipReason = 'reviewer';
+    else if (ah.re.test(skipRe.tests, 'r', corpus)) skipReason = 'tests';
+  }
+  if (skipReason !== null && mrT('model_routing.research_re', corpus) && !writeShaped && !execShaped) {
+    try { ah.metric('model_routing_explore_hint_skipped', ['reason', skipReason]); } catch (e) { /* counting never fails a hook */ }
+    return mrRouted('allow', p, input, 'unknown', omitted ? ah.cfg('model_routing.tier_inherit') : model, 'allow');
+  }
+  if (generic && mrT('model_routing.research_re', corpus) && !writeShaped && !execShaped) {
     return mrRouted(mrTip(ah.cfg('model_routing.msg_row6_what'), ah.cfg('model_routing.msg_row6_instead'), ah.cfg('model_routing.msg_row6_why')), p, input, 'research', ah.cfg('model_routing.explore_type'), 'exempt');
   }
   return mrRouted('allow', p, input, 'unknown', omitted ? ah.cfg('model_routing.tier_inherit') : model, 'allow');

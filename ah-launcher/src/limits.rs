@@ -30,9 +30,29 @@ pub enum Ctr {
     ReaperOff,
     KickSkipped,
     FailOpen,
+    NoticeShown,
+    NoticeSuppressed,
+    NoticeEvicted,
+    ColdWaitHashed,
+    ColdWaitHashedExpired,
+    CapacityHold,
+    SlowMarkerPass,
+    CapacityHoldNormalised,
+    CapacityTextExempt,
+    CapacityInlineCode,
+    CapacityScriptRead,
+    CapacityScriptUnread,
+    CapacityGhUnknown,
+    CapacityUnknownCommand,
+    CapacityTrustedScript,
+    CapacityLocalTool,
+    CapacityWrapperOpt,
+    CapacityParsedRead,
+    CapacityEngineProgram,
+    CapacityParsedMask,
 }
 
-const NCTR: usize = 14;
+const NCTR: usize = 34;
 static COUNTERS: [AtomicU64; NCTR] = [const { AtomicU64::new(0) }; NCTR];
 
 impl Ctr {
@@ -53,6 +73,26 @@ impl Ctr {
             Ctr::ReaperOff => "reaper_off",
             Ctr::KickSkipped => "kick_skipped",
             Ctr::FailOpen => "fail_open",
+            Ctr::NoticeShown => "notice_shown",
+            Ctr::NoticeSuppressed => "notice_suppressed",
+            Ctr::NoticeEvicted => "notice_evicted",
+            Ctr::ColdWaitHashed => "cold_wait_hashed",
+            Ctr::ColdWaitHashedExpired => "cold_wait_hashed_expired",
+            Ctr::CapacityHold => "capacity_hold",
+            Ctr::SlowMarkerPass => "slow_marker_pass",
+            Ctr::CapacityHoldNormalised => "capacity_hold_normalised",
+            Ctr::CapacityTextExempt => "capacity_text_exempt",
+            Ctr::CapacityInlineCode => "capacity_inline_code",
+            Ctr::CapacityScriptRead => "capacity_script_read",
+            Ctr::CapacityScriptUnread => "capacity_script_unread",
+            Ctr::CapacityGhUnknown => "capacity_gh_unknown",
+            Ctr::CapacityUnknownCommand => "capacity_unknown_command",
+            Ctr::CapacityTrustedScript => "capacity_trusted_script",
+            Ctr::CapacityLocalTool => "capacity_local_tool",
+            Ctr::CapacityWrapperOpt => "capacity_wrapper_opt",
+            Ctr::CapacityParsedRead => "capacity_parsed_read",
+            Ctr::CapacityEngineProgram => "capacity_engine_program",
+            Ctr::CapacityParsedMask => "capacity_parsed_mask",
         }
     }
     const ALL: [Ctr; NCTR] = [
@@ -70,6 +110,26 @@ impl Ctr {
         Ctr::ReaperOff,
         Ctr::KickSkipped,
         Ctr::FailOpen,
+        Ctr::NoticeShown,
+        Ctr::NoticeSuppressed,
+        Ctr::NoticeEvicted,
+        Ctr::ColdWaitHashed,
+        Ctr::ColdWaitHashedExpired,
+        Ctr::CapacityHold,
+        Ctr::SlowMarkerPass,
+        Ctr::CapacityHoldNormalised,
+        Ctr::CapacityTextExempt,
+        Ctr::CapacityInlineCode,
+        Ctr::CapacityScriptRead,
+        Ctr::CapacityScriptUnread,
+        Ctr::CapacityGhUnknown,
+        Ctr::CapacityUnknownCommand,
+        Ctr::CapacityTrustedScript,
+        Ctr::CapacityLocalTool,
+        Ctr::CapacityWrapperOpt,
+        Ctr::CapacityParsedRead,
+        Ctr::CapacityEngineProgram,
+        Ctr::CapacityParsedMask,
     ];
 }
 
@@ -300,5 +360,30 @@ mod tests {
     fn mem_ok_respects_the_cap() {
         assert!(mem_ok(1));
         assert!(!mem_ok(usize::MAX));
+    }
+}
+
+// ---------------------------------------------------------------------------------------------------------------------------
+// #969: the QoS class of the launcher's wait (macOS; no-op elsewhere)
+// ---------------------------------------------------------------------------------------------------------------------------
+
+#[cfg(target_os = "macos")]
+unsafe extern "C" {
+    // `qos_class_t` is an unsigned int in the C ABI; the class value comes from config (`daemon.qos_classes`).
+    fn pthread_set_qos_class_self_np(qos_class: u32, relative_priority: libc::c_int) -> libc::c_int;
+}
+
+/// Put the calling thread in `class` (`None` = leave it). Returns whether the class was set.
+pub fn apply_qos(class: Option<u32>) -> bool {
+    let Some(c) = class else { return false };
+    #[cfg(target_os = "macos")]
+    {
+        // SAFETY: plain integer arguments; the call only changes the calling thread's scheduling class.
+        unsafe { pthread_set_qos_class_self_np(c, 0) == 0 }
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = c;
+        false
     }
 }

@@ -106,6 +106,12 @@ const NEGATED_COMMIT_RE = /\b(?:do\s+not|don'?t|never|without|no)\s+(?:\w+\s+){0
 const STRONG_WRITE_RE = /\bgh\s+(?:issue|label|pr|release|secret|repo|milestone)\s+(?:create|edit|comment|close|merge|delete|set|reopen)\b|\bgh\s+api\b[^\n]{0,200}?(?:-X|--method)[\s=]*(?:POST|PATCH|PUT|DELETE)\b|\bcommit(?:s|ting)?\s+(?:(?:the|all|its|your|each|every|those|these|any)\s+)?(?:files?|changes?|fix(?:es)?|work|results?|edits?|patch(?:es)?)\b|\bpush(?:es|ing)?\s+(?:it|them|the\s+\w+|to\s+\S+|your\s+\w+|its\s+\w+|branch\w*)\b|\b(?:and|then)\s+push(?:es)?\b|\bcreat(?:e|es|ing)\s+(?:(?:a|an|the|new|any|its|missing|all|\d+)\s+)?(?:gh\s+|github\s+)?(?:issues?|labels?|milestones?|pull\s+requests?|prs?|branch(?:es)?|commits?|files?|tests?)\b|\blabel(?:s|ling)?\s+(?:(?:the|each|all|every|its)\s+)?(?:issues?|prs?|pull\s+requests?)\b|\b(?:edit|write|modify|update)s?\s+(?:(?:the|a|its|your|this|that|these|those)\s+)?(?:files?|code|tests?|source|config)\b|\b(?:edit|write|modify)s?\s+\S+\.(?:js|ts|rs|toml|md|json|py|sh|ya?ml)\b/i;
 const NEGATED_WRITE_RE = /\b(?:do\s+not|don'?t|never|without|no|not)\s+(?:\w+\s+){0,3}?(?:git\s+|gh\s+)?(?:commit|push|edit|writ|creat|modif|label|updat)\w*(?:\s*(?:,|or|and|nor)\s+(?:git\s+|gh\s+)?(?:commit|push|edit|writ|creat|modif|label|updat)\w*)*/gi;
 
+// #965: a brief that asks to delete or clean up (an instruction with an object, 'by deleting', a build tool's clean verb) is write
+// work Explore cannot do. Negations ('do not delete anything', 'delete nothing') are removed first. Mirrors engine
+// model_routing.delete_re / negated_delete_re.
+const DELETE_RE = new RegExp(String.raw`(?:^|[\n\r\u2028\u2029]|[.;:!?,]\s+|\b(?:then|and|also|please)\s+)(?:delete|remove|purge|wipe|prune|trash|clean\s+up|clear)\s+[^\s,;:.)/|]|\bby\s+(?:delet|remov|purg|wip|prun|trash|clean|clear)ing\b|\b(?:flutter|cargo|gradlew?|dart|xcodebuild|npm|pnpm|yarn|go)\s+clean\b`, 'i');
+const NEGATED_DELETE_RE = new RegExp(String.raw`\b(?:do\s+not|don'?t|never|without|no|not)\s+(?:\w+\s+){0,3}?(?:(?:[\w-]+\s+){0,2}[\w-]+\s*,\s*){0,6}?(?:git\s+|gh\s+)?(?:delet|remov|purg|wip|prun|trash|clean|clear|commit|push|edit|writ|creat|modif|mov|chang)\w*(?:\s*(?:,|/|or|and|nor)\s*(?:git\s+|gh\s+)?(?:delet|remov|purg|wip|prun|trash|clean|clear|commit|push|edit|writ|creat|modif|mov|chang)\w*)*|\b(?:delet|remov|purg|wip|prun|trash|clean|clear|chang|modif|edit|writ|mov|push|commit)\w*(?:\s*(?:/|,|or|and)\s*\w+)*\s+(?:nothing|none)\b`, 'gi');
+
 // The family an omitted model inherits (issue #55): the payload's parent model, else the newest assistant entry of the transcript
 // tail whose model names a known family. null when unknown. Mirrors engine mrInheritedTier (model_routing.session_model_*).
 const SESSION_MODEL_FAMILIES = ['fable', 'opus', 'sonnet', 'haiku'];
@@ -654,6 +660,7 @@ function main() {
   // in its description).
   const writeShaped = WRITE_PHRASE_RE.test(corpus) || COMMIT_PHRASE_RE.test(corpus.replace(NEGATED_COMMIT_RE, ' ')) ||
     STRONG_WRITE_RE.test(corpus.replace(NEGATED_WRITE_RE, ' ')) ||
+    DELETE_RE.test(corpus.replace(NEGATED_DELETE_RE, ' ')) ||
     (!READONLY_OVERRIDE_RE.test(corpus) && (WRITE_RE.test(corpus) || WRITE_IMPERATIVE_RE.test(corpus)));
   if (isGenericAgent && RESEARCH_RE.test(corpus) && !writeShaped) {
     advise(tip(

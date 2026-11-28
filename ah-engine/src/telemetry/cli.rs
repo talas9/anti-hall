@@ -1,4 +1,4 @@
-//! `ah-engine telemetry [summary|events|rollup|actions]` (D78). `actions [feature]` reports what the acting features did and got wrong (`actlog`).
+//! `ah-engine telemetry [summary|events|rollup|actions|funnel]` (D78). `funnel [--by model,project] [--window 7d]` is the per-rule delivery funnel (`crate::funnel`). `actions [feature]` reports what the acting features did and got wrong (`actlog`).
 //!
 //! `summary` and `events` ask the running daemon (so they include what it has recorded but not flushed yet) and fall back to
 //! reading the databases. `rollup` works on the database files directly, like `maintain`: it is idempotent, and SQLite's locks keep them apart from the daemon's own writes.
@@ -38,6 +38,12 @@ fn open_for_write() -> Result<TelDb, String> {
     crate::db::Db::open(&dir).map(TelDb::new).map_err(|e| e.to_string())
 }
 
+/// The advisory counters (advisor adherence, availability and every other advisory kind) as `status` shows them: the durable
+/// journal plus this process's own table, so `telemetry summary` carries them whether or not a daemon answered.
+fn advisory_counts() -> Value {
+    crate::obs::counters::snapshot().get("advisory").cloned().unwrap_or_else(|| json!({}))
+}
+
 /// Run a telemetry subcommand (`rest` is everything after the command word, without `--json`). Returns the report and the
 /// exit code.
 pub fn run(rest: &[String]) -> (Value, i32) {
@@ -58,6 +64,9 @@ pub fn run(rest: &[String]) -> (Value, i32) {
             }
             if let Some(mut v) = client::ctl_json(&verb) {
                 v["from"] = json!("daemon");
+                if sub == "summary" {
+                    v["advisory"] = advisory_counts();
+                }
                 return (v, 0);
             }
             let tel = open_existing();
@@ -69,12 +78,31 @@ pub fn run(rest: &[String]) -> (Value, i32) {
             };
             if sub == "summary" {
                 v["agent_cost"] = crate::agents::cost_report();
+                v["advisory"] = advisory_counts();
             }
             v["from"] = json!("files");
             v["running"] = json!(false);
             (v, 0)
         }
         "actions" => crate::actlog::run_cli(rest),
+        verb if verb == defaults::text("delivery.report_verb") => {
+            // the funnel counters live in the daemon's metrics (a window needs its stored snapshots): no daemon, no report
+            let (by, since) = (flag(rest, "by"), Some(flag(rest, "since")).filter(|s| !s.is_empty()).unwrap_or_else(|| window.clone()));
+            let mut ask = format!("telemetry {verb}");
+            if !by.is_empty() {
+                ask.push_str(&format!(" by={by}"));
+            }
+            if !since.is_empty() {
+                ask.push_str(&format!(" window={since}"));
+            }
+            match client::ctl_json(&ask) {
+                Some(v) => {
+                    let code = if v.get("error").is_some() { 64 } else { 0 };
+                    (v, code)
+                }
+                None => (json!({"error": defaults::text("delivery.report_no_daemon")}), 1),
+            }
+        }
         "rollup" => match open_for_write().and_then(|t| t.rollup(now_ms(), defaults::num("telemetry.retention_days")).map_err(|e| e.to_string())) {
             Ok(v) => (v, 0),
             Err(e) => (json!({"error": e}), 1),

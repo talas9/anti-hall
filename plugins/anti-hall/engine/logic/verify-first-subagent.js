@@ -11,8 +11,10 @@ function decide(p, opts) {
   } else {
     var root = vf.pluginRoot(opts);
     if (root === null) return null;
-    base = vf.withRoot(ah.cfg('verify_first.compact_subagent'), root) + '\n' + ah.cfg('verify_first.worker');
+    base = vf.withRoot(ah.cfg('verify_first.compact_subagent'), root) + '\n' + text.render(ah.cfg('verify_first.worker'), { max: ah.cfgNum('cache_wait.split_s') });
   }
   var t = vf.childWorkspace() ? base + '\n' + ah.cfg('verify_first.child_note') : base;
+  // A different child has an empty context and must receive its own protocol. Missing identity fails open.
+  if (p && typeof p.agent_id === 'string' && p.agent_id && !dedupe.advisory(p, 'subagent', t, t, p.agent_id)) return 'allow';
   return { advisory: text.advisoryJson('SubagentStart', t) };
 }

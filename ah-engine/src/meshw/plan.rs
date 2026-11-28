@@ -806,7 +806,7 @@ mod tests {
     use super::*;
 
     fn scratch_inv(tag: &str) -> Inv {
-        let home = std::env::temp_dir().join(format!("ah-plan-{tag}-{}", std::process::id()));
+        let home = crate::testtmp::path(format!("ah-plan-{tag}-{}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&home)); // keep: a stale directory of an earlier run of this test
         std::fs::create_dir_all(&home).unwrap();
         Inv { home: home.clone(), write_home: home, env: Default::default(), cwd: "/".into(), now: 1_000_000, stdin: None, store_override: None }

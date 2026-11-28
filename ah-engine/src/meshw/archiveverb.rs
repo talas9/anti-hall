@@ -34,6 +34,10 @@ use crate::meshw::lifeverbs::bad_id;
 use crate::meshw::send::{Answer, Effect};
 use std::os::unix::fs::MetadataExt;
 
+fn setting(inv: &Inv, key: &str) -> serde_json::Value {
+    crate::dsact::settings::resolve(&inv.settings(), defaults::raw(key))
+}
+
 fn answer(code: i32, v: OVal) -> Answer {
     Answer { code, stdout: format!("{}\n", v.stringify()), effect: Effect::None }
 }
@@ -623,6 +627,76 @@ fn arch_error(id: &str, error: &str) -> Answer {
     answer(2, o.done())
 }
 
+/// #876: the refusal of an archive whose worktree still holds uncommitted changes or commits no origin ref has. `None` when the check is
+/// off (`devswarm_cli.archive_work_guard`), the worktree is gone (nothing is lost) or it holds nothing unsaved. A worktree git cannot
+/// read is refused too: the archive cannot prove nothing is lost.
+/// `parked_head`: respawn parked the dirty or unpushed work in a pushed commit on top of this HEAD; the dirt is saved, so only a HEAD
+/// that moved since (a commit made after the park, which no park branch holds) is refused.
+///
+/// #943: with `ignore_drift`, a tree whose only entries are submodules at a pushed commit (checkout drift, nothing edited) is not unsaved
+/// work; those submodules are returned as `(path, head)` so the archive answer lists them.
+fn unsafe_work(ignore_drift: bool, id: &str, desc: Option<&OVal>, parked_head: Option<&str>) -> (Option<Answer>, Vec<(String, String)>) {
+    let mut drift: Vec<(String, String)> = Vec::new();
+    if defaults::raw("devswarm_cli.archive_work_guard").as_bool() == Some(false) {
+        return (None, drift);
+    }
+    match unsafe_work_inner(ignore_drift, id, desc, parked_head, &mut drift) {
+        Some(refusal) => (Some(refusal), Vec::new()),
+        None => (None, drift),
+    }
+}
+
+fn unsafe_work_inner(ignore_drift: bool, id: &str, desc: Option<&OVal>, parked_head: Option<&str>, drift: &mut Vec<(String, String)>) -> Option<Answer> {
+    let wt = str_of(desc?.get(text("mesh_write.field_worktree_path")))?;
+    if !std::path::Path::new(wt).is_dir() {
+        return None;
+    }
+    let (what, dirty, unpushed) = if let Some(head) = parked_head {
+        match crate::meshw::dsbverbs::head_of(wt) {
+            Some(now) if now == head => return None,
+            Some(_) => (text("devswarm_cli.act_unsafe_after_park").to_string(), false, None),
+            None => (text("devswarm_cli.act_unsafe_unreadable").to_string(), false, None),
+        }
+    } else {
+        match crate::meshw::dsbverbs::worktree_state(Some(wt)).map(|mut st| {
+            if st.dirty
+                && ignore_drift
+                && let Some(d) = crate::meshw::dsbverbs::submodule_drift(wt)
+            {
+                st.dirty = false;
+                *drift = d;
+            }
+            st
+        }) {
+            Ok(st) if !crate::meshw::dsbverbs::needs_park(&st) => return None,
+            Ok(st) => {
+                let mut parts: Vec<String> = Vec::new();
+                if st.dirty {
+                    parts.push(text("devswarm_cli.act_unsafe_dirty").to_string());
+                }
+                match st.unpushed {
+                    Some(u) if u > 0.0 => parts.push(tpl("devswarm_cli.act_unsafe_unpushed", &[("n", &u.to_string())])),
+                    None => parts.push(text("devswarm_cli.act_unsafe_unreadable").to_string()),
+                    _ => {}
+                }
+                (parts.join(text("devswarm_cli.act_unsafe_join")), st.dirty, st.unpushed)
+            }
+            Err(e) => (tpl("devswarm_cli.act_unsafe_unreadable_why", &[("why", &e)]), false, None),
+        }
+    };
+    crate::metrics::bump("archive_refused_unsafe", &[("verb", text("devswarm_cli.action_archive"))]);
+    let mut o = Obj::default();
+    o.put("ok", OVal::Bool(false))
+        .put("action", s(text("devswarm_cli.action_archive")))
+        .put("id", s(id))
+        .put("descriptorArchived", OVal::Bool(false))
+        .put("unsafeWork", OVal::Bool(true))
+        .put("dirty", OVal::Bool(dirty))
+        .put("unpushed", unpushed.map_or(OVal::Null, n))
+        .put("error", s(&tpl("devswarm_cli.act_msg_unsafe_work", &[("id", &crate::meshw::actverbs::quote(id)), ("what", &what), ("wt", wt)])));
+    Some(answer(2, o.done()))
+}
+
 /// `(device, inode)` of the file at `p` without following a link.
 fn ino(p: &std::path::Path) -> Option<(u64, u64)> {
     std::fs::symlink_metadata(p).ok().map(|m| (m.dev(), m.ino()))
@@ -655,6 +729,9 @@ pub(crate) struct Opts<'a> {
     /// `opts.revalidate(desc)`: a reason to skip, evaluated inside the lock right before the archive.
     #[allow(clippy::type_complexity)] // a skip-reason callback, named by its doc
     pub revalidate: Option<&'a dyn Fn(Option<&OVal>) -> Option<String>>,
+    /// The HEAD at which the caller (respawn) parked the workspace's work on a pushed branch: the work check then refuses only a
+    /// commit made after the park. `None`: the full check (uncommitted changes, unpushed commits).
+    pub parked: Option<String>,
 }
 
 /// A unit's ops applied to the real home (no lock: the caller holds the workspace's).
@@ -745,6 +822,12 @@ pub fn archive(inv: &Inv, a: &Args) -> R<Answer> {
 /// the first write. A reason skips the archive (`{ ok: true, skipped: true, reason }`, nothing written).
 #[allow(clippy::type_complexity)] // a skip-reason callback, named by its doc
 pub fn archive_with(inv: &Inv, a: &Args, revalidate: Option<&dyn Fn(&OVal) -> Option<String>>) -> R<Answer> {
+    archive_with_guard(inv, a, revalidate, None)
+}
+
+/// [`archive_with`], `parked` the HEAD at which the caller has already pushed the workspace's work to a park branch.
+#[allow(clippy::type_complexity)] // a skip-reason callback, named by its doc
+pub fn archive_with_guard(inv: &Inv, a: &Args, revalidate: Option<&dyn Fn(&OVal) -> Option<String>>, parked: Option<String>) -> R<Answer> {
     let raw = a.positionals.get(1).map(String::as_str).unwrap_or("");
     // already archived in anti-hall but still live in the app: archive the app side only
     if let Some(only) = app_only_archive(inv, raw)? {
@@ -778,7 +861,7 @@ pub fn archive_with(inv: &Inv, a: &Args, revalidate: Option<&dyn Fn(&OVal) -> Op
         }
     };
     let adapt = |d: Option<&OVal>| d.and_then(|d| revalidate.and_then(|check| check(d)));
-    cmd_archive(inv, &id, &Opts { args: Some(a), revalidate: revalidate.map(|_| &adapt as &dyn Fn(Option<&OVal>) -> Option<String>) })
+    cmd_archive(inv, &id, &Opts { args: Some(a), revalidate: revalidate.map(|_| &adapt as &dyn Fn(Option<&OVal>) -> Option<String>), parked })
 }
 
 /// `cmdArchive(id, ctx, opts)`, under the workspace's own lock.
@@ -928,6 +1011,19 @@ fn cmd_archive_locked(inv: &Inv, id: &str, opts: &Opts<'_>) -> R<Answer> {
             .put("reason", s(&why));
         return Ok(answer(0, o.done()));
     }
+    // #876: a workspace holding uncommitted or unpushed work is never archived (its worktree goes with it): refused and reported
+    let mut submodule_drift: Vec<(String, String)> = Vec::new();
+    if active.exists {
+        let ignore = setting(inv, "devswarm_cli.ar_set_ignore_submodule_drift").as_bool() != Some(false);
+        let (refusal, drift) = unsafe_work(ignore, id, desc.as_ref(), opts.parked.as_deref());
+        if let Some(refusal) = refusal {
+            return Ok(refusal);
+        }
+        if !drift.is_empty() {
+            crate::metrics::bump("archive_submodule_drift_passed", &[("verb", text("devswarm_cli.action_archive"))]);
+            submodule_drift = drift;
+        }
+    }
     let owner = owner_key.clone().unwrap_or_else(|| current_owner.clone());
     // ---- 1. the archived name: a hard link of the active descriptor; a leftover one that is nobody's is replaced atomically ----
     if active.exists
@@ -1075,6 +1171,17 @@ fn cmd_archive_locked(inv: &Inv, id: &str, opts: &Opts<'_>) -> R<Answer> {
     if !family.1.is_empty() {
         o.put("leftFamilyDescriptors", OVal::Arr(family.1.iter().map(|(i, r)| OVal::Obj(vec![("id".into(), s(i)), ("reason".into(), s(r))])).collect()));
     }
+    if !submodule_drift.is_empty() {
+        let item = |(p, h): &(String, String)| {
+            tpl(
+                "devswarm_cli.ar_drift_item",
+                &[("path", p), ("head", &h.chars().take(defaults::num("devswarm_cli.ar_head_chars") as usize).collect::<String>())],
+            )
+        };
+        let list = submodule_drift.iter().map(item).collect::<Vec<_>>().join(", ");
+        o.put("submoduleDrift", OVal::Arr(submodule_drift.iter().map(|(p, h)| OVal::Obj(vec![("path".into(), s(p)), ("head".into(), s(h))])).collect()))
+            .put("submoduleDriftNote", s(&tpl("devswarm_cli.ar_msg_submodule_drift", &[("list", &list)])));
+    }
     if cross_override {
         o.put("forceCrossProject", OVal::Bool(true)).put("warning", s(text("devswarm_cli.act_force_cross_warning")));
     }
@@ -1177,6 +1284,227 @@ mod tests {
         fifo(&f);
         let state = within("descriptor_state", move || descriptor_state(&f).map(|s| (s.exists, s.error)).ok());
         assert_eq!(state, Some((true, Some(text("devswarm_cli.act_msg_desc_not_file").to_string()))));
+        crate::discard::harmless(std::fs::remove_dir_all(dir)); // keep: cleanup of a scratch directory
+    }
+
+    fn git_in(dir: &std::path::Path, args: &[&str]) {
+        let o = std::process::Command::new("git")
+            .args(["-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false"])
+            .args(args)
+            .current_dir(dir)
+            .env("GIT_CEILING_DIRECTORIES", dir.parent().unwrap())
+            .output()
+            .unwrap();
+        assert!(o.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&o.stderr));
+    }
+
+    /// The guard with the drift switch on, as the archive runs it by default.
+    fn unsafe_work_refusal(id: &str, desc: Option<&OVal>, parked: Option<&str>) -> Option<Answer> {
+        unsafe_work(true, id, desc, parked).0
+    }
+
+    fn desc_of(wt: &std::path::Path) -> OVal {
+        let mut d = Obj::default();
+        d.put(text("mesh_write.field_worktree_path"), s(&wt.to_string_lossy()));
+        d.done()
+    }
+
+    /// GH #876: an archive of a workspace with uncommitted or unpushed work is refused and says why; a clean, pushed one, and one whose
+    /// worktree is gone, are not.
+    #[test]
+    fn archive_refuses_uncommitted_or_unpushed_work_and_allows_clean_pushed_or_gone_gh876() {
+        crate::defaults::init().unwrap();
+        let dir = scratch("archive-unsafe");
+        let (remote, wt) = (dir.join("remote.git"), dir.join("wt"));
+        std::fs::create_dir_all(&remote).unwrap();
+        git_in(&remote, &["init", "-q", "--bare"]);
+        std::fs::create_dir_all(&wt).unwrap();
+        git_in(&wt, &["init", "-q"]);
+        git_in(&wt, &["remote", "add", "origin", remote.to_str().unwrap()]);
+        git_in(&wt, &["commit", "-q", "--allow-empty", "-m", "first"]);
+        let d = desc_of(&wt);
+
+        // a commit no origin ref has
+        let unpushed = unsafe_work_refusal("ws-1", Some(&d), None).expect("unpushed commits are refused");
+        let r = OVal::parse(unpushed.stdout.trim()).unwrap();
+        assert_eq!((r.get("ok"), r.get("unsafeWork")), (Some(&OVal::Bool(false)), Some(&OVal::Bool(true))));
+        assert!(matches!(r.get("error"), Some(OVal::Str(e)) if e.contains("unpushed commit")), "{r:?}");
+        assert_eq!(unpushed.code, 2);
+
+        // pushed and clean: archivable
+        git_in(&wt, &["push", "-q", "origin", "HEAD"]);
+        assert!(unsafe_work_refusal("ws-1", Some(&d), None).is_none(), "a clean, pushed worktree is archivable");
+
+        // an uncommitted file
+        std::fs::write(wt.join("wip.txt"), "x").unwrap();
+        let dirty = unsafe_work_refusal("ws-1", Some(&d), None).expect("uncommitted changes are refused");
+        let r = OVal::parse(dirty.stdout.trim()).unwrap();
+        assert_eq!(r.get("dirty"), Some(&OVal::Bool(true)));
+        assert!(matches!(r.get("error"), Some(OVal::Str(e)) if e.contains("uncommitted changes") && e.contains("Nothing was archived")), "{r:?}");
+
+        // a worktree that is gone holds nothing to lose; a descriptor with no worktree is not judged
+        assert!(unsafe_work_refusal("ws-1", Some(&desc_of(&dir.join("gone"))), None).is_none());
+        assert!(unsafe_work_refusal("ws-1", None, None).is_none());
+
+        // respawn parked the dirt at HEAD: still dirty but saved, archivable; a commit made after the park is refused
+        let head = crate::meshw::dsbverbs::head_of(wt.to_str().unwrap()).expect("a HEAD");
+        assert!(unsafe_work_refusal("ws-1", Some(&d), Some(&head)).is_none(), "the parked dirt is saved");
+        git_in(&wt, &["commit", "-q", "--allow-empty", "-m", "after the park"]);
+        let late = unsafe_work_refusal("ws-1", Some(&d), Some(&head)).expect("a commit after the park is refused");
+        let r = OVal::parse(late.stdout.trim()).unwrap();
+        assert!(matches!(r.get("error"), Some(OVal::Str(e)) if e.contains("after the park")), "{r:?}");
+        crate::discard::harmless(std::fs::remove_dir_all(dir)); // keep: cleanup of a scratch directory
+    }
+
+    fn git_out(dir: &std::path::Path, args: &[&str]) -> String {
+        let o = std::process::Command::new("git").args(args).current_dir(dir).env("GIT_CEILING_DIRECTORIES", dir.parent().unwrap()).output().unwrap();
+        assert!(o.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&o.stderr));
+        String::from_utf8_lossy(&o.stdout).trim().to_string()
+    }
+
+    /// GH #943 fixture: a superproject (pushed, clean) with one submodule `sub` whose remote holds commits A and B on `main`; the
+    /// submodule is checked out at A, so `git status` shows ` M sub` and nothing else. Returns (scratch dir, worktree, sub path, A).
+    fn drifted(tag: &str) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf, String) {
+        crate::defaults::init().unwrap();
+        let dir = scratch(tag);
+        let (subremote, subsrc, wtremote, wt) = (dir.join("sub.git"), dir.join("subsrc"), dir.join("wt.git"), dir.join("wt"));
+        for d in [&subremote, &subsrc, &wtremote, &wt] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        git_in(&subremote, &["init", "-q", "--bare"]);
+        git_in(&subsrc, &["init", "-q"]);
+        git_in(&subsrc, &["remote", "add", "origin", subremote.to_str().unwrap()]);
+        std::fs::write(subsrc.join("f.txt"), "a").unwrap();
+        git_in(&subsrc, &["add", "f.txt"]);
+        git_in(&subsrc, &["commit", "-q", "-m", "A"]);
+        let a = git_out(&subsrc, &["rev-parse", "HEAD"]);
+        git_in(&subsrc, &["push", "-q", "origin", "HEAD:refs/heads/main"]);
+        git_in(&subsrc, &["commit", "-q", "--allow-empty", "-m", "B"]);
+        git_in(&subsrc, &["push", "-q", "origin", "HEAD:refs/heads/main"]);
+        git_in(&wtremote, &["init", "-q", "--bare"]);
+        git_in(&wt, &["init", "-q"]);
+        git_in(&wt, &["remote", "add", "origin", wtremote.to_str().unwrap()]);
+        git_in(&wt, &["-c", "protocol.file.allow=always", "submodule", "add", "-q", "-b", "main", subremote.to_str().unwrap(), "sub"]);
+        git_in(&wt, &["commit", "-q", "-m", "add sub"]);
+        git_in(&wt, &["push", "-q", "origin", "HEAD:refs/heads/main"]);
+        let sub = wt.join("sub");
+        git_in(&sub, &["checkout", "-q", &a]);
+        assert_eq!(git_out(&wt, &["status", "--porcelain"]), "M sub", "the fixture must show pure gitlink drift");
+        (dir, wt, sub, a)
+    }
+
+    /// GH #943: submodule checkout drift whose commit is on a remote branch is not unsaved work; the archive lists it.
+    #[test]
+    fn archive_passes_pure_submodule_drift_gh943() {
+        let (dir, wt, _sub, a) = drifted("archive-drift");
+        let d = desc_of(&wt);
+        let (refusal, drift) = unsafe_work(true, "ws-1", Some(&d), None);
+        assert!(refusal.is_none(), "pure gitlink drift must not refuse: {:?}", refusal.map(|r| r.stdout));
+        assert_eq!(drift, vec![("sub".to_string(), a)]);
+        crate::discard::harmless(std::fs::remove_dir_all(dir)); // keep: cleanup of a scratch directory
+    }
+
+    /// GH #943: the switch off restores the old verdict (the ` M sub` entry is uncommitted changes).
+    #[test]
+    fn archive_refuses_submodule_drift_when_the_switch_is_off_gh943() {
+        let (dir, wt, _sub, _a) = drifted("archive-drift-off");
+        let d = desc_of(&wt);
+        let (refusal, drift) = unsafe_work(false, "ws-1", Some(&d), None);
+        let r = OVal::parse(refusal.expect("switch off refuses").stdout.trim()).unwrap();
+        assert_eq!(r.get("dirty"), Some(&OVal::Bool(true)));
+        assert!(drift.is_empty());
+        crate::discard::harmless(std::fs::remove_dir_all(dir)); // keep: cleanup of a scratch directory
+    }
+
+    /// GH #943: a submodule with a tracked edit or an untracked file holds unsaved work and refuses.
+    #[test]
+    fn archive_refuses_a_submodule_with_uncommitted_edits_gh943() {
+        let (dir, wt, sub, _a) = drifted("archive-drift-edit");
+        let d = desc_of(&wt);
+        std::fs::write(sub.join("f.txt"), "edited").unwrap();
+        assert!(unsafe_work(true, "ws-1", Some(&d), None).0.is_some(), "a tracked edit inside the submodule refuses");
+        git_in(&sub, &["checkout", "-q", "--", "f.txt"]);
+        assert!(unsafe_work(true, "ws-1", Some(&d), None).0.is_none(), "reverted: drift again");
+        std::fs::write(sub.join("new.txt"), "x").unwrap();
+        assert!(unsafe_work(true, "ws-1", Some(&d), None).0.is_some(), "an untracked file inside the submodule refuses");
+        crate::discard::harmless(std::fs::remove_dir_all(dir)); // keep: cleanup of a scratch directory
+    }
+
+    /// GH #943: a submodule HEAD at a commit no remote branch has refuses.
+    #[test]
+    fn archive_refuses_a_submodule_at_an_unpushed_commit_gh943() {
+        let (dir, wt, sub, _a) = drifted("archive-drift-unpushed");
+        let d = desc_of(&wt);
+        git_in(&sub, &["checkout", "-q", "-b", "local"]);
+        git_in(&sub, &["commit", "-q", "--allow-empty", "-m", "local only"]);
+        assert!(unsafe_work(true, "ws-1", Some(&d), None).0.is_some(), "an unpushed submodule commit refuses");
+        crate::discard::harmless(std::fs::remove_dir_all(dir)); // keep: cleanup of a scratch directory
+    }
+
+    /// GH #943: a real edit in the superproject refuses even next to pure drift; a submodule git cannot read refuses too.
+    #[test]
+    fn archive_refuses_a_real_edit_beside_drift_and_an_unreadable_submodule_gh943() {
+        let (dir, wt, sub, _a) = drifted("archive-drift-real");
+        let d = desc_of(&wt);
+        std::fs::write(wt.join("wip.txt"), "x").unwrap();
+        assert!(unsafe_work(true, "ws-1", Some(&d), None).0.is_some(), "an untracked file in the superproject refuses");
+        std::fs::remove_file(wt.join("wip.txt")).unwrap();
+        assert!(unsafe_work(true, "ws-1", Some(&d), None).0.is_none());
+        std::fs::write(sub.join(".git"), "gitdir: /nonexistent\n").unwrap(); // the submodule's link to its git dir is broken: git cannot read it
+        assert!(unsafe_work(true, "ws-1", Some(&d), None).0.is_some(), "an unreadable submodule fails safe");
+        crate::discard::harmless(std::fs::remove_dir_all(dir)); // keep: cleanup of a scratch directory
+    }
+
+    /// GH #943 (review): drifted, pushed submodule `sub` records a nested submodule `b` at the commit b's own HEAD is at. `git status` in
+    /// `sub` does not list `b`, so only an enumeration of its gitlinks can see whether that commit was pushed.
+    fn nested(tag: &str, pushed: bool) -> (std::path::PathBuf, std::path::PathBuf) {
+        let (dir, wt, sub, _a) = drifted(tag);
+        let (subsrc, bremote, bsrc) = (dir.join("subsrc"), dir.join("b.git"), dir.join("bsrc"));
+        for d in [&bremote, &bsrc] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        git_in(&bremote, &["init", "-q", "--bare"]);
+        git_in(&bsrc, &["init", "-q"]);
+        git_in(&bsrc, &["remote", "add", "origin", bremote.to_str().unwrap()]);
+        git_in(&bsrc, &["commit", "-q", "--allow-empty", "-m", "B1"]);
+        git_in(&bsrc, &["push", "-q", "origin", "HEAD:refs/heads/main"]);
+        git_in(&subsrc, &["-c", "protocol.file.allow=always", "submodule", "add", "-q", "-b", "main", bremote.to_str().unwrap(), "b"]);
+        let b = subsrc.join("b");
+        git_in(&b, &["commit", "-q", "--allow-empty", "-m", "B2"]);
+        let b2 = git_out(&b, &["rev-parse", "HEAD"]);
+        if pushed {
+            git_in(&b, &["push", "-q", "origin", "HEAD:refs/heads/main"]);
+        }
+        git_in(&subsrc, &["add", "b"]);
+        git_in(&subsrc, &["commit", "-q", "-m", "C"]);
+        let c = git_out(&subsrc, &["rev-parse", "HEAD"]);
+        git_in(&subsrc, &["push", "-q", "origin", "HEAD:refs/heads/main"]);
+        git_in(&sub, &["fetch", "-q", "origin"]);
+        git_in(&sub, &["checkout", "-q", &c]);
+        let nb = sub.join("b");
+        std::fs::create_dir_all(&nb).unwrap();
+        git_in(&nb, &["init", "-q"]);
+        if pushed {
+            git_in(&nb, &["remote", "add", "origin", bremote.to_str().unwrap()]);
+            git_in(&nb, &["fetch", "-q", "origin"]);
+        } else {
+            git_in(&nb, &["fetch", "-q", b.to_str().unwrap(), &b2]); // by path: no remote-tracking ref records it
+        }
+        git_in(&nb, &["checkout", "-q", &b2]);
+        assert_eq!(git_out(&wt, &["status", "--porcelain"]), "M sub", "still pure drift of sub");
+        assert_eq!(git_out(&sub, &["status", "--porcelain"]), "", "status inside sub does not list b");
+        (dir, wt)
+    }
+
+    #[test]
+    fn archive_checks_nested_submodules_that_status_does_not_list_gh943() {
+        let (dir, wt) = nested("archive-nested-unpushed", false);
+        assert!(unsafe_work(true, "ws-1", Some(&desc_of(&wt)), None).0.is_some(), "a nested submodule at an unpushed commit refuses");
+        crate::discard::harmless(std::fs::remove_dir_all(dir)); // keep: cleanup of a scratch directory
+        let (dir, wt) = nested("archive-nested-pushed", true);
+        let (refusal, drift) = unsafe_work(true, "ws-1", Some(&desc_of(&wt)), None);
+        assert!(refusal.is_none(), "a pushed nested submodule passes: {:?}", refusal.map(|r| r.stdout));
+        assert_eq!(drift.len(), 1);
         crate::discard::harmless(std::fs::remove_dir_all(dir)); // keep: cleanup of a scratch directory
     }
 }

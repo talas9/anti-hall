@@ -3,6 +3,15 @@
 // switches and texts: session.toml (session.*).
 'use strict';
 var sess = {
+  // The session heartbeat proves the agent-wake half only. Mailbox coverage requires its workspace lock.
+  wakeWatchLive: function (home, sid, now) {
+    if (!home || !sid) return false;
+    var paths = ah.cfg('agent_tracker.paths');
+    var key = String(sid).slice(0, ah.cfgNum('agent_reminders.key_max')).replace(/[^A-Za-z0-9_.-]/g, '_');
+    var stamp = ah.fs.mtimeMs(home + '/' + paths.base + '/' + paths.dir + '/' + paths.wake + '/' + key + paths.armed_ext);
+    var age = now - stamp;
+    return stamp !== null && isFinite(age) && age >= 0 && age <= ah.cfg('agent_tracker.limits').stale_lock_ms;
+  },
   // The silent no-op of every hook inside the judge child (judge-child-exit.js).
   judgeChild: function () { return ah.env.get(ah.cfg('session.judge_child_env')) === ah.cfg('session.judge_child_on'); },
   // The plugin root the dispatcher names (opts.plugin_root, else the environment), resolved to its real path; null when unknown.

@@ -6,6 +6,8 @@
 mod live;
 mod rules;
 mod scan;
+#[cfg(test)]
+mod tests;
 
 use crate::cli::Parsed;
 use crate::defaults;

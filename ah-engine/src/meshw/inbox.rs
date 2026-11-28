@@ -18,7 +18,7 @@ use crate::meshw::cursors::{self, LogRec, Procs};
 use crate::meshw::ident::{self, R};
 use crate::meshw::idlock::{devswarm_root, is_safe_id};
 use crate::meshw::readprimary::store_err;
-use crate::meshw::send::{Answer, Effect, mesh_candidates, rehome_is_noop, resolve_mesh_target};
+use crate::meshw::send::{Answer, Effect, rehome_is_noop, resolve_mesh_target};
 use crate::meshw::union;
 use std::path::{Path, PathBuf};
 
@@ -398,18 +398,18 @@ pub(crate) fn plan_ack(inv: &Inv, id: &str, rid: &str, ack_as_owner: bool, fresh
     rehome_is_noop(inv, id)?;
     let st = common::open_store(inv, &repo_key)?;
     let rows = ident::rows_of(&st.reader().roster().map_err(|e| store_err("registry", e))?);
-    // canonicalReceiptId: the lowest id of the worktree's identity family, else the literal id (any failure is Node's catch)
+    // the directory a receipt is filed under: the SAME meshgroup::resolve result read-primary files it with (lowest id of the group,
+    // grouped by the registry row's worktree, else the descriptor's), else the literal id (any failure falls back to it)
     let dir_id = (|| -> R<String> {
-        if let Some(d) = &desc
-            && let Some(OVal::Str(wt)) = d.get(defaults::text("mesh_write.field_worktree_path")).filter(|w| w.truthy())
-            && let Some(mesh) = ident::canonical_mesh_id(wt)?
-        {
-            let mut ids: Vec<String> = mesh_candidates(&rows, Some(mesh.as_str()))?.into_iter().map(|r| r.id).collect();
+        let desc_wt = desc.as_ref().and_then(|d| match d.get(defaults::text("mesh_write.field_worktree_path")) {
+            Some(OVal::Str(w)) if !w.is_empty() => Some(w.clone()),
+            _ => None,
+        });
+        let g = crate::meshw::meshgroup::resolve(&rows, id, crate::meshw::meshgroup::worktree_of(&rows, id, desc_wt.as_deref()).as_deref())?;
+        if g.active {
+            let mut ids = g.ids;
             ids.sort();
-            ids.dedup();
-            if ids.len() > 1 && ids.iter().any(|x| x == id) {
-                return Ok(ids.remove(0));
-            }
+            return Ok(ids.remove(0));
         }
         Ok(id.to_string())
     })()
@@ -467,7 +467,7 @@ pub(crate) fn plan_ack(inv: &Inv, id: &str, rid: &str, ack_as_owner: bool, fresh
         }
     }
     if !ack_as_owner {
-        let caller = ident::caller_identity_detailed(&inv.env, &inv.cwd)?;
+        let caller = ident::caller_identity_for(&inv.env, &inv.cwd, &inv.home)?;
         let own_entry = resolve_mesh_target(inv, None, &rows, Some(caller.identity.as_str()))?;
         let owns = caller.identity == id
             || own_entry.as_ref().is_some_and(|e| e.id == id)
@@ -652,6 +652,19 @@ pub(crate) fn apply_ack(inv: &Inv, plan: AckPlan) -> Obj {
             AckOp::Nd(o) => apply_nd(inv, &st, id, reader.as_deref(), nonce.clone(), &repo_key, o, verb, &mut procs, &mut failures),
         }
     }
+    // GH #845 (contract §6): the `bc` ops move the reader's own broadcast cursor through the delivered boundary, before the summary
+    // is derived so the broadcast wake state follows
+    let mut bc_cursor: Option<i64> = None;
+    let key = crate::meshw::read::reader_key(st.reader(), inv, id);
+    for (who, target) in broadcast_ops(&rec) {
+        if who != id && who != key {
+            continue; // only the reader's own cursor: a receipt never moves another workspace's broadcasts
+        }
+        match crate::meshw::read::ack_broadcasts(&st, &key, target) {
+            Ok(moved) => bc_cursor = moved.or(bc_cursor),
+            Err(ident::Defer(reason)) => failures.push(failure(&who, defaults::text("mesh_wake.channel_broadcast_cursor"), &reason)),
+        }
+    }
     if let Some(why) = crate::meshw::summary::derive_after_write(&st, inv, &repo_key) {
         crate::meshw::log_summary_failure(verb, &why);
     }
@@ -685,7 +698,23 @@ pub(crate) fn apply_ack(inv: &Inv, plan: AckPlan) -> Obj {
     if !failures.is_empty() {
         out.put("cursorWriteFailures", OVal::Arr(failures)).put("cursorPersisted", OVal::Bool(false));
     }
+    if let Some(c) = bc_cursor {
+        out.put(defaults::text("mesh_wake.key_broadcast_cursor"), n(c as f64));
+    }
     out
+}
+
+/// GH #845 (contract §6): the `bc` ops of a receipt, as (reader, target seq). An op of another shape is skipped (an old reader skips
+/// the whole kind the same way, which leaves the broadcasts unread: never acked unseen).
+fn broadcast_ops(rec: &OVal) -> Vec<(String, i64)> {
+    let Some(OVal::Arr(ops)) = rec.get("ops") else { return Vec::new() };
+    ops.iter()
+        .filter(|op| matches!(op.get("k"), Some(OVal::Str(k)) if k == defaults::text("mesh_write.op_broadcast")))
+        .filter_map(|op| match (op.get("reader"), op.get("target")) {
+            (Some(OVal::Str(r)), Some(OVal::Num(t))) if t.is_finite() && *t >= 0.0 && is_safe_id(r) => Some((r.clone(), *t as i64)),
+            _ => None,
+        })
+        .collect()
 }
 
 /// One `cursorWriteFailures` entry.

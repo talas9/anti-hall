@@ -36,8 +36,7 @@ can call by name. Together they stop the assistant from:
 - **flooding your main conversation**: heavy commands and file edits go to helper agents,
   and runaway agent spawning is capped.
 
-No Node.js is needed. There are no npm dependencies. It runs on macOS and Linux (including WSL on
-Windows). Everything it keeps stays on your machine, apart from one update check, which
+No Node.js is needed. There are no npm dependencies. It runs on macOS on Apple silicon; Linux (including WSL), Apple Intel and native Windows are coming soon. Everything it keeps stays on your machine, apart from one update check, which
 you can turn off ([details](#network-and-privacy)).
 
 <div class="grid cards" markdown>

@@ -288,6 +288,11 @@ fn absent_from_active_list(e: &Eng, id: &str, wt: &str) -> bool {
 /// engine only handles when the worktree cannot be under the app's root or the cache file is absent or unparsable.
 fn app_archived(e: &Eng, id: &str, wt: Option<&str>) -> R<bool> {
     let (verdict, _) = appdb::archived_verdict(&e.inv.home, &e.inv.env, e.inv.now, id, wt, false)?;
+    app_archived_after(e, id, wt, verdict)
+}
+
+/// [`app_archived`] once the app database has given its verdict (`None`: no opinion).
+fn app_archived_after(e: &Eng, id: &str, wt: Option<&str>, verdict: Option<bool>) -> R<bool> {
     if let Some(v) = verdict {
         return Ok(v);
     }
@@ -834,7 +839,7 @@ fn enrich(e: &Eng, rows: &mut Vec<Obj>, snap: &Option<Snap>) -> R<()> {
 
 /// The ghost-row fold: a `primary-<hash>` label folds into its canonical row, carrying its unread count and hints.
 fn fold(e: &Eng, rows: &mut Vec<Obj>, snap: &Option<&Snap>) -> R<()> {
-    let aliases = crate::meshw::common::read_aliases(&e.inv.home);
+    let aliases = crate::meshw::common::read_aliases(&e.inv.home, &e.inv.env);
     let present: HashSet<String> = rows.iter().filter_map(|r| str_field(r, "id").map(str::to_string)).collect();
     let mut by_id: HashMap<String, usize> = HashMap::new();
     for (i, r) in rows.iter().enumerate() {
@@ -891,16 +896,32 @@ fn fold(e: &Eng, rows: &mut Vec<Obj>, snap: &Option<&Snap>) -> R<()> {
 
 /// The row-state readers the Primary prompt hook needs apart from [`Verdicts`]: the app's verdict alone (`appArchivedVerdict`, then the
 /// supervisor's active-list cache), the ghost-label fold target, and the two activity windows.
-pub(crate) struct Windows<'a>(Eng<'a>);
+pub(crate) struct Windows<'a>(Eng<'a>, Option<&'a Option<Vec<appdb::State>>>);
 
 impl<'a> Windows<'a> {
     pub(crate) fn new(inv: &'a Inv, repo_key: &'a str) -> Windows<'a> {
-        Windows(Eng { inv, now: inv.now as f64, repo_key, dormant: std::cell::OnceCell::new(), active: std::cell::OnceCell::new() })
+        Windows(Eng { inv, now: inv.now as f64, repo_key, dormant: std::cell::OnceCell::new(), active: std::cell::OnceCell::new() }, None)
+    }
+
+    /// Answer [`Windows::app_archived`] from app database states the caller already read (`None`: no readable database) instead of
+    /// reading the database for every row. The caller owns the states' lifetime: one script call.
+    pub(crate) fn with_app_states(mut self, states: &'a Option<Vec<appdb::State>>) -> Windows<'a> {
+        self.1 = Some(states);
+        self
     }
 
     /// The app side of "archived" for a row.
     pub(crate) fn app_archived(&self, id: &str, wt: Option<&str>) -> R<bool> {
-        app_archived(&self.0, id, wt)
+        match self.1 {
+            Some(held) => {
+                let verdict = match held {
+                    Some(states) => appdb::verdict_in(states, id, wt)?,
+                    None => None,
+                };
+                app_archived_after(&self.0, id, wt, verdict)
+            }
+            None => app_archived(&self.0, id, wt),
+        }
     }
 
     /// `rosterFoldTarget(home, id, present, { aliases, appBuilderId })`.
@@ -1522,7 +1543,7 @@ mod tests {
     use std::os::unix::fs::PermissionsExt;
 
     fn scratch(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("ah-roster-{tag}-{}", std::process::id()));
+        let d = crate::testtmp::path(format!("ah-roster-{tag}-{}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&d)); // keep: a stale directory of an earlier run of this test
         std::fs::create_dir_all(&d).unwrap();
         d.canonicalize().unwrap()

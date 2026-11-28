@@ -207,12 +207,14 @@ impl Env {
         }
     }
 
-    pub fn spawn(&self, cmd: &mut Command) -> Child {
-        cmd.stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-            .expect("spawn ah-hook")
+    pub fn spawn(&self, cmd: &mut Command) -> Reaped {
+        Reaped::new(
+            cmd.stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::piped())
+                .spawn()
+                .expect("spawn ah-hook"),
+        )
     }
 }
 
@@ -254,4 +256,39 @@ pub fn pattern(len: usize) -> Vec<u8> {
     (0..len)
         .map(|i| (i.wrapping_mul(31) ^ (i >> 7)) as u8)
         .collect()
+}
+
+/// A child a test started, killed and waited for when it drops (also on a failed assertion), so no process a launcher test
+/// starts (the hook client, a bystander) outlives the test (#895). Derefs to the `Child`; `into_child` ends the guarding.
+pub struct Reaped(Option<Child>);
+
+impl Reaped {
+    pub fn new(c: Child) -> Reaped {
+        Reaped(Some(c))
+    }
+    pub fn into_child(mut self) -> Child {
+        self.0.take().expect("child present until into_child")
+    }
+}
+
+impl std::ops::Deref for Reaped {
+    type Target = Child;
+    fn deref(&self) -> &Child {
+        self.0.as_ref().expect("child present until into_child")
+    }
+}
+
+impl std::ops::DerefMut for Reaped {
+    fn deref_mut(&mut self) -> &mut Child {
+        self.0.as_mut().expect("child present until into_child")
+    }
+}
+
+impl Drop for Reaped {
+    fn drop(&mut self) {
+        if let Some(mut c) = self.0.take() {
+            let _ = c.kill();
+            let _ = c.wait();
+        }
+    }
 }

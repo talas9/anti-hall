@@ -2,8 +2,8 @@
 //!
 //! Mirrors `task-guard.js` `parseTasksFromFile` (variant [`Variant::Guard`]) and `lib/task-state.js` `reconstructTasks`
 //! (variant [`Variant::State`]). The two differ in: the State variant skips lines that do not contain `Task` or `TodoWrite`
-//! before parsing them, keeps and updates a task's description and subject, and builds its end-of-scan records differently;
-//! the Guard variant parses every line. Both keep a list epoch (a numbering restart, a `TaskList` that says "No tasks
+//! before parsing them and builds its end-of-scan records differently; the Guard variant parses every line. Both retain
+//! descriptions for owner-decision markers and keep a list epoch (a numbering restart, a `TaskList` that says "No tasks
 //! found", a TodoWrite) and drop a single id the harness reports as not found.
 use super::{
     Since, Task, TaskMap, Unknown, Variant, blocked_by_after_update, create_blocked_on, has_blocked_on_update, has_priority_update, is_non_string_status,
@@ -28,6 +28,15 @@ pub struct Facts {
     pub window_reset: bool,
     /// The lowest task number created inside the window (`Infinity` when none).
     pub first_created: f64,
+    /// The task ids the window found "not found" (a `TaskGet` or `TaskUpdate` answered so), in the order met, each once. A reader that
+    /// keeps tasks from before the window (the task snapshot) must drop these: the window's own list no longer holds them, but that
+    /// is not the same as never having seen them.
+    pub deleted: Vec<String>,
+    /// The task numbers the window's `TaskCreate` results named (after the last list reset), in order, each once.
+    pub created: Vec<String>,
+    /// For each number in `created`, the tool-use id of the `TaskCreate` that made it (the first met, as `created` is): the identity of
+    /// that create. A re-read of the same transcript bytes names the same tool-use id; a new list numbered from one again names another.
+    pub created_by: Vec<(String, String)>,
 }
 
 struct Res {
@@ -185,10 +194,17 @@ pub fn reconstruct(lines: &[&str], variant: Variant) -> R<Facts> {
     let mut group_base = 0f64;
     let mut window_reset = false;
     let mut first_created = f64::INFINITY;
+    let mut deleted: Vec<String> = Vec::new();
     let mut calls: HashMap<String, Call> = HashMap::new();
     let mut unsure = false;
+    let mut skipped = 0u64;
 
-    for line in lines {
+    let every = defaults::num("taskstate.cut_check_lines").max(1) as usize;
+    for (n, line) in lines.iter().enumerate() {
+        // #763: a cut call stops here and the reconstruction is unsure (an error is never kept as the whole window's answer)
+        if n.is_multiple_of(every) && crate::deadline::cut_due() {
+            return Err(Unsure);
+        }
         let t = js_trim(line);
         if t.is_empty() {
             continue;
@@ -207,6 +223,10 @@ pub fn reconstruct(lines: &[&str], variant: Variant) -> R<Facts> {
         // `entry.type` on a JSON `null` throws in JavaScript.
         if entry.is_null() {
             unsure = true;
+            continue;
+        }
+        if !super::is_conversation_row(&entry) {
+            skipped += 1;
             continue;
         }
         if get(&entry, "type").and_then(Value::as_str) == Some("user") {
@@ -230,6 +250,9 @@ pub fn reconstruct(lines: &[&str], variant: Variant) -> R<Facts> {
                     && let Some(bad) = call.and_then(|c| c.task_id.clone())
                 {
                     tasks.delete(&bad);
+                    if !deleted.contains(&bad) {
+                        deleted.push(bad.clone());
+                    }
                     let drop: Vec<String> = result_ids.iter().filter(|(_, nid)| *nid == bad).map(|(tid, _)| tid.clone()).collect();
                     for tid in drop {
                         result_ids.retain(|(k, _)| *k != tid);
@@ -307,7 +330,7 @@ pub fn reconstruct(lines: &[&str], variant: Variant) -> R<Facts> {
                                     Task {
                                         id: id.clone(),
                                         content,
-                                        description: String::new(),
+                                        description: get(todo, "description").and_then(Value::as_str).unwrap_or_default().to_string(),
                                         status: Some(kept_status(get(todo, "status"))?.unwrap_or_else(|| "pending".to_string())),
                                         owner: norm_owner(get(todo, "owner")),
                                         blocked_by: norm_blocked_by(get(todo, "blockedBy"))?,
@@ -317,6 +340,7 @@ pub fn reconstruct(lines: &[&str], variant: Variant) -> R<Facts> {
                                         unknown: None,
                                         block_unknown: false,
                                         since,
+                                        blocked_on_at: Since::Unknown,
                                     },
                                 );
                             }
@@ -343,7 +367,7 @@ pub fn reconstruct(lines: &[&str], variant: Variant) -> R<Facts> {
                         let rec = Prov {
                             content: scalar_string(content_v)?,
                             description: match get(inp, "description") {
-                                Some(Value::String(s)) if variant == Variant::State => s.clone(),
+                                Some(Value::String(s)) => s.clone(),
                                 _ => String::new(),
                             },
                             status: kept_status(get(inp, "status"))?.unwrap_or_else(|| "pending".to_string()),
@@ -371,13 +395,9 @@ pub fn reconstruct(lines: &[&str], variant: Variant) -> R<Facts> {
                             id: ex.id.clone(),
                             // a rename counts in both variants: a task is listed by its current subject, not the one it was created with
                             content: subject.map_or_else(|| ex.content.clone(), str::to_string),
-                            description: if variant == Variant::State {
-                                match get(inp, "description") {
-                                    Some(Value::String(s)) => s.clone(),
-                                    _ => ex.description.clone(),
-                                }
-                            } else {
-                                String::new()
+                            description: match get(inp, "description") {
+                                Some(Value::String(s)) => s.clone(),
+                                _ => ex.description.clone(),
                             },
                             status,
                             owner: if get(inp, "owner").is_some() { norm_owner(get(inp, "owner")) } else { ex.owner.clone() },
@@ -393,6 +413,7 @@ pub fn reconstruct(lines: &[&str], variant: Variant) -> R<Facts> {
                             block_unknown: false,
                             // `String(inp.status || '')` against the pending / in-progress pattern
                             since: if guard && res().since_status.is_match(&status_text(get(inp, "status"))?) { since } else { ex.since },
+                            blocked_on_at: if guard && has_blocked_on_update(inp) { since } else { ex.blocked_on_at },
                         };
                         tasks.set(&id, upd);
                     }
@@ -413,7 +434,16 @@ pub fn reconstruct(lines: &[&str], variant: Variant) -> R<Facts> {
             unsure = true;
         }
     }
-    Ok(Facts { tasks, window_reset, first_created, unsure })
+    let mut created: Vec<String> = Vec::new();
+    let mut created_by: Vec<(String, String)> = Vec::new();
+    for (use_id, digits) in &result_ids {
+        if !created.contains(digits) {
+            created.push(digits.clone());
+            created_by.push((digits.clone(), use_id.clone()));
+        }
+    }
+    super::note_rows_skipped(skipped);
+    Ok(Facts { tasks, window_reset, first_created, unsure, deleted, created, created_by })
 }
 
 /// `todo.blockedOn` as the TodoWrite record reads it: `todo.metadata.blockedOn` when not null, else `todo.blockedOn`.
@@ -448,8 +478,12 @@ fn resolve_provisional(tasks: &mut TaskMap, prov: &[(String, Prov)], result_ids:
         {
             // `if (!(existing.sinceMs >= rec.sinceMs)) existing.sinceMs = rec.sinceMs`: the object in the map is the one changed
             e.since = e.since.merge_create(rec.since);
+            if e.description.is_empty() {
+                e.description = rec.description.clone();
+            }
             if let Some(t) = tasks.get_mut(&key) {
                 t.since = e.since;
+                t.description = e.description.clone();
             }
         }
         match (variant, ex) {
@@ -458,7 +492,7 @@ fn resolve_provisional(tasks: &mut TaskMap, prov: &[(String, Prov)], result_ids:
                 Task {
                     id: key.clone(),
                     content: rec.content.clone(),
-                    description: if variant == Variant::State { rec.description.clone() } else { String::new() },
+                    description: rec.description.clone(),
                     status: Some(rec.status.clone()),
                     owner: rec.owner.clone(),
                     blocked_by: rec.blocked_by.clone(),
@@ -468,6 +502,7 @@ fn resolve_provisional(tasks: &mut TaskMap, prov: &[(String, Prov)], result_ids:
                     unknown: None,
                     block_unknown: false,
                     since: rec.since,
+                    blocked_on_at: Since::Unknown,
                 },
             ),
             (Variant::Guard, Some(e)) => {
@@ -478,7 +513,7 @@ fn resolve_provisional(tasks: &mut TaskMap, prov: &[(String, Prov)], result_ids:
                             id: key.clone(),
                             // a subject an update set is newer than the create's
                             content: if e.subject_updated { e.content.clone() } else { rec.content.clone() },
-                            description: String::new(),
+                            description: if e.description.is_empty() { rec.description.clone() } else { e.description.clone() },
                             status: e.status.clone(),
                             owner: if e.owner.is_empty() { rec.owner.clone() } else { e.owner.clone() },
                             blocked_by: if e.blocked_by.is_empty() { rec.blocked_by.clone() } else { e.blocked_by.clone() },
@@ -488,6 +523,7 @@ fn resolve_provisional(tasks: &mut TaskMap, prov: &[(String, Prov)], result_ids:
                             unknown: None,
                             block_unknown: false,
                             since: e.since,
+                            blocked_on_at: e.blocked_on_at,
                         },
                     );
                 }
@@ -509,6 +545,7 @@ fn resolve_provisional(tasks: &mut TaskMap, prov: &[(String, Prov)], result_ids:
                             unknown: None,
                             block_unknown: false,
                             since: Since::Unknown,
+                            blocked_on_at: Since::Unknown,
                         },
                     );
                 }

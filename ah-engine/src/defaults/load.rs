@@ -97,9 +97,19 @@ fn print_of(text: &str) -> Print {
     [run(0), run(1)]
 }
 
+/// Leak `s` once per distinct text: a reload that changes an entry re-reads its unchanged key, file, doc, env and unit, and
+/// those are the allocations already held, not a second copy (#171). Only text not seen before counts as leaked.
 fn leak_str(s: &str) -> &'static str {
+    static SEEN: std::sync::Mutex<Option<std::collections::HashSet<&'static str>>> = std::sync::Mutex::new(None);
+    let mut g = SEEN.lock().unwrap_or_else(|e| e.into_inner());
+    let set = g.get_or_insert_with(Default::default);
+    if let Some(have) = set.get(s) {
+        return have;
+    }
     crate::mem::note_leak(s.len());
-    Box::leak(s.to_string().into_boxed_str())
+    let leaked: &'static str = Box::leak(s.to_string().into_boxed_str());
+    set.insert(leaked);
+    leaked
 }
 
 /// Leak `v` for the life of the process (the values are `'static`), recording its size with the memory registry.
@@ -313,7 +323,7 @@ impl Dirs {
 fn stamp(root: &Path) -> String {
     let manifest = std::fs::read_to_string(root.join(bootstrap::PLUGIN_MANIFEST)).ok().and_then(|t| serde_json::from_str::<Json>(&t).ok());
     let version = manifest.as_ref().and_then(|m| m.get("version")).and_then(Json::as_str).unwrap_or("-").to_string();
-    format!("{}\t{}\t{version}", env!("CARGO_PKG_VERSION"), root.display())
+    format!("{}\t{}\t{version}", crate::crate_version(), root.display())
 }
 
 /// The subdirectory of the last-known-good base that holds the copy for `stamp`.
@@ -873,7 +883,7 @@ const END: &str = "AHDC-END";
 
 /// Write `data` to `path` atomically (a temporary file in the same directory, then a rename). Entries are sorted by key.
 pub fn write_cache(data: &Data, path: &Path) -> std::io::Result<()> {
-    let mut out = format!("{MAGIC}\t{}\t{}\t{}\n", env!("CARGO_PKG_VERSION"), data.print, data.root.display());
+    let mut out = format!("{MAGIC}\t{}\t{}\t{}\n", crate::crate_version(), data.print, data.root.display());
     for (key, e) in &data.index {
         let mut o = serde_json::Map::new();
         o.insert("v".into(), e.value.to_json());
@@ -958,7 +968,7 @@ impl Lazy {
         let text = std::fs::read_to_string(path).ok()?;
         let (head, rest) = text.split_once('\n')?;
         let mut f = head.splitn(4, '\t');
-        if f.next()? != MAGIC || f.next()? != env!("CARGO_PKG_VERSION") {
+        if f.next()? != MAGIC || f.next()? != crate::crate_version() {
             return None;
         }
         let print = f.next()?;
@@ -1103,7 +1113,7 @@ mod tests {
                 }
             }
         }
-        let base = std::env::temp_dir().join(format!("ah-defaults-load-{tag}-{}", std::process::id()));
+        let base = crate::testtmp::path(format!("ah-defaults-load-{tag}-{}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&base));
         let root = base.join("plugin");
         let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall");

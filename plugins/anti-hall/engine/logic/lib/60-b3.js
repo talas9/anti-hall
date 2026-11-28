@@ -23,6 +23,8 @@ ah.fs.readTail = function (p, window) { return ahNull(ahHost.readTail(p, window)
 // Whether that window holds one of `needles`, or its lower-cased text one of `lowerNeedles` (already lower case): null when unreadable.
 ah.fs.tailHasAny = function (p, window, needles, lowerNeedles) { return ahNull(ahHost.tailHasAny(p, window, needles || [], lowerNeedles || [])); };
 ah.fs.tailLines = function (p, window, crlf, needles) { return ahNull(ahHost.tailLines(p, window, !!crlf, needles || [])); };
+// The same lines, newest first, at most `max` of them (0 = all): for a script that wants only the newest of some kind.
+ah.fs.tailLinesNewest = function (p, window, crlf, needles, max) { return ahNull(ahHost.tailLinesNewest(p, window, !!crlf, needles || [], max || 0)); };
 ah.text = { maskQuoted: function (t) { return ahHost.maskQuoted(t); } };
 Object.assign(ah.jev, {
   mode: function (id) { return ahHost.jevMode(id); },

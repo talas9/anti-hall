@@ -1,7 +1,7 @@
 // check = "task-tracker" (UserPromptSubmit; the Claude and the Codex entry). On every prompt the hook keeps the task-list discipline in
-// front of the model without repeating it every turn: the full directive on the first prompt of a session, again when its window
-// elapses or the transcript has grown by the growth threshold, a short reminder in between that the injection keepalive rations, plus
-// one line about the open tasks. It also asks Jev (integration `newRequest`) to label the prompt, and scores the previous turn's
+// front of the model without repeating it: the full directive once per context epoch (the first prompt of a session and the first one after
+// a context loss), a short reminder only on evidence (a substantive prompt while no task is open; rationed by untracked_prompts), and, only
+// while task_tracker.lines_setting is on, one line about the open tasks and the per-turn DISPATCH NOW line (the engine tick judges negligence). It also asks Jev (integration `newRequest`) to label the prompt, and scores the previous turn's
 // dispatch demand, and names the tasks nobody is on in the per-turn DISPATCH NOW line (annotated with the cached dispatchTier verdict of
 // Jev). First everything is read and decided, and every point at which this script cannot answer exactly is counted and decided
 // natively (a payload, a state file or a transcript timestamp in a shape only V8 reads); only then the effects are performed, in Node's order: the Jev ask, the
@@ -15,7 +15,16 @@
 // task_tracker.toml (task_tracker.*), task_guards.toml (taskstate.*, dispatch_tier.*).
 'use strict';
 
-function ttT(k) { return ah.cfg('task_tracker.' + k); }
+// Every text is read from its own key, whatever the switch says, so an edit of that key (the owner's or a shipped default's) is always honoured.
+// context.taskTrackerTerse (when on) only changes which wording an UNEDITED key has: a key still holding its stock value (stock_texts) reads as
+// terse_texts says; any other value is used as written.
+function ttT(k) {
+  var v = ah.cfg('task_tracker.' + k);
+  var stock = ah.cfg('task_tracker.stock_texts');
+  if (typeof stock[k] !== 'string' || v !== stock[k] || !ah.settings.bool('task_tracker.terse_setting')) return v;
+  var terse = ah.cfg('task_tracker.terse_texts');
+  return typeof terse[k] === 'string' ? terse[k] : v;
+}
 function ttN(k) { return ah.cfgNum('task_tracker.' + k); }
 
 function ttShort() { return text.message('tip', ttT('guard_name'), { what: ttT('what_short') }); }
@@ -24,14 +33,16 @@ function ttShort() { return text.message('tip', ttT('guard_name'), { what: ttT('
 // plan list where the Claude text names the task tool.
 function ttFull(codex) {
   var fullLevel = ah.settings.enum('orch_state.protocol_setting') === ttT('full_level');
-  var m = text.message('tip', ttT('guard_name'), { what: ttT('what_full'), instead: ttT('instead_head') + (fullLevel ? ttT('non_blocking') : '') + ttT('instead_tail') });
+  var m = text.message('order', ttT('guard_name'), { what: ttT('what_full'), instead: ttT('instead_head') + (fullLevel ? ttT('non_blocking') : '') + ttT('instead_tail') });
   return codex ? m.replace(ttT('codex_from'), ttT('codex_to')) : m;
 }
 
 function ttFinite(v) { return typeof v === 'number' && isFinite(v); }
 
-// `pickMessage`: read the state of this session and choose; nothing is written here. {full: bool, size}.
-function ttPick(home, rel, tp, now) {
+// `pickMessage`: read the state of this session and choose; nothing is written here. {full: bool, size}. The full directive goes out once
+// per context epoch: the first prompt of the session, and the first one after a context loss (the SessionStart reset marker of the
+// emit-dedupe store, written on /compact, resume, clear and startup, is newer than the last directive). No clock window, no growth rule.
+function ttPick(home, rel, tp, now, dsid) {
   var size = tp !== null ? ah.fs.size(tp) : null;
   if (size === null) size = -1;
   var lastFull = 0, lastSize = -1;
@@ -48,11 +59,12 @@ function ttPick(home, rel, tp, now) {
       }
     }
   }
-  var fresh = now - lastFull < ttN('window_ms');
-  // a transcript that grows by the threshold on every turn would re-send the full directive each turn: growth re-sends it only once the
-  // minimum gap since the last full directive has passed (the window still re-sends it on expiry)
-  var grew = size >= 0 && lastSize >= 0 && size - lastSize >= ttN('growth_bytes') && now - lastFull >= ttN('growth_min_gap_ms');
-  return { full: !(fresh && !grew), size: size };
+  var resetAt = 0;
+  if (typeof dsid === 'string' && dsid !== '' && !dedupe.disabled()) {
+    var rk = dedupe.readState(dedupe.stateRel(dsid))[ah.cfg('emit_dedupe.reset_key')];
+    if (rk && ttFinite(rk.resetAt)) resetAt = rk.resetAt;
+  }
+  return { full: lastFull === 0 || lastFull < resetAt, size: size, lastFull: lastFull, lastSize: lastSize };
 }
 
 // The Jev ask for a prompt (`askDetached` of integration `newRequest`): the spec (a cut through a surrogate pair drops the half pair).
@@ -75,8 +87,33 @@ function ttJevSpec(p, prompt, sessionRaw) {
 // `isOwnerBlocked(t)`: a task waiting on the owner (the `blockedOn` marker or an `OWNER:` subject) is not work the agent can close.
 function ttOwnerBlocked(t) {
   if (!ah.settings.bool('dispatch_tier.owner_marker_setting')) return false;
-  if (ah.cfg('dispatch_tier.owner_values').indexOf(tk.blockedOnText(t)) >= 0) return true;
+  if (tk.ownerHeld(t)) return true;
   return new RegExp(ah.cfg('dispatch_tier.owner_subject_re'), 'i').test(t.content);
+}
+
+// A task the demand line never names: any `blockedOn` value (the documented key, whoever it names) or a status that says it waits.
+function ttHeld(t) {
+  if (!ah.settings.bool('task_tracker.held_setting')) return false;
+  if (tk.blockedOnText(t) !== '') return true;
+  return new RegExp(ttT('held_status_re'), 'i').test(String(t.status || ''));
+}
+
+// Words of a task that name files (a path or a file name), lowercased.
+function ttFileTokens(t) {
+  var src = String(t.content || '') + ' ' + String(t.description || ''), out = [], m, re = new RegExp(ttT('file_token_re'), 'g');
+  while ((m = re.exec(src)) !== null) { out.push(m[0].toLowerCase()); if (m[0].length === 0) re.lastIndex++; }
+  return out;
+}
+
+// The text of the running agents (description and spawn prompt), lowercased, for the file-conflict test.
+function ttAgentTexts(tp, rows) {
+  var ids = {}, texts = [];
+  rows.forEach(function (r) { ids[r.id] = true; texts.push(String(r.description || '').toLowerCase()); });
+  var w = ah.transcript.agentsWindow(tp);
+  if (w !== null && !w.unsure && w.rows) w.rows.forEach(function (a) {
+    if (ids[a.id] && a.spawnInput && typeof a.spawnInput.prompt === 'string') texts.push(a.spawnInput.prompt.toLowerCase());
+  });
+  return texts;
 }
 
 // `classifyOpen(open, taskMap)`: the pending, unowned (or coordinator-owned) tasks no open blocker holds back.
@@ -88,9 +125,30 @@ function ttActionable(open, tasks) {
     if (tk.statusLc(t) !== ttT('pending_status') || t.blockUnknown) return;
     if (t.owner && !mainOwner.test(t.owner)) return;
     if (ttOwnerBlocked(t)) return;
+    if (ttHeld(t)) return;
     if ((t.blockedBy || []).some(function (b) { return notDone.has(b) || !known.has(b); })) return;
     out.push(t);
   });
+  return out;
+}
+
+// A fingerprint of the open-task list (id, subject, status, owner, blockedOn, blockedBy), so the short reminder can tell a changed list from an
+// unchanged one. blockedBy (what the actionability test reads) is order-normalised, so a reorder alone is no change.
+function ttListHash(tasks) {
+  return ah.sha1(tasks.filter(tk.isOpen).map(function (t) {
+    var by = (t.blockedBy || []).map(String).sort().join(',');
+    return [t.id, String(t.content || ''), tk.statusLc(t), t.owner || '', tk.blockedOnText(t), by].join('|');
+  }).sort().join(';')).slice(0, 16);
+}
+
+// What the previous prompt left in the state file: {hash, quiet}.
+function ttChangeState(home, rel) {
+  var out = { hash: '', quiet: 0 }, f = jx.read(home + '/' + rel);
+  if (f.text === undefined || f.big) return out;
+  var r = jx.parse(f.text.trim());
+  if (r.unsure || r.invalid || !jx.isObj(r.v)) return out;
+  if (typeof r.v.openHash === 'string') out.hash = r.v.openHash;
+  if (ttFinite(r.v.quiet) && r.v.quiet >= 0) out.quiet = r.v.quiet;
   return out;
 }
 
@@ -313,22 +371,38 @@ function ttFresh(home, tp, sessionRaw, p) {
   if (tp === null) return null;
   var size = ah.fs.size(tp);
   if (!size) return null;
-  var r = ah.transcript.tasks(tp, 'state', ah.cfgNum('taskstate.tail_bytes'));
-  if (r.unsure) { ah.unable('task-tracker:tasks_unsure'); return null; } // a tail the engine cannot read exactly is read as no tasks
-  if (r.unreadable) return null;
-  var tasks = r.tasks;
+  var r = ah.transcript.tasks(tp, 'state', ah.cfgNum('taskstate.tail_bytes'), 0, sessionRaw);
+  // Claude Code's own store holds the whole list; the transcript tail of a long session does not (the creates lie before it)
+  var store = tk.storeTasks(home, sessionRaw);
+  if (store === null) {
+    if (r.unsure) { ah.unable('task-tracker:tasks_unsure'); return null; } // a tail the engine cannot read exactly is read as no tasks
+    if (r.unreadable) return null;
+  }
+  var tasks = store === null ? r.tasks : tk.withStore(r.unsure || r.unreadable ? [] : r.tasks, store);
   var plan = { track: null, annotate: null, demandShown: 0 };
   var tr = ttTrack(home, sessionRaw, tp, tasks);
   plan.track = tr.apply;
+  // the prune-the-list note: a state table keyed on the done-count, so it reaches the model once per list change, not every prompt
+  var pruneLine = '', pruneAfter = ah.settings.num('task_guard.prune_setting'), doneCount = tasks.filter(tk.isDone).length;
+  if (isFinite(pruneAfter) && pruneAfter > 0 && doneCount > pruneAfter) pruneLine = text.render(ttT('prune_line'), { n: doneCount, limit: String(pruneAfter) });
   var open = tasks.filter(tk.isOpen);
-  if (open.length === 0) return { tasks: tasks, demand: '', openLine: '', plan: plan };
+  if (open.length === 0) return { tasks: tasks, open: 0, demand: '', openLine: '', pruneLine: pruneLine, plan: plan };
   // the per-turn DISPATCH NOW line: it counts running agents, asks Jev for a tier and records a demand
-  var demand = '';
-  if (ah.settings.bool('task_tracker.dd_setting')) {
+  var demand = '', lines = ah.settings.bool('task_tracker.lines_setting');
+  if (lines && ah.settings.bool('task_tracker.dd_setting')) {
     var actionable = ttActionable(open, tasks);
-    if (actionable.length >= 1) {
+    var stopped = ah.settings.bool('task_tracker.stop_setting') && sd.spawnStop(p) !== null; // the weekly-usage spawn stop: nothing can be dispatched
+    if (actionable.length >= 1 && !stopped) {
       var proof = ah.transcript.countProof(tp);
       if (proof.unsure) { ah.unable('task-tracker:count_proof_unsure'); proof = { rows: null, seen: [], windowBytes: 0 }; } // the running-agent count cannot be trusted
+      if (proof.rows !== null && proof.rows.length && ah.settings.bool('task_tracker.conflict_setting')) {
+        var texts = ttAgentTexts(tp, proof.rows);
+        actionable = actionable.filter(function (t) { // a task on a file a running agent already works on is not dispatched in parallel
+          return !ttFileTokens(t).some(function (f) { return texts.some(function (x) { return x.indexOf(f) >= 0; }); });
+        });
+      }
+    }
+    if (actionable.length >= 1 && !stopped) {
       var res = tk.evaluate(actionable, tasks, open, proof.rows, 0, false);
       if (res.fire) {
         var max = ttN('demand_show_max'), shown = res.dispatch.slice(0, max);
@@ -365,7 +439,7 @@ function ttFresh(home, tp, sessionRaw, p) {
   var line = counted.length === 0
     ? text.render(ttT('open_zero'), { blocked: blockedTail })
     : text.render(ttT('open_some'), { n: counted.length, blocked: blockedTail, tail: tail });
-  return { tasks: tasks, demand: demand, openLine: line, plan: plan };
+  return { tasks: tasks, open: open.length, demand: demand, openLine: lines ? line : '', pruneLine: pruneLine, plan: plan };
 }
 
 // `sessionKey(sid)` of hooks/lib/dispatch-demand.js.
@@ -461,9 +535,30 @@ function decide(p) {
   // ---- decide: nothing below this line writes until the effects block ----
   var stateName = ttT('state_prefix') + tk.safeKey(session) + ttT('state_suffix');
   var stateRel = ah.cfg('paths.base_dir') + '/' + stateName;
-  var chosen = ttPick(home, stateRel, tp, now);
+  var chosen = ttPick(home, stateRel, tp, now, dsid);
   var full = ttFull(codex), short = ttShort();
   var fresh = ttFresh(home, tp, sessionRaw, p);
+  // evidence only: the short reminder speaks when this prompt holds a request no task can cover (a substantive prompt while no task is
+  // open), then again after `untracked_prompts` such prompts. A compliant session (a task for the work, a short follow-up) hears nothing.
+  var ch = { hash: '', quiet: 0, hold: false, track: false };
+  if (fresh !== null) { ch.hash = ttListHash(fresh.tasks); ch.track = true; }
+  if (!chosen.full && ah.settings.bool('task_tracker.change_setting')) {
+    var evidence = fresh !== null && fresh.open === 0 && typeof p.prompt === 'string' && p.prompt.trim().length >= ttN('untracked_min_chars');
+    if (!evidence) ch.hold = true;
+    else {
+      var prevQ = ttChangeState(home, stateRel).quiet;
+      ch.hold = prevQ > 0 && prevQ < ah.settings.num('task_tracker.untracked_prompts');
+      ch.quiet = ch.hold ? prevQ + 1 : 1;
+    }
+  }
+  // #709: a cron-delivered turn with an unchanged open-task list gets no note and no Jev ask. The list hash is the one the change gate keeps.
+  if (fresh !== null && ch.track && ah.settings.bool('task_tracker.sw_skip_scheduled') && typeof p.prompt === 'string' && dedupe.scheduledTurn(tp, p.prompt)) {
+    if (ttChangeState(home, stateRel).hash === ch.hash) {
+      waste.note(session, 'repeated_advisory', ah.cfg('task_tracker.skip_scheduled_source'), (short + fresh.openLine + fresh.demand).length);
+      var wSkip = waste.warning(session);
+      return wSkip !== '' ? { advisory: text.advisoryJson(ttT('event'), wSkip) } : 'allow';
+    }
+  }
   var unknown = null;
   if (fresh !== null) unknown = tk.unknownNote(fresh.tasks, home, sessionRaw, ttT('unknown_tag'));
   var demand = ttResolvePending(home, sessionRaw, tp, !!p.transcript_path, now);
@@ -474,20 +569,26 @@ function decide(p) {
   var advState = adv.load(session); // one state for both tables, so their entries are saved together
   var gDemand = fresh !== null && fresh.demand !== '' ? adv.decide(kDemand, session, fresh.demand, advState) : null;
   var gOpen = fresh !== null && fresh.openLine !== '' ? adv.decide(kOpen, session, fresh.openLine, advState) : null;
+  var kPrune = ah.cfg('advisory.kind_task_guard_prune');
+  var gPrune = fresh !== null && fresh.pruneLine !== '' ? adv.decide(kPrune, session, fresh.pruneLine, advState) : null;
   var lineParts = [];
+  // the prune note leads the text on a line of its own, never trailing the long reminder: the prompt digest (inject_gate.digest_hooks) keeps
+  // only the first line of an advisory inline and spills the rest to a file, so a note anywhere else is produced and never seen
+  var pruneOut = gPrune !== null && gPrune.emit ? fresh.pruneLine : '';
   if (gDemand !== null && gDemand.emit) lineParts.push(fresh.demand);
   if (gOpen !== null && gOpen.emit) lineParts.push(fresh.openLine);
   var freshLine = lineParts.join(ttT('freshness_joiner'));
   // `freshLineAll`: the tables as Node writes them, whether or not the advisory layer holds one back; the dedupe store hashes this text
   // (Node's), so a turn that changed nothing is suppressed whole, as in Node, instead of re-showing the short reminder.
-  var freshLineAll = fresh === null ? '' : [fresh.demand, fresh.openLine].filter(function (x) { return x !== ''; }).join(ttT('freshness_joiner'));
+  var freshLineAll = fresh === null ? '' : [fresh.pruneLine, fresh.demand, fresh.openLine].filter(function (x) { return x !== ''; }).join(ttT('freshness_joiner'));
   function compose(unknownNote) {
     var open = '', openAll = '';
     if (fresh !== null) {
       open = freshLine === '' ? unknownNote : (unknownNote === '' ? freshLine : freshLine + ' ' + unknownNote);
       openAll = freshLineAll === '' ? unknownNote : (unknownNote === '' ? freshLineAll : freshLineAll + ' ' + unknownNote);
     }
-    var lead = chosen.full ? full : short;
+    var lead = chosen.full ? full : (ch.hold ? '' : short);
+    if (lead === '') return { text: open, textAll: openAll, open: open };
     return { text: open === '' ? lead : lead + ttT('note_joiner') + open, textAll: openAll === '' ? lead : lead + ttT('note_joiner') + openAll, open: open };
   }
   var every = ah.settings.num('verify_first.num_repeat_every');
@@ -501,16 +602,22 @@ function decide(p) {
     return r;
   }
 
-  var primaryText = text.message('tip', ttT('guard_name'), { what: ttT('primary_what'), instead: ttT('primary_instead') });
+  var primaryText = text.message('order', ttT('guard_name'), { what: ttT('primary_what'), instead: ttT('primary_instead') });
   var primaryOpts = function () { return { sessionId: dsid, key: ttT('primary_key'), content: primaryText, transcriptPath: tp, keepaliveTurns: keepalive, normalize: function (x) { return x; } }; };
 
   // ---- effects, in Node's order ----
   if (jev !== null) { try { ah.jev.ask(jev); } catch (e) { /* best effort, as Node's try/catch */ } }
   if (chosen.full) {
     try {
-      ah.state.writeAtomic(stateRel, JSON.stringify({ lastFull: Math.floor(now), lastFullSize: chosen.size }));
+      var st = { lastFull: Math.floor(now), lastFullSize: chosen.size };
+      if (ch.track) { st.openHash = ch.hash; st.quiet = 0; }
+      ah.state.writeAtomic(stateRel, JSON.stringify(st));
       gk.pruneStale(ah.cfg('paths.base_dir'), ttT('prune_prefix'));
     } catch (e) { /* Node ignores a failed state write and injects regardless */ }
+  } else if (ch.track && ah.settings.bool('task_tracker.change_setting')) {
+    try {
+      ah.state.writeAtomic(stateRel, JSON.stringify({ lastFull: Math.floor(chosen.lastFull), lastFullSize: chosen.lastSize, openHash: ch.hash, quiet: ch.quiet }));
+    } catch (e) { /* a lost write only repeats the reminder */ }
   }
   if (demand !== null) { try { ah.state.writeAtomic(demand.rel, demand.body); } catch (e) { /* lost silently, as Node's */ } }
   var plan = fresh !== null ? fresh.plan : null;
@@ -521,25 +628,47 @@ function decide(p) {
   var primaryBlock = '';
   if (primaryOn) primaryBlock = (dsid === null || should(primaryOpts())) ? primaryText : '';
   var t = c.text, out = t, emit = true;
-  if (dsid !== null) {
+  if (ch.hold) emit = c.open !== ''; // the short reminder is withheld; the open-task tables have their own change gate
+  else if (dsid !== null) {
     var o = { sessionId: dsid, key: ttT('dedupe_key'), content: c.textAll, transcriptPath: tp, normalize: normalize };
     if (t.indexOf(full) === 0) dedupe.record(o);
     else emit = should(o);
   }
-  if (emit && t.indexOf(short) === 0) {
+  if (emit && !ch.hold && t.indexOf(short) === 0) {
     var show = should({ sessionId: dsid, key: ttT('dedupe_short_key'), content: short, transcriptPath: tp, keepaliveTurns: keepalive });
     out = show ? [short, c.open].filter(function (x) { return x !== ''; }).join(ttT('segment_joiner')) : c.open;
   }
-  var finalText = [emit ? out : '', primaryBlock].filter(function (x) { return x !== ''; }).join(ttT('segment_joiner'));
+  // per-message counters: each directive and reminder is counted when sent and when held back as a state already told
+  if (chosen.full && emit && t.indexOf(full) === 0) ah.metric('task_tracker_emitted', ['form', ttT('event_full')]);
+  else if (!chosen.full) {
+    if (ch.hold) ah.metric('task_tracker_emitted', ['form', ttT('event_short_same')]);
+    else if (t.indexOf(short) === 0) {
+      var sentShort = emit && out.indexOf(short) === 0;
+      ah.metric('task_tracker_emitted', ['form', sentShort ? ttT('event_short') : ttT('event_short_same')]);
+    }
+  }
+  var pruneShown = pruneOut !== '' && (ch.hold || emit) ? pruneOut : '';
+  if (pruneShown !== '') ah.advisory(ah.cfg('metric.tasklist_hygiene').advisory_kind, ah.cfg('tasklist_hygiene.event_prune'));
+  var finalText = [pruneShown, emit ? out : '', primaryBlock].filter(function (x) { return x !== ''; }).join(ttT('segment_joiner'));
   // count the tables: delivered ones are recorded as injected (and their hash remembered), held-back ones as suppressed
   var delivered = emit && finalText.indexOf(freshLine) >= 0 && freshLine !== '';
-  [[gDemand, fresh !== null ? fresh.demand : ''], [gOpen, fresh !== null ? fresh.openLine : '']].forEach(function (g) {
+  [[gPrune, fresh !== null ? fresh.pruneLine : ''], [gDemand, fresh !== null ? fresh.demand : ''], [gOpen, fresh !== null ? fresh.openLine : '']].forEach(function (g) {
     if (g[0] === null) return;
     if (!g[0].emit) adv.commit(g[0]);
-    else if (delivered) adv.commit(g[0]);
+    else if (g[0] === gPrune ? pruneShown !== '' : delivered) adv.commit(g[0]);
     else { adv.metric(g[0].kind, 'flagged'); adv.metric(g[0].kind, 'suppressed'); } // the dedupe store held the whole text back; the table stays due
   });
   var shownDemand = gDemand !== null && gDemand.emit && delivered && plan !== null ? plan.demandShown : 0;
   if ((emit || primaryBlock !== '') && shownDemand > 0) ttRecordDemand(home, sessionRaw, shownDemand);
+  // GH #762: completed tasks that stayed in the list past the age are ordered deleted, on the escalating schedule, never every prompt
+  if (fresh !== null && dord.on() && ah.settings.enum('ctxbudget.set_h_task_enforce') !== 'off') {
+    var dpl = dord.plan(sessionRaw !== '' ? sessionRaw : session, fresh.tasks, now, dord.ownNames(p));
+    if (dpl.changed || dpl.lingering > 0) {
+      ah.commit();
+      if (dord.apply(dpl) && dpl.due.length > 0) finalText = dord.order(dpl.due) + (finalText === '' ? '' : ttT('segment_joiner') + finalText);
+    }
+  }
+  var wNow = waste.warning(session);
+  if (wNow !== '') finalText = finalText === '' ? wNow : finalText + ttT('segment_joiner') + wNow;
   return finalText !== '' ? { advisory: text.advisoryJson(ttT('event'), finalText) } : 'allow';
 }

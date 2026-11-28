@@ -1,5 +1,5 @@
 # Dependabot PRs into dev: patch and minor GitHub-Actions and npm bumps merge themselves once every
-# other check on the PR head is green (dev has no required checks, so this waits for them itself).
+# other check on the PR head is green (dev requires only tests-passed and privacy-scan, so this also waits for every other check itself).
 # A major bump gets a label and one comment for review and is never merged here. The PR's code is
 # never checked out; only metadata and the check results are read. Needs repo setting
 # "Allow merge commits"; uses a merge commit, never --admin or force.

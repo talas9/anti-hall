@@ -54,12 +54,17 @@ fn text(key: &str) -> &'static str {
     defaults::text(key)
 }
 
-/// A line on stdout, the watcher's event channel. A closed pipe is not an error here: the loop keeps going.
-fn emit(line: &str) {
+/// A line on stdout, the watcher's event channel. A closed pipe is not an error here: the loop keeps going. Answers whether the
+/// line was written, so a wake that never reached the workspace does not move its watermark (review P1-2).
+fn emit(line: &str) -> bool {
     let mut out = std::io::stdout().lock();
     let line = if line.ends_with('\n') { line.to_string() } else { format!("{line}\n") };
-    crate::discard::harmless(out.write_all(line.as_bytes())); // keep: Node swallows an output error too, "never let it kill the loop"
-    crate::discard::harmless(out.flush()); // keep: same
+    out.write_all(line.as_bytes()).and_then(|()| out.flush()).is_ok()
+}
+
+/// One line printed by the DevSwarm half of the merged watcher, counted by source (`merged_watch_rows`).
+fn count_row() {
+    crate::metrics::bump_by_shared("merged_watch_rows", &[("source", "devswarm")], 1);
 }
 
 /// A diagnostic on stderr.
@@ -321,7 +326,7 @@ fn run_armed(p: &Proc, a: Armed, start_ppid: i32) -> i32 {
         own_version,
         start_ppid,
         poll,
-        saved: (state.last_total, state.last_total2, state.last_broadcast),
+        saved: saved_key(&state),
         notified_update: None,
         archived_checked: None,
         own_archived: false,
@@ -329,6 +334,8 @@ fn run_armed(p: &Proc, a: Armed, start_ppid: i32) -> i32 {
         restamp_err_logged: false,
         recheck: archived_recheck(p),
         bin: (defaults::num("wake_watch.rebin_enabled") != 0).then(rebin::watched_path).flatten().and_then(|path| rebin::ident(&path).map(|i| (path, i))),
+        coalesce: p.coalesce_ms(a.id.role()),
+        quiet_arm: defaults::num("wake_watch.rebin_quiet") != 0 && p.env.contains_key(text("wake_watch.env_rebin")),
     };
     let code = run.run_loop(&watcher);
     cleanup(&cell, false);
@@ -367,7 +374,7 @@ struct Run<'a> {
     start_ppid: i32,
     poll: Duration,
     /// The cursors as last written, so an idle watcher writes nothing.
-    saved: (f64, f64, f64),
+    saved: (f64, f64, f64, f64),
     notified_update: Option<String>,
     archived_checked: Option<Instant>,
     own_archived: bool,
@@ -376,6 +383,11 @@ struct Run<'a> {
     recheck: Duration,
     /// The engine binary this process was started from: its path and identity at start (see [`rebin`]).
     bin: Option<(PathBuf, rebin::Ident)>,
+    /// Wake coalescing for this watcher (GH #884), read once at arm: see [`Proc::coalesce_ms`].
+    coalesce: Option<f64>,
+    /// #968: this process is the successor a binary replace started (`wake_watch.env_rebin` set) and `wake_watch.rebin_quiet` is on:
+    /// its arm line goes to the engine log, not the stream, so a redeploy wakes no idle session.
+    quiet_arm: bool,
 }
 
 /// What one tick decided.
@@ -470,18 +482,35 @@ impl Run<'_> {
         snap.role = a.id.role().to_string();
         snap.id = a.id.id.clone();
         snap.now_ms = now_ms();
+        snap.coalesce_ms = self.coalesce;
         let snap = read::attach_broadcast(snap, &p.home, a.hashes.as_ref(), &a.id.id);
-        let (state, lines) = {
+        let (before, (state, lines), arming) = {
             let s = locked(self.cell);
-            edge::tick(&s.state, &snap)
+            (s.state.clone(), edge::tick(&s.state, &snap), !s.state.armed)
         };
-        for l in &lines {
-            emit(l);
+        let mut printed = true;
+        for (i, l) in lines.iter().enumerate() {
+            // #968: a successor of a binary replace re-arms silently (its arm line is the first line of its first tick)
+            if self.quiet_arm && arming && i == 0 {
+                crate::health::log_event("wake_watch", "rebin_rearmed", l);
+                crate::metrics::bump_by_shared("wake_watch_rebin", &[("line", "arm_quiet")], 1);
+                continue;
+            }
+            printed &= emit(l);
+            count_row();
         }
-        let changed = (state.last_total, state.last_total2, state.last_broadcast) != self.saved;
+        let state = edge::undo_unprinted(&before, state, printed);
+        if state.held > 0 {
+            crate::metrics::bump_by_shared("wake_watch_coalesced", &[("role", a.id.role())], u64::from(state.held));
+        }
+        // GH #845 baseline: the woken turns per channel
+        for (key, by) in [("mesh_wake.channel_mail", state.woke_mail), ("mesh_wake.channel_broadcast", state.woke_broadcast)] {
+            crate::metrics::bump_by_shared("mesh_wake_lines", &[("channel", defaults::text(key)), ("role", a.id.role())], u64::from(by));
+        }
+        let changed = saved_key(&state) != self.saved;
         locked(self.cell).state = state.clone();
         if changed && read::save_seen(&p.home, &a.id.id, &state, a.id.primary) {
-            self.saved = (state.last_total, state.last_total2, state.last_broadcast);
+            self.saved = saved_key(&state);
         }
         Flow::Next
     }
@@ -528,7 +557,14 @@ impl Run<'_> {
             l.release();
         }
         cleanup(self.cell, true);
-        emit(&defaults::render("wake_watch.line_rebin", &[("path", &path.display())]));
+        let line = defaults::render("wake_watch.line_rebin", &[("path", &path.display())]);
+        if defaults::num("wake_watch.rebin_quiet") != 0 {
+            // #968: nothing to act on for the session: the engine log keeps the line, the stream (which wakes the session) does not
+            crate::health::log_event("wake_watch", "rebin", &line);
+            crate::metrics::bump_by_shared("wake_watch_rebin", &[("line", "restart_quiet")], 1);
+        } else {
+            emit(&line);
+        }
         let err =
             std::process::Command::new(&path).args(std::env::args().skip(1)).env(text("wake_watch.env_rebin"), ((now_ms() / 1000.0) as u64).to_string()).exec(); // only returns on failure
         diag(&defaults::render("wake_watch.diag_rebin_failed", &[("path", &path.display()), ("why", &err)]));
@@ -592,3 +628,9 @@ pub fn run(rest: &[String]) -> i32 {
 
 #[cfg(test)]
 mod tests;
+
+/// The state whose change makes the cursor file worth rewriting: the three counters and the GH #845 broadcast watermark (`-1` while it is
+/// still unknown, so learning it is a change).
+fn saved_key(st: &edge::State) -> (f64, f64, f64, f64) {
+    (st.last_total, st.last_total2, st.last_broadcast, if st.bc_seq_missing { -1.0 } else { st.last_bc_seq })
+}

@@ -3,6 +3,9 @@
 //! directory (never the real one) and applies the engine's own plan.
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report
 
+#[path = "common/testtmp.rs"]
+mod testtmp;
+
 use ah_engine::checks::git::util::Settings;
 use ah_engine::dssup::appsync::plan::{self, Retired};
 use ah_engine::dssup::recon::view;
@@ -32,7 +35,7 @@ fn init_defaults() {
 fn fix(tag: &str) -> Fix {
     init_defaults();
     static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let home = std::env::temp_dir().join(format!("ah-w4b-{tag}-{}-{}", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::SeqCst)));
+    let home = testtmp::path(format!("ah-w4b-{tag}-{}-{}", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::SeqCst)));
     std::fs::create_dir_all(&home).unwrap();
     let mut env: HashMap<String, String> = HashMap::new();
     env.insert("HOME".into(), home.to_string_lossy().into_owned());

@@ -481,3 +481,94 @@ fn finish(input: &Value, label_path: Option<PathBuf>, audit_path: Option<PathBuf
     }
     res.get("exit").and_then(Value::as_i64).unwrap_or(0) as i32
 }
+
+#[cfg(test)]
+mod issue_466_tests {
+    use super::*;
+
+    fn iso(ms: u64) -> String {
+        crate::jev::assist::iso_ms(ms)
+    }
+
+    fn run(argv: &[&str], assist: &str, now: u64) -> Value {
+        let input = json!({
+            "argv": argv, "now": now, "cfg": cfg(), "assist": [assist], "triage": [], "judge": [], "supervision": [], "rollups": [],
+            "labels": [], "jevJson": Value::Null, "budget": {"mode": "unlimited", "usdPerDay": Value::Null, "usdPerWeek": Value::Null,
+            "minCreditUsd": Value::Null}, "credit": "{}", "budgetState": "{}",
+        });
+        let out = rules("jevReportRun", &input).expect("report ran");
+        serde_json::from_str(out["out"].as_str().unwrap_or_default()).expect("json report")
+    }
+
+    fn row(id: &str, ts: u64, mode: &str, backend: &str, reason: Option<&str>) -> String {
+        json!({"ts": iso(ts), "id": id, "h": format!("{id}{ts}"), "project": "p", "base": false, "jev": Value::Null, "conf": Value::Null,
+            "ms": 0, "backend": backend, "final": false, "changed": Value::Null, "cached": false, "mode": mode, "reason": reason})
+        .to_string()
+    }
+
+    #[test]
+    fn window_narrows_the_whole_report() {
+        let now = now_ms();
+        let day = defaults::num("jevrep.thr_day_ms");
+        let assist = [row("a", now - 3 * day, "on", "baseline-only", None), row("a", now - 1000, "on", "baseline-only", None)].join("\n");
+        let all = run(&["--json"], &assist, now);
+        assert_eq!(all["window"]["rowsInWindow"], 2, "{}", all["window"]);
+        let windows = cfg()["thresholds"]["windows"].clone();
+        let win = windows.as_object().unwrap().iter().find(|(_, d)| d.as_u64() == Some(1)).map(|(k, _)| k.clone()).unwrap();
+        let mut argv = vec!["--json"];
+        argv.push("--window");
+        argv.push(&win);
+        let w = run(&argv, &assist, now);
+        assert_eq!((w["window"]["rowsTotal"].as_u64(), w["window"]["rowsInWindow"].as_u64()), (Some(2), Some(1)), "{}", w["window"]);
+    }
+
+    #[test]
+    fn switched_off_integrations_say_off_and_errors_are_counted_by_kind() {
+        let now = now_ms();
+        let off: Vec<String> = (0..60).map(|i| row("offOne", now - 1000 - i, "off", "baseline-only", None)).collect();
+        let err: Vec<String> = (0..3).map(|i| row("errOne", now - 1000 - i, "on", "baseline-only", Some("no-key"))).collect();
+        let r = run(&["--json"], &[off, err].concat().join("\n"), now);
+        let by = |id: &str| r["integrations"].as_array().unwrap().iter().find(|x| x["id"] == id).cloned().unwrap();
+        let expect_off = defaults::render("jevrep.t_verdict_off", &[("calls", &60)]);
+        assert_eq!(by("offOne")["suggestion"].as_str(), Some(expect_off.as_str()));
+        assert_eq!(by("errOne")["errorsByKind"]["no-key"], 3);
+    }
+
+    fn costed(id: &str, ts: u64, cost: Option<f64>) -> String {
+        let mut v: Value = serde_json::from_str(&row(id, ts, "on", "jev", None)).unwrap();
+        if let Some(c) = cost { v["costUsd"] = json!(c); }
+        v.to_string()
+    }
+
+    #[test]
+    fn cost_column_uses_real_cost_then_default_estimate() {
+        let now = now_ms();
+        let real = [costed("realOne", now - 10, Some(0.25)), costed("realOne", now - 20, Some(0.5))].join("\n");
+        let est: Vec<String> = (0..4).map(|i| costed("estOne", now - 10 - i, None)).collect();
+        let mut lines = vec![real];
+        lines.extend(est);
+        let r = run(&["--json"], &lines.join("\n"), now);
+        let by = |id: &str| r["integrations"].as_array().unwrap().iter().find(|x| x["id"] == id).cloned().unwrap();
+        assert!((by("realOne")["costEstimate"].as_f64().unwrap() - 0.75).abs() < 1e-9, "{}", by("realOne"));
+        let per: f64 = defaults::text("jevrep.thr_cost_per_call_default").parse().unwrap();
+        assert!((by("estOne")["costEstimate"].as_f64().unwrap() - 4.0 * per).abs() < 1e-9, "{}", by("estOne"));
+        assert_eq!(r["costPerCallKnown"], true);
+    }
+
+    #[test]
+    fn low_yield_note_prints_two_decimals() {
+        let now = now_ms();
+        // 1 changed decision of 200 distinct fresh calls = 0.5%, under the 1% threshold
+        let mut rows: Vec<String> = (0..200).map(|i| {
+            let mut v: Value = serde_json::from_str(&row("lowOne", now - 10 - i, "on", "jev", None)).unwrap();
+            v["h"] = json!(format!("h{i}"));
+            if i == 0 { v["changed"] = json!("added"); }
+            v.to_string()
+        }).collect();
+        rows.push(String::new());
+        let r = run(&["--json"], &rows.join("\n"), now);
+        let sug = r["integrations"].as_array().unwrap().iter().find(|x| x["id"] == "lowOne").unwrap()["lowYieldNote"].to_string();
+        let want = defaults::render("jevrep.t_low_yield_note", &[("rate", &"0.50%"), ("pct", &1)]);
+        assert!(sug.contains(&want), "{sug} vs {want}");
+    }
+}

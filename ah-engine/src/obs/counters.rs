@@ -242,7 +242,9 @@ static MEM: Mutex<Option<Folded>> = Mutex::new(None);
 
 fn note(kind: &str, name: &str, outcome: &str, v: Val) {
     let key = (kind.to_string(), clean(name), outcome.to_string());
-    if crate::telemetry::emit::in_daemon() {
+    // A durable kind (diagnostics.durable_counter_kinds: the advisory counters) goes to the journal even inside the daemon, so a
+    // daemon restart does not lose it (GH #404: the advisor adherence counts were gone after every restart).
+    if in_memory(crate::telemetry::emit::in_daemon(), kind) {
         let (soft, hard, other) = limits();
         MEM.lock().unwrap_or_else(|e| e.into_inner()).get_or_insert_with(Folded::default).add(key, v, soft, hard, other);
         return;
@@ -250,6 +252,12 @@ fn note(kind: &str, name: &str, outcome: &str, v: Val) {
     if let Err(e) = append_to(&journal_path(), &line_of(&key, &v), defaults::num("diagnostics.counters_max_bytes")) {
         health::log_event("obs", "counter", &defaults::render("msg.obs_counter_write_failed", &[("err", &e)]));
     }
+}
+
+/// Does a count of `kind` stay in this process's memory (the daemon, and a kind not listed in diagnostics.durable_counter_kinds)
+/// instead of going to the journal?
+fn in_memory(daemon: bool, kind: &str) -> bool {
+    daemon && !defaults::list("diagnostics.durable_counter_kinds").contains(&kind)
 }
 
 /// Count one hand-back at `site` (a stable id such as `dispatch.git-guard`), and note it in the trace ring.
@@ -297,6 +305,13 @@ pub fn advisory(kind: &str, metric: &str) {
     note(defaults::text("diagnostics.advisory_counter_kind"), kind, metric, Val { n: 1, ..Val::default() });
 }
 
+/// #905: count one client marker write (`marker`: `down` or `slow`) and the reason it was written (no socket, no process, a failed
+/// spawn; a failed exchange or a hung daemon whose process is there; a slow streak). The report keeps them under `client_markers`.
+pub fn marker(marker: &str, reason: &str) {
+    trace::push("client_marker", &format!("{marker}.{reason}"), "", 0);
+    note(defaults::text("diagnostics.marker_counter_kind"), marker, reason, Val { n: 1, ..Val::default() });
+}
+
 /// Count one run of the duty or stage `name` of `kind` (`duty` or `stage`) with its outcome, CPU and wall time.
 pub fn account(kind: &'static str, name: &str, outcome: Outcome, cpu_us: u64, wall_us: u64) {
     trace::push(kind, name, outcome.name(), wall_us);
@@ -326,7 +341,14 @@ pub fn report(f: &Folded) -> Value {
     let mut sites: BTreeMap<&str, Map<String, Value>> = BTreeMap::new();
     let mut acct: BTreeMap<&str, BTreeMap<&str, Map<String, Value>>> = BTreeMap::new();
     let mut adv: BTreeMap<&str, Map<String, Value>> = BTreeMap::new();
+    let mut markers: BTreeMap<&str, Map<String, Value>> = BTreeMap::new();
     for ((kind, name, outcome), v) in &f.rows {
+        if kind == defaults::text("diagnostics.marker_counter_kind") {
+            let e = markers.entry(name).or_default();
+            let cur = e.get(outcome.as_str()).and_then(Value::as_u64).unwrap_or(0);
+            e.insert(outcome.clone(), json!(cur + v.n));
+            continue;
+        }
         if kind == defaults::text("diagnostics.advisory_counter_kind") {
             let e = adv.entry(name).or_default();
             let cur = e.get(outcome.as_str()).and_then(Value::as_u64).unwrap_or(0);
@@ -349,6 +371,7 @@ pub fn report(f: &Folded) -> Value {
             e.insert(o.name().to_string(), json!(cur + if o.name() == outcome { v.n } else { 0 }));
         }
     }
+    ratios(&mut adv);
     let mut hb = Map::new();
     for h in Handback::all() {
         hb.insert(h.name().to_string(), json!(totals.get(h.name()).copied().unwrap_or(0)));
@@ -358,8 +381,24 @@ pub fn report(f: &Folded) -> Value {
         "node_handback": hb,
         "accounting": acct,
         "advisory": adv,
+        "client_markers": markers,
         "counters": {"dropped": f.dropped, "soft_hits": f.soft_hits, "malformed": f.malformed},
     })
+}
+
+/// The derived ratios of the advisory report (diagnostics.advisory_ratios: name -> {kind, num, den}), each written into its kind's
+/// map as `num / den` rounded to three places; a ratio whose denominator is 0 or absent is left out.
+fn ratios(adv: &mut BTreeMap<&str, Map<String, Value>>) {
+    let Some(table) = defaults::raw("diagnostics.advisory_ratios").as_table() else { return };
+    for (name, spec) in table {
+        let field = |k: &str| spec.str_field(k);
+        let Some(e) = adv.get_mut(field("kind")) else { continue };
+        let num = e.get(field("num")).and_then(Value::as_u64).unwrap_or(0);
+        let den = e.get(field("den")).and_then(Value::as_u64).unwrap_or(0);
+        if den > 0 {
+            e.insert((*name).to_string(), json!(((num as f64 / den as f64) * 1000.0).round() / 1000.0));
+        }
+    }
 }
 
 /// Everything counted so far: the journal's totals plus this process's own table (the daemon's).
@@ -380,6 +419,22 @@ pub fn snapshot() -> Value {
 mod tests {
     use super::*;
 
+    /// GH #404: the daemon kept the advisory counters in memory only, so `status` lost every advisor count on a restart. They now go
+    /// to the journal from the daemon too; a restarted daemon (empty memory) reads them back from the journal.
+    #[test]
+    fn advisory_counts_are_durable_across_a_daemon_restart() {
+        let adv = defaults::text("diagnostics.advisory_counter_kind");
+        assert!(!in_memory(true, adv), "the daemon journals advisory counts");
+        assert!(in_memory(true, "duty"), "other daemon counts stay in memory");
+        assert!(!in_memory(false, "duty"), "outside the daemon everything is journalled");
+        let line = format!("{adv}\tadvisor_thinking\tdispatch\t4\t0\t0\n{adv}\tadvisor_thinking\tconsulted_before\t1\t0\t0\n");
+        let r = report(&fold(&line, 99, 99, "other")); // what a fresh daemon (no memory table) reports from the journal alone
+        assert_eq!(r["advisory"]["advisor_thinking"]["dispatch"], 4);
+        assert_eq!(r["advisory"]["advisor_thinking"]["consult_rate"], 0.25, "the derived consult rate");
+        let none = report(&fold(&format!("{adv}\tadvisor_thinking\tconsulted_before\t1\t0\t0\n"), 99, 99, "other"));
+        assert!(none["advisory"]["advisor_thinking"].get("consult_rate").is_none(), "no ratio while the denominator is 0");
+    }
+
     #[test]
     fn counters_are_keyed_by_kind_site_and_outcome_and_the_fold_is_bounded() {
         let text = "node_launch\tdispatch.a\t\t1\t0\t0\nnode_launch\tdispatch.a\t\t2\t0\t0\nnode_launch\tdispatch.b\t\t1\t0\t0\n\
@@ -399,10 +454,24 @@ mod tests {
         assert_eq!(r["accounting"]["duty"]["reconcile"]["held"], 0);
     }
 
+    /// #905: each client marker write is counted per marker and reason, and the report shows them under `client_markers`.
+    #[test]
+    fn client_marker_writes_are_reported_per_marker_and_reason() {
+        let k = defaults::text("diagnostics.marker_counter_kind");
+        let line = format!("{k}\tslow\thung\t1\t0\t0\n{k}\tslow\thung\t1\t0\t0\n{k}\tdown\tno_process\t1\t0\t0\n");
+        let r = report(&fold(&line, 99, 99, "other"));
+        assert_eq!(r["client_markers"]["slow"]["hung"], 2);
+        assert_eq!(r["client_markers"]["down"]["no_process"], 1);
+        assert!(r["accounting"].get(k).is_none(), "marker counts are not duty accounting");
+    }
+
     /// An abandoned decision leaves one event-log line with its site and reason, and a flood of the same one stays one line.
     #[test]
     fn an_abandoned_decision_is_logged_with_site_and_reason_once_per_interval() {
         let site = format!("test:abandoned-log-{}", std::process::id());
+        // the event log is only appended to in a state dir that exists (health::log_event drops the line otherwise): the test's scratch
+        // state dir is created by whichever test touches it first, so this one makes it, not relying on the order the tests run in
+        std::fs::create_dir_all(crate::paths::dir()).unwrap();
         let why = "workspace w-1 not drained: shortfall";
         let lines = || health::events().into_iter().filter(|e| e.kind == "abandoned" && e.code == site).collect::<Vec<_>>();
         for _ in 0..5 {
@@ -418,7 +487,7 @@ mod tests {
 
     #[test]
     fn the_journal_is_appended_without_being_created_and_folded_past_its_cap() {
-        let dir = std::env::temp_dir().join(format!("ah-obs-counters-{}", std::process::id()));
+        let dir = crate::testtmp::path(format!("ah-obs-counters-{}", std::process::id()));
         let missing = dir.join("nope").join("j.log");
         append_to(&missing, "x\n", 1).unwrap();
         assert!(!missing.exists() && !missing.parent().unwrap().exists(), "a missing state dir is left alone");

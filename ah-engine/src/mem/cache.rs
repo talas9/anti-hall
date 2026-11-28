@@ -9,31 +9,102 @@ use super::registry::{Admit, Budget, Owner, Registry, Spec};
 use crate::tier::Tiered;
 use std::hash::Hash;
 use std::sync::atomic::{AtomicUsize, Ordering::SeqCst};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
+
+/// How a cache trims its values: `replace(value)` gives the replacement for a value that has something to drop (`None`: nothing worth
+/// dropping), `enabled()` is the settings switch (off: a shrink evicts and a recycle clears, as for a cache with no trim).
+pub struct Trim<V> {
+    /// The replacement for a value that holds droppable memory.
+    pub replace: fn(&V) -> Option<V>,
+    /// Whether trimming is switched on now.
+    pub enabled: fn() -> bool,
+}
+
+impl<V> Clone for Trim<V> {
+    fn clone(&self) -> Self {
+        *self
+    }
+}
+
+impl<V> Copy for Trim<V> {}
 
 struct Core<K: Hash + Eq + Clone, V: Clone> {
     tier: Mutex<Tiered<K, V>>,
     bytes: AtomicUsize,
+    /// Bytes a value holds beyond its weight, measured as it is used (the regex search scratch); summed over the held values.
+    extra: Option<fn(&V) -> usize>,
+    extra_seen: AtomicUsize,
+    /// Gives a value that holds droppable memory a replacement without it (or `None` when there is nothing worth dropping): the soft
+    /// shrink applies it before evicting, and a recycle before clearing. The weight and the recency of the entry stay.
+    trim: Option<Trim<V>>,
+    budget: OnceLock<Budget>,
 }
 
 impl<K: Hash + Eq + Clone, V: Clone> Core<K, V> {
     fn lock(&self) -> std::sync::MutexGuard<'_, Tiered<K, V>> {
         self.tier.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
     }
+
+    /// Replace every value that has something to drop (see `trim`); the number replaced. The extra is summed again after, so the
+    /// figure the registry reads is never the one from before the trim.
+    fn trim_locked(&self, t: &mut Tiered<K, V>) -> usize {
+        let Some(trim) = self.trim.filter(|x| (x.enabled)()) else { return 0 };
+        let n = t.replace_values(trim.replace);
+        if n > 0
+            && let Some(f) = self.extra
+        {
+            self.extra_seen.store(t.values().iter().map(f).sum(), SeqCst);
+        }
+        n
+    }
+
+    fn reported_locked(&self, t: &Tiered<K, V>) -> usize {
+        t.retained_bytes().saturating_add(self.extra.map_or(0, |f| t.values().iter().map(f).sum::<usize>()))
+    }
 }
 
 impl<K: Hash + Eq + Clone + Send + 'static, V: Clone + Send + 'static> Owner for Core<K, V> {
     fn bytes(&self) -> usize {
-        self.bytes.load(SeqCst)
+        let base = self.bytes.load(SeqCst);
+        let Some(f) = self.extra else { return base };
+        // a busy lock keeps the last sum: reporting never waits on a lookup
+        if let Ok(t) = self.tier.try_lock() {
+            self.extra_seen.store(t.values().iter().map(f).sum(), SeqCst);
+        }
+        base + self.extra_seen.load(SeqCst)
     }
     fn shrink(&self, target: usize) {
         let mut t = self.lock();
-        t.evict_retained_to(target);
+        self.trim_locked(&mut t);
+        match self.extra {
+            None => {
+                t.evict_retained_to(target);
+            }
+            Some(f) => {
+                // `bytes()` is the weights plus the measured extra, and the registry's target is on that figure: evict until THAT is at
+                // the target (by weight alone it stops while the extra still holds the cache over it). The extra leaves with its entry.
+                while t.retained_bytes().saturating_add(t.values().iter().map(f).sum::<usize>()) > target && t.pop_lru().is_some() {}
+                let kept = t.retained_bytes();
+                t.evict_retained_to(kept); // compacts the map's storage
+            }
+        }
         self.bytes.store(t.retained_bytes(), SeqCst);
     }
     fn recycle(&self) {
         let mut t = self.lock();
+        // drop what can be dropped without losing the entries; clear only if that leaves the holder over its own hard limit
+        let trimming = self.trim.is_some_and(|x| (x.enabled)());
+        self.trim_locked(&mut t);
+        if trimming
+            && let Some(hard) = self.budget.get().map(Budget::hard_bytes)
+            && hard > 0
+            && self.reported_locked(&t) <= hard
+        {
+            self.bytes.store(t.retained_bytes(), SeqCst);
+            return;
+        }
         t.clear();
+        self.extra_seen.store(0, SeqCst);
         self.bytes.store(t.retained_bytes(), SeqCst);
     }
 }
@@ -47,15 +118,37 @@ pub struct BoundedCache<K: Hash + Eq + Clone + Send + 'static, V: Clone + Send +
 impl<K: Hash + Eq + Clone + Send + 'static, V: Clone + Send + 'static> BoundedCache<K, V> {
     /// An empty cache registered as `spec` (its limits are read from the spec's config keys).
     pub fn new(reg: &Registry, spec: Spec) -> Self {
-        let core = Arc::new(Core { tier: Mutex::new(Tiered::new(usize::MAX)), bytes: AtomicUsize::new(0) });
+        Self::with_extra(reg, spec, None)
+    }
+
+    /// [`BoundedCache::new`] whose reported bytes also include `extra(value)` of every held value: memory a value grows after it
+    /// was weighed, measured by its user (the weight stays the admission estimate; the report is the measurement).
+    pub fn with_extra(reg: &Registry, spec: Spec, extra: Option<fn(&V) -> usize>) -> Self {
+        Self::with_trim(reg, spec, extra, None)
+    }
+
+    /// [`BoundedCache::with_extra`] whose values can also drop memory they hold without leaving the cache: `trim(value)` returns the
+    /// replacement for a value that has some (see [`Trim`]). A soft shrink trims first and evicts only if the cache is
+    /// still over its target; a hard recycle trims all and clears only if it is still over the holder's hard limit.
+    pub fn with_trim(reg: &Registry, spec: Spec, extra: Option<fn(&V) -> usize>, trim: Option<Trim<V>>) -> Self {
+        let core = Arc::new(Core {
+            tier: Mutex::new(Tiered::new(usize::MAX)),
+            bytes: AtomicUsize::new(0),
+            extra,
+            extra_seen: AtomicUsize::new(0),
+            trim,
+            budget: OnceLock::new(),
+        });
         let owner: Arc<dyn Owner> = core.clone();
         let budget = reg.register(spec, Arc::downgrade(&owner));
+        core.budget.get_or_init(|| budget.clone());
         BoundedCache { core, budget }
     }
 
-    /// The value for `k`, refreshing its recency.
+    /// The value for `k` now, refreshing its recency; an entry whose TTL (an absolute `health::now_ms` timestamp) has passed is
+    /// dropped and reported as absent.
     pub fn get(&self, k: &K) -> Option<V> {
-        self.get_at(k, 0)
+        self.get_at(k, crate::health::now_ms())
     }
 
     /// The value for `k` at `now_ms`, dropping it first when its TTL has expired.
@@ -87,14 +180,16 @@ impl<K: Hash + Eq + Clone + Send + 'static, V: Clone + Send + 'static> BoundedCa
         self.core.lock().contains(&k)
     }
 
-    /// Drop and return `k`, if present.
+    /// Drop and return `k` now, if present and not expired (an expired entry is dropped and reported as absent).
     pub fn remove(&self, k: &K) -> Option<V> {
+        self.remove_at(k, crate::health::now_ms())
+    }
+
+    /// [`BoundedCache::remove`] at `now_ms`.
+    pub fn remove_at(&self, k: &K, now_ms: u64) -> Option<V> {
         let mut t = self.core.lock();
-        let v = t.get(k, 0);
-        if v.is_some() {
-            t.remove(k);
-            self.core.bytes.store(t.retained_bytes(), SeqCst);
-        }
+        let v = t.take(k, now_ms);
+        self.core.bytes.store(t.retained_bytes(), SeqCst);
         v
     }
 
@@ -131,6 +226,12 @@ impl<K: Hash + Eq + Clone + Send + 'static, V: Clone + Send + 'static> BoundedCa
     /// Estimated retained bytes: item weights plus allocated collection storage.
     pub fn bytes(&self) -> usize {
         self.core.bytes.load(SeqCst)
+    }
+
+    /// [`BoundedCache::bytes`] plus what the values report beyond their weight ([`BoundedCache::with_extra`]): the figure the registry
+    /// limits act on.
+    pub fn reported_bytes(&self) -> usize {
+        Owner::bytes(&*self.core)
     }
 
     /// The registry handle (for tests and for owners that also grow in other ways).

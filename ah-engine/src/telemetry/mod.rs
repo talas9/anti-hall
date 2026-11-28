@@ -13,6 +13,7 @@
 //! * [`route`]: routing events joined to spawn results, and the NET savings estimate (D77);
 //! * [`report`]: the `telemetry` and `impact` report bodies.
 pub mod cli;
+pub mod cohort;
 pub mod emit;
 pub mod event;
 pub mod persist;
@@ -27,7 +28,7 @@ use crate::defaults;
 use crate::metrics::Metrics;
 use crate::rules::Action;
 use crate::storage::{ImpactEvent, ImpactFilter, MemStore, Store};
-use event::{Event, Kind, Outcome};
+use event::{Event, Extras, Kind, Outcome};
 use persist::{Flushed, TelDb};
 use recorder::Recorder;
 use serde_json::{Value, json};
@@ -135,14 +136,35 @@ impl Who {
     }
 }
 
-/// The message of a block verdict (a block, or an exit-2 answer), `None` for anything else.
-fn block_text(v: &Verdict) -> Option<&str> {
+/// The message of a block verdict (a block, or an exit-2 answer, or an exit-0 answer whose JSON blocks), `None` for anything else.
+fn block_text(v: &Verdict) -> Option<String> {
     match v {
-        Verdict::Block(t) => Some(t),
-        Verdict::Exact(x) if x.code == 2 => Some(&x.err),
+        Verdict::Block(t) => Some(t.clone()),
+        Verdict::Exact(x) if x.code == 2 || (x.code == 0 && crate::dispatch::combine::json_blocks(&x.out)) => {
+            let r = crate::dispatch::combine::HookResult { id: String::new(), code: Some(x.code), out: x.out.clone(), err: x.err.clone() };
+            Some(crate::daemon::block_text_of(&r))
+        }
         Verdict::Routed(inner, _) => block_text(inner),
         _ => None,
     }
+}
+
+/// A block's message as the log keeps it: trimmed, at most `cap` characters, cut where it strands no combining mark (a scalar
+/// boundary backed off over any combining marks and the base they follow; no grapheme crate is a dependency), and followed by
+/// `telemetry.block_truncated_marker` when it was cut.
+fn keep_block_text(text: &str, cap: usize) -> String {
+    let text = text.trim();
+    if text.chars().count() <= cap {
+        return text.to_string();
+    }
+    let chars: Vec<char> = text.chars().collect();
+    let mut end = cap;
+    while end > 0 && chars.get(end).is_some_and(|c| unicode_normalization::char::is_combining_mark(*c)) {
+        end -= 1;
+    }
+    let mut kept: String = chars.iter().take(end).collect();
+    kept.push_str(defaults::text("telemetry.block_truncated_marker"));
+    kept
 }
 
 impl Telemetry {
@@ -209,7 +231,30 @@ impl Telemetry {
     /// Move the inbox's events into the recorder.
     fn ingest_inbox(&self) {
         let Some(path) = lk(&self.inbox).clone() else { return };
-        let r = emit::ingest_from(&path, |ev| self.rec.event(ev));
+        let r = emit::ingest_from(&path, |ev| {
+            if ev.kind == Kind::Spill {
+                // #311: spills per event (and the ones that held a pinned context) for `status delivery`
+                let pinned = ev.h.as_str() == defaults::text("dispatch.spill_pinned_label");
+                lk(&self.metrics).inc("context_spills", &[("event", ev.e.as_str())]);
+                if pinned {
+                    lk(&self.metrics).inc("context_spill_pinned", &[]);
+                }
+            }
+            if ev.kind == Kind::Counter {
+                // a count the hook dispatcher bumped (`metrics::bump_by_shared`): it joins the registry and leaves no event row
+                if !crate::metrics::add_from_event(&mut lk(&self.metrics), ev.h.as_str(), ev.e.as_str(), ev.ib) {
+                    self.inbox_bad.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+                return;
+            }
+            if ev.kind == Kind::StopChan
+                && let Extras::Fields(f) = &ev.extras
+            {
+                let (model, project) = (f.get_tok("model").unwrap_or(""), f.get_tok("project").unwrap_or(""));
+                lk(&self.metrics).inc("stop_channel", &[("counter", ev.h.as_str()), ("check", ev.e.as_str()), ("model", model), ("project", project)]);
+            }
+            self.rec.event(ev)
+        });
         self.inbox_bad.fetch_add(r.bad, std::sync::atomic::Ordering::Relaxed);
     }
 
@@ -307,7 +352,29 @@ impl Telemetry {
                 let mut v = report::summary_json(self.tel.as_ref(), Some(&self.rec), days, now);
                 v["dropped"]["inbox_refused"] = json!(self.inbox_bad.load(std::sync::atomic::Ordering::Relaxed));
                 v["agent_cost"] = crate::agents::cost_report();
+                self.add_check_mem(&mut v);
                 v
+            }
+        }
+    }
+
+    /// Per-check heap columns on the `by_hook` rows (`query checks`): the worst peak growth and allocation of one call and the p95 peak,
+    /// from the live byte histograms (since the daemon started or the metrics were last restored; not windowed).
+    fn add_check_mem(&self, v: &mut Value) {
+        let snap = self.with_metrics(|m| m.snapshot(""));
+        let find = |name: &str, check: &str| {
+            snap["histograms"].as_array().and_then(|a| a.iter().find(|h| h["name"] == name && h["labels"]["check"] == check)).cloned()
+        };
+        if let Some(rows) = v["by_hook"].as_array_mut() {
+            for r in rows {
+                let h = r["h"].as_str().unwrap_or_default().to_string();
+                if let Some(p) = find("check_mem_peak_bytes", &h) {
+                    r["peak_heap_max_bytes"] = p["max_bytes"].clone();
+                    r["peak_heap_p95_bytes"] = p["p95_bytes"].clone();
+                }
+                if let Some(a) = find("check_mem_alloc_bytes", &h) {
+                    r["alloc_max_bytes"] = a["max_bytes"].clone();
+                }
             }
         }
     }
@@ -362,6 +429,7 @@ impl Telemetry {
             Verdict::Routed(_, _) => (Outcome::Allow, 0),
         };
         self.record(Kind::Check, check, event, outcome, micros, injected);
+        cohort::observe(check, &who.session, outcome);
         {
             let mut m = lk(&self.metrics);
             m.inc("check_calls", &[("check", check)]);
@@ -370,7 +438,7 @@ impl Telemetry {
         }
         if let Some(text) = block_text(verdict) {
             let cap = defaults::num("telemetry.block_reason_chars") as usize;
-            let reason: String = text.lines().map(str::trim).find(|l| !l.is_empty()).unwrap_or("").chars().take(cap).collect();
+            let reason = keep_block_text(&text, cap);
             self.sink(Staged::Block(crate::storage::BlockRow {
                 ts_ms: now_ms(),
                 guard: check.into(),
@@ -432,7 +500,7 @@ impl Telemetry {
             self.rec.mirror_into(&mut m);
             crate::jev::shared::drain_stats(&mut m);
             crate::metrics::drain_pending(&mut m);
-            m.export()
+            m.export_persisted()
         };
         let now = now_ms();
         let kept = self.store.save_metrics(now, &body);
@@ -452,6 +520,7 @@ impl Telemetry {
 
     /// The `metrics` command's body: all series, optionally for one check, with the live gauges refreshed.
     pub fn metrics_json(&self, check: &str, gauges: &[(&str, f64)]) -> Value {
+        self.ingest_inbox(); // the counts a hook process queued since the last flush are part of what this reads
         let persisted = self.store.persisted();
         let note = defaults::text(if persisted { "telemetry.metrics_persisted_note" } else { "telemetry.not_persisted_note" });
         let snap = self.snapshot_ms.load(std::sync::atomic::Ordering::SeqCst);
@@ -463,6 +532,41 @@ impl Telemetry {
             m.set(n, *v);
         }
         json!({"running": true, "persisted": persisted, "snapshot_ms": snap, "note": note, "metrics": m.snapshot(check)})
+    }
+
+    /// The `telemetry funnel` body: the funnel stages and channels per check, split by `by` (a comma list of `delivery.report_dims`),
+    /// for the last `window` days (less the metrics snapshot taken at the window start) or, with no window, since the counters began.
+    pub fn funnel_json(&self, by: &str, window: &str) -> Value {
+        let by = match crate::funnel::parse_by(by) {
+            Ok(b) => b,
+            Err(e) => return json!({"error": e}),
+        };
+        let days = if window.trim().is_empty() {
+            None
+        } else {
+            match report::check_window(window) {
+                Ok(d) => Some(d),
+                Err(e) => return json!({"error": e}),
+            }
+        };
+        let live = {
+            let mut m = lk(&self.metrics);
+            self.rec.mirror_into(&mut m);
+            crate::metrics::drain_pending(&mut m);
+            m.export()
+        };
+        let (baseline, complete) = match days {
+            None => (None, true),
+            Some(d) => match self.store.rollup_at(defaults::text("delivery.report_rollup"), now_ms().saturating_sub(d * event::DAY_MS)) {
+                Some((ts, body, exact)) => (Some((ts, body)), exact),
+                None => (None, false),
+            },
+        };
+        let mut v = crate::funnel::report(&live, baseline, complete, &by, days);
+        if let Some(o) = v.as_object_mut() {
+            o.insert("running".into(), json!(true));
+        }
+        v
     }
 
     /// The `metrics --rollup` body: the stored rollups of one resolution since `since_ms`.
@@ -526,6 +630,26 @@ impl Default for Telemetry {
 mod tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn calls_are_counted_by_the_session_digest_state_and_a_retry_after_a_block_is_scored() {
+        // #462: blocks per 100 matching calls with the digest on versus off, and rule.retry_compliant
+        let t = Telemetry::new();
+        let who = |s: &str| Who { session: s.into(), ..Default::default() };
+        let digest = defaults::text("guard_rules.digest_check");
+        let calls = |state: &str, outcome: &str| crate::metrics::bumped_on_this_thread("rule_digest_calls", &[("state", state), ("outcome", outcome)]);
+        let retry = |result: &str| crate::metrics::bumped_on_this_thread("rule_retry_compliant", &[("check", "git"), ("result", result)]);
+        t.observe_check_who("SessionStart", digest, "", &Verdict::Advisory("{}".into()), 1, "p", &who("coh-on"));
+        t.observe_check_who("SessionStart", digest, "", &Verdict::Allow, 1, "p", &who("coh-off"));
+        t.observe_check_who("PreToolUse", "git", "git", &Verdict::Block("x".into()), 1, "p", &who("coh-on"));
+        t.observe_check_who("PreToolUse", "git", "git", &Verdict::Allow, 1, "p", &who("coh-on"));
+        t.observe_check_who("PreToolUse", "git", "git", &Verdict::Block("x".into()), 1, "p", &who("coh-off"));
+        t.observe_check_who("PreToolUse", "git", "git", &Verdict::Block("x".into()), 1, "p", &who("coh-off"));
+        t.observe_check_who("PreToolUse", "git", "git", &Verdict::Allow, 1, "p", &who("coh-unknown"));
+        assert_eq!((calls("on", "block"), calls("on", "allow")), (1, 1));
+        assert_eq!((calls("off", "block"), calls("off", "allow")), (2, 0));
+        assert_eq!((retry("compliant"), retry("repeat")), (1, 1), "coh-on fixed the cause, coh-off was blocked again");
+    }
 
     #[test]
     fn what_a_request_records_counts_only_once_its_reply_is_written() {
@@ -724,6 +848,74 @@ mod tests {
         assert_eq!((node["h"].as_str(), node["outcomes"]["block"].as_u64(), node["injected_bytes"].as_u64()), (Some("git-guard"), Some(1), Some(9)));
     }
 
+    /// GH #540: the Stop channel's counters, queued by a dispatcher process, reach the daemon's metric and the summary's
+    /// `detail.stop_channel` split by check, model and project.
+    #[test]
+    fn stop_channel_counters_from_the_inbox_reach_the_metric_and_the_summary() {
+        let (d, _db, t) = durable("tel-stopchan");
+        let inbox = d.0.join("inbox.jsonl");
+        t.set_inbox(inbox.clone());
+        emit::append_to(
+            &inbox,
+            &[
+                emit::stop_channel("emitted", "tasklist-guard", "opus", "p1"),
+                emit::stop_channel("emitted", "tasklist-guard", "opus", "p1"),
+                emit::stop_channel("over_k", "tasklist-guard", "sonnet", "p2"),
+            ],
+        );
+        assert!(t.flush());
+        let m = t.with_metrics(|m| m.export());
+        let series = |counter: &str, check: &str, model: &str, project: &str| {
+            m["counters"][format!("stop_channel|counter={counter}|check={check}|model={model}|project={project}")].as_u64()
+        };
+        assert_eq!(series("emitted", "tasklist-guard", "opus", "p1"), Some(2), "{m}");
+        assert_eq!(series("over_k", "tasklist-guard", "sonnet", "p2"), Some(1), "{m}");
+        let s = t.telemetry_json("summary", "1d", "", 10);
+        let sc = &s["detail"]["stop_channel"];
+        assert_eq!(sc["emitted"]["total"], 2, "{s}");
+        assert_eq!(sc["emitted"]["by_check"]["tasklist-guard"], 2);
+        assert_eq!((sc["emitted"]["by_model"]["opus"].as_u64(), sc["over_k"]["by_project"]["p2"].as_u64()), (Some(2), Some(1)));
+        assert_eq!(sc["blocked_kept"]["total"], 0, "a counter nothing used shows 0");
+    }
+
+    /// Plan v3 L12 / C2: the hook dispatcher is a process of its own, so a count it bumps (`metrics::bump_by_shared`) is appended to the
+    /// inbox as a `counter` event and joins the daemon's registry on the next flush, with no event row of its own. A count whose label
+    /// values do not match the metric's labels is refused and counted as a refused inbox line.
+    #[test]
+    fn counts_the_hook_dispatcher_bumped_reach_the_daemon_metrics_through_the_inbox() {
+        let (d, _db, t) = durable("tel-counter");
+        let inbox = d.0.join("inbox.jsonl");
+        t.set_inbox(inbox.clone());
+        let ev = "UserPromptSubmit";
+        emit::append_to(
+            &inbox,
+            &[
+                emit::counter("ctx_keep_dropped", &[("event", ev), ("check", "task-tracker")], 1),
+                emit::counter("ctx_keep_dropped_chars", &[("event", ev)], 700),
+                emit::counter("ctx_keep_dropped_chars", &[("event", ev)], 50),
+                emit::counter("ctx_keep_pinned_over", &[("event", ev)], 1),
+                emit::counter("ctx_keep_dropped", &[("event", ev)], 1), // one label value short
+                emit::counter("no_such_metric_anywhere", &[("event", ev)], 1),
+            ],
+        );
+        // a `metrics` read sees them at once, without waiting for the next flush
+        let live = t.metrics_json("", &[]);
+        let seen = live["metrics"]["counters"].as_array().map(|c| c.iter().filter(|x| x["name"] == "ctx_keep_pinned_over" && x["value"] == 1).count());
+        assert_eq!(seen, Some(1), "{live}");
+        assert!(t.flush());
+        let m = t.with_metrics(|m| m.export());
+        let count = |k: &str| m["counters"][k].as_u64();
+        assert_eq!(count("ctx_keep_dropped|event=UserPromptSubmit|check=task-tracker"), Some(1), "{m}");
+        assert_eq!(count("ctx_keep_dropped_chars|event=UserPromptSubmit"), Some(750), "{m}");
+        assert_eq!(count("ctx_keep_pinned_over|event=UserPromptSubmit"), Some(1), "{m}");
+        assert_eq!(
+            m["counters"].as_object().map(|c| c.keys().filter(|k| k.starts_with("ctx_keep_dropped|")).count()),
+            Some(1),
+            "the short one is refused: {m}"
+        );
+        assert_eq!(t.telemetry_json("summary", "1d", "", 10)["dropped"]["inbox_refused"], 2, "the two refused counts are reported");
+    }
+
     #[test]
     fn the_model_recorder_api_records_backend_alias_latency_tokens_and_outcome() {
         let t = Telemetry::new();
@@ -756,6 +948,85 @@ mod tests {
         let d = &t.telemetry_json("summary", "1d", "", 10)["detail"]["daemon"];
         assert_eq!(d["snapshots"], 2);
         assert_eq!((d["latest"]["rss_kb"].as_u64(), d["latest"]["degraded"].as_u64(), d["latest"]["saturated"].as_u64()), (Some(95_000), Some(1), Some(1)));
+    }
+
+    /// A store that keeps the block rows it is given (the real one writes them to hot.db).
+    struct Blocks(MemStore, std::sync::Arc<Mutex<Vec<crate::storage::BlockRow>>>);
+
+    impl Store for Blocks {
+        fn record_impact(&self, e: ImpactEvent) {
+            self.0.record_impact(e)
+        }
+        fn record_block(&self, row: crate::storage::BlockRow) {
+            self.1.lock().unwrap_or_else(|e| e.into_inner()).push(row);
+        }
+        fn impact_counts(&self, f: &ImpactFilter) -> Vec<crate::storage::ImpactCount> {
+            self.0.impact_counts(f)
+        }
+        fn recent_impact(&self, f: &ImpactFilter, limit: usize) -> Vec<ImpactEvent> {
+            self.0.recent_impact(f, limit)
+        }
+        fn held_events(&self) -> usize {
+            self.0.held_events()
+        }
+        fn save_metrics(&self, ts: u64, b: &serde_json::Value) -> bool {
+            self.0.save_metrics(ts, b)
+        }
+        fn load_metrics(&self) -> Option<(u64, serde_json::Value)> {
+            self.0.load_metrics()
+        }
+        fn rollups(&self, r: &str, since: u64) -> Vec<serde_json::Value> {
+            self.0.rollups(r, since)
+        }
+    }
+
+    #[test]
+    fn a_block_row_keeps_the_whole_message_up_to_the_configured_cap_and_names_its_check() {
+        // the labelling run found reasons cut to the first line / 200 chars, so a block could not be judged afterwards
+        let kept = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let t = Telemetry::with_store(Box::new(Blocks(MemStore::new(8, 8, "other"), kept.clone())));
+        let cap = defaults::num("telemetry.block_reason_chars") as usize;
+        assert!(cap >= 1024, "the default keeps a whole message, not one line ({cap})");
+        let long = format!("first line\nsecond line {}", "x".repeat(cap * 2));
+        t.observe_check_who("Stop", "tasklist-guard", "tasklist-guard", &Verdict::Block(long), 1, "p", &Who::default());
+        t.observe_check_who("Stop", "edit-guard", "edit-guard", &Verdict::Block("short\nmessage\n".into()), 1, "p", &Who::default());
+        let rows = kept.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(rows.len(), 2);
+        let (a, b) = (rows.first().cloned().unwrap_or_default(), rows.get(1).cloned().unwrap_or_default());
+        assert_eq!((a.guard.as_str(), b.guard.as_str()), ("tasklist-guard", "edit-guard"), "each row names its check");
+        assert!(a.reason.starts_with("first line\nsecond line "), "{}", a.reason);
+        let marker = defaults::text("telemetry.block_truncated_marker");
+        assert!(a.reason.ends_with(marker) && !marker.is_empty(), "a cut message is marked: {}", a.reason);
+        assert_eq!(a.reason.chars().count(), cap + marker.chars().count(), "cut at the configured cap, then the marker");
+        assert_eq!(b.reason, "short\nmessage", "a short message is kept whole");
+    }
+
+    #[test]
+    fn the_legacy_path_logs_an_exit_zero_json_block_with_its_full_reason() {
+        // `ah-engine hook` without --event goes through hookio::respond_observed, whose observer gets the check's Exact answer: a
+        // scripted Stop guard blocks with exit 0, a JSON reason on stdout and an empty stderr, and that used to log no row at all
+        let kept = std::sync::Arc::new(Mutex::new(Vec::new()));
+        let t = Telemetry::with_store(Box::new(Blocks(MemStore::new(8, 8, "other"), kept.clone())));
+        let exact = |code: i32, out: &str, err: &str| Verdict::Exact(crate::checks::Exact { code, out: out.into(), err: err.into() });
+        let block = exact(0, "{\"decision\":\"block\",\"reason\":\"first\\nsecond\"}\n", "");
+        t.observe_check_who("Stop", "claim-guard", "claim-guard", &block, 1, "p", &Who::default());
+        // an exit-0 answer that is only an advisory logs no block
+        t.observe_check_who("Stop", "claim-guard", "claim-guard", &exact(0, "{\"systemMessage\":\"fyi\"}\n", ""), 1, "p", &Who::default());
+        let rows = kept.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(rows.len(), 1, "one block row, none for the advisory");
+        assert_eq!(rows.first().map(|r| (r.guard.as_str(), r.reason.as_str())), Some(("claim-guard", "first\nsecond")));
+    }
+
+    #[test]
+    fn a_cut_does_not_strand_a_combining_mark_and_the_cap_has_a_maximum() {
+        // 'e' + U+0301 repeated: a cut between a base and its mark backs off to before the base
+        let text = "e\u{301}".repeat(10);
+        let kept = keep_block_text(&text, 5);
+        let marker = defaults::text("telemetry.block_truncated_marker");
+        let body = kept.strip_suffix(marker).unwrap_or(&kept);
+        assert_eq!(body, "e\u{301}e\u{301}", "{kept:?}");
+        assert_eq!(keep_block_text("whole", 5), "whole", "a message exactly at the cap is not marked");
+        assert!(defaults::num("telemetry.block_reason_chars") <= 16384, "the TOML maximum clamps the cap");
     }
 
     #[test]

@@ -201,6 +201,12 @@ pub fn write_cache_on_load() {
     CACHE_WRITES.store(true, Ordering::SeqCst);
 }
 
+/// True when a snapshot is already active in this process. Unlike every typed getter it never loads one (and so can never abort on a
+/// missing plugin root): code on a process's exit path asks this before it reads any setting.
+pub fn is_loaded() -> bool {
+    CUR.load().is_some()
+}
+
 fn current() -> Option<Arc<Backend>> {
     CUR.load_full()
 }
@@ -564,6 +570,16 @@ pub fn num(key: &str) -> u64 {
     v
 }
 
+/// A numeric setting with a per-event override: the `event` row of the table setting `table_key` when it has one, else `key`
+/// (resolved by [`num`]). A set environment variable of `key` wins over the table for every event.
+pub fn num_for_event(key: &str, table_key: &str, event: &str) -> u64 {
+    let base = num(key);
+    if entry(key).env.and_then(|n| std::env::var(n).ok()).is_some_and(|s| s.trim().parse::<u64>().is_ok()) {
+        return base;
+    }
+    raw(table_key).get(event).and_then(V::as_integer).map_or(base, |v| v.max(0) as u64)
+}
+
 /// A numeric setting expressed in milliseconds, as a `Duration`.
 pub fn millis(key: &str) -> std::time::Duration {
     std::time::Duration::from_millis(num(key))
@@ -600,6 +616,29 @@ pub fn fill(template: &str, args: &[(&str, &dyn std::fmt::Display)]) -> String {
     for (name, value) in args {
         out = out.replace(&format!("{{{name}}}"), &value.to_string());
     }
+    out
+}
+
+/// Like [`fill`], in one pass: a value is inserted as written, so a `{name}` inside a value (a task subject) is never expanded.
+pub fn fill_once(template: &str, args: &[(&str, &dyn std::fmt::Display)]) -> String {
+    let mut out = String::with_capacity(template.len());
+    let mut rest = template;
+    while let Some(open) = rest.find('{') {
+        out.push_str(&rest[..open]);
+        let tail = &rest[open..];
+        let hit = tail.find('}').and_then(|close| args.iter().find(|(name, _)| tail[1..close] == **name).map(|(_, v)| (close, v)));
+        match hit {
+            Some((close, v)) => {
+                out.push_str(&v.to_string());
+                rest = &tail[close + 1..];
+            }
+            None => {
+                out.push('{');
+                rest = &tail[1..];
+            }
+        }
+    }
+    out.push_str(rest);
     out
 }
 
@@ -645,6 +684,21 @@ pub fn all() -> Arc<[&'static Entry]> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cache_drops_the_previous_generation_when_the_defaults_change() {
+        use std::sync::Weak;
+        let cache: Cache<u8> = Cache::new();
+        let first = cache.get_or_init(|| 1);
+        let weak: Weak<u8> = Arc::downgrade(&first);
+        assert!(Arc::ptr_eq(&first, &cache.get_or_init(|| 2)), "same generation: the built value is reused");
+        drop(first);
+        assert!(weak.upgrade().is_some(), "the cache still holds the current generation");
+        GENERATION.fetch_add(1, Ordering::SeqCst);
+        let second = cache.get_or_init(|| 3);
+        assert_eq!(*second, 3, "rebuilt after the generation moved");
+        assert!(weak.upgrade().is_none(), "the previous generation is released, not kept beside the new one");
+    }
 
     #[test]
     fn every_setting_has_a_value_and_a_sentence_doc() {

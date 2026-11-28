@@ -66,19 +66,105 @@ function swgUnder(abs, dir) {
 
 // True when the brief names its own working tree (a clone, worktree, cd or work-in target) at an absolute or ~ path outside the
 // session's tree: that agent works in another checkout, so it shares nothing with this one.
-function swgNamesOtherTree(t, tree) {
-  if (!tree) return false;
-  var hits = ah.re.findAll(ah.cfg('swarm_guard.re_named_tree'), 'i', t), home = ah.home();
+// The bare fresh-clone matcher (swarm_guard.re_named_tree_bare, guards.sharedTreeBareClone) runs only after the main one found nothing;
+// swgBareHit tells the shared-tree note that the bare matcher alone made the difference, so it can count the exemption once per spawn.
+var swgBareHit = false, swgBareSpans = [], swgBareAvoided = false;
+
+// Fail safe: any negation token ("not", "never", "without", "rather than", "n't" ...) anywhere in the sentence that holds the bare statement,
+// before or after it and with any words between, keeps the shared-tree note. Only an unambiguous affirmative sentence exempts the spawn.
+// Whatever is uncertain WIDENS the sentence, never narrows it: a sentence ends only at a stop, ! or ? before white space and a capital
+// letter (never a semicolon), and never inside brackets, quotes, code ticks, emphasis or dashes (an unclosed one runs to the end), after
+// an abbreviation, a lone letter or digit, or in an ellipsis. A single quote or emphasis mark opens a span only by its place in the text
+// (swarm_guard.bare_mark_groups): an apostrophe in a word opens nothing. The negation test then reads the unmasked sentence, with path
+// words blanked ("~/no-tree" is no negation). The breaks of a text are found once per text (swgBareBreaks), not once per hit.
+function swgBareMask(t) {
+  var m = t.split(''), spans = ah.re.findAll(ah.cfg('swarm_guard.re_named_tree_bare_mask'), 'r', t), i, j, k;
+  for (i = 0; i < spans.length; i++) for (k = spans[i][0]; k < spans[i][1] && k < m.length; k++) m[k] = '_';
+  var open = ah.cfg('swarm_guard.bare_nest_open'), close = ah.cfg('swarm_guard.bare_nest_close'), toggle = ah.cfg('swarm_guard.bare_nest_toggle');
+  var groups = ah.cfg('swarm_guard.bare_mark_groups').split(' '), word = new RegExp(ah.cfg('swarm_guard.bare_mark_word'), 'u');
+  var before = new RegExp(ah.cfg('swarm_guard.bare_mark_before'), 'u'), dash = {}, dashes = ah.re.findAll(ah.cfg('swarm_guard.re_named_tree_bare_dash'), 'r', t);
+  for (i = 0; i < dashes.length; i++) dash[dashes[i][0] + t.slice(dashes[i][0], dashes[i][1]).indexOf('-')] = true;
+  var pairs = ah.cfg('swarm_guard.bare_nest_toggle_pairs').split(' '), stack = [], tog = {}, togOpen = 0;
+  for (i = 0; i < m.length; i++) {
+    var c = t.charAt(i), o = open.indexOf(c), inside = stack.length > 0 || togOpen > 0, g = -1;
+    for (j = 0; j < groups.length; j++) if (groups[j].indexOf(c) >= 0) g = j;
+    if (pairs.indexOf(t.substr(i, 2)) >= 0 && (i === 0 || t.charAt(i - 1) !== c)) {
+      inside = true; if (tog[c + c]) { tog[c + c] = false; togOpen--; } else { tog[c + c] = true; togOpen++; }
+      m[i++] = '_';
+    } else if (dash[i]) { inside = true; if (tog['-']) { tog['-'] = false; togOpen--; } else { tog['-'] = true; togOpen++; } }
+    else if (stack.length && c === stack[stack.length - 1]) stack.pop();
+    else if (o >= 0) { inside = true; stack.push(close.charAt(o)); }
+    else if (toggle.indexOf(c) >= 0) { inside = true; if (tog[c]) { tog[c] = false; togOpen--; } else { tog[c] = true; togOpen++; } }
+    else if (g >= 0) {
+      var prev = i > 0 ? t.charAt(i - 1) : '', next = i + 1 < t.length ? t.charAt(i + 1) : '', tok = '\u0001' + g;
+      if (stack.length && stack[stack.length - 1] === tok && prev !== '' && !/\s/.test(prev) && !word.test(next)) stack.pop();
+      else if (before.test(prev) && next !== '' && !/\s/.test(next)) { inside = true; stack.push(tok); }
+    }
+    if (inside) m[i] = '_';
+  }
+  return m.join('');
+}
+
+function swgBareBreaks(t) { return ah.re.findAll(ah.cfg('swarm_guard.re_named_tree_bare_clause_break'), 'r', swgBareMask(t)); }
+
+function swgBareClauseNegated(t, from, to, brk) {
+  var lead = ah.re.find(ah.cfg('swarm_guard.re_named_tree_bare_lead'), '', t.slice(from, to));
+  var at = from + (lead ? lead[1] : 0), start = 0, end = t.length;
+  // a break's own match opens with its stop and ends on the next sentence's first letter: both bounds use its start
+  for (var i = 0; i < brk.length; i++) {
+    if (brk[i][0] < at) start = brk[i][0];
+    else { end = brk[i][0]; break; }
+  }
+  var clause = t.slice(start, end).replace(new RegExp(ah.cfg('swarm_guard.re_named_tree_bare_invisible'), 'g'), '')
+    .replace(new RegExp(ah.cfg('swarm_guard.re_named_tree_bare_pathtok'), 'g'), '$1 ');
+  return ah.re.test(ah.cfg('swarm_guard.re_named_tree_bare_negation'), 'r', clause);
+}
+
+// For the bare matcher every exempting statement is collected (swgBareSpans, offsets into t): the in-place check blanks them all,
+// "use ~/x as the working copy" would otherwise trip the in-place word "working copy".
+function swgNamedTreeOutside(t, tree, key, home, bare) {
+  var hits = ah.re.findAll(ah.cfg(key), 'i', t), found = false, brk = null;
   for (var i = 0; i < hits.length; i++) {
     var m = t.slice(hits[i][0], hits[i][1]), at = ah.re.find(ah.cfg('swarm_guard.re_named_tree_path'), '', m);
     if (!at) continue;
+    // a negated bare statement ("do not use ~/x as the working copy") names no tree of this agent's
+    if (bare) { if (brk === null) brk = swgBareBreaks(t); if (swgBareClauseNegated(t, hits[i][0], hits[i][1], brk)) continue; }
     var raw = m.slice(at[0], at[1]), trim = ah.re.find(ah.cfg('swarm_guard.re_named_tree_trim'), '', raw);
     if (trim) raw = raw.slice(0, trim[0]);
     var tilde = ah.re.find(ah.cfg('swarm_guard.re_named_tree_home'), '', raw);
     if (tilde) { if (!home) continue; raw = home + raw.slice(tilde[1]); }
     if (!ah.path.isAbsolute(raw)) continue;
     var abs = ah.path.resolveAbs(raw);
-    if (!swgInTree(abs, tree)) return true;
+    if (!swgInTree(abs, tree)) { if (!bare) return true; swgBareSpans.push(hits[i]); found = true; }
+  }
+  return found;
+}
+
+function swgNamesOtherTree(t, tree) {
+  if (!tree) return false;
+  var home = ah.home();
+  if (swgNamedTreeOutside(t, tree, 'swarm_guard.re_named_tree', home)) return true;
+  if (ah.settings.bool('swarm_guard.named_tree_bare_setting') && swgNamedTreeOutside(t, tree, 'swarm_guard.re_named_tree_bare', home, true)) { swgBareHit = true; return true; }
+  return false;
+}
+
+// true when a rule in the owner's memory files (the project's memory folder, listed in swarm_guard.memory_sources) forbids worktrees.
+function swgMemoryNoWorktrees(cwd) {
+  var home = ah.home();
+  if (!home) return false;
+  var slug = ah.path.resolveAbs(cwd).replace(new RegExp(ah.cfg('swarm_guard.memory_slug_re'), 'g'), '-'), cap = ah.cfgNum('script.read_max_bytes');
+  var dirs = ah.cfg('swarm_guard.memory_sources').map(function (d) { return ah.path.join(home, d.split('{slug}').join(slug)); });
+  var re = ah.cfg('swarm_guard.re_no_worktrees');
+  for (var i = 0; i < dirs.length; i++) {
+    var names = ah.fs.readdir(dirs[i]);
+    if (names === null) continue;
+    for (var j = 0; j < names.length && j < ah.cfgNum('swarm_guard.memory_files_max'); j++) {
+      if (!/\.md$/.test(names[j])) continue;
+      var f = ah.path.join(dirs[i], names[j]), size = ah.fs.size(f);
+      if (size === null || size > cap) continue;
+      var t = ah.fs.readText(f, cap);
+      if (t !== null && ah.re.test(re, 'i', t)) return true;
+    }
   }
   return false;
 }
@@ -92,9 +178,16 @@ function swgInScratch(inp, tree) {
   // spans; an independent affirmative clause still cancels the exemption.
   var place = ah.cfg('swarm_guard.re_in_place');
   var negated = ah.cfg('swarm_guard.re_negated_in_place').split('{place}').join(place);
-  var affirmative = t.replace(new RegExp(negated, 'gi'), ' ');
-  return (ah.re.test(scratch, 'i', t) || ah.re.test(ah.cfg('swarm_guard.re_api_only'), 'i', t) || swgNamesOtherTree(t, tree)) && !ah.re.test(ah.cfg('swarm_guard.re_scratch_negated'), 'i', t) &&
-    !ah.re.test(place, 'i', affirmative);
+  swgBareSpans = [];
+  // an agent that only writes a report or results under the scratch location touches no checkout, unless it also says it edits repo files
+  var scratchOnly = ah.settings.bool('swarm_guard.scratch_only_setting') &&
+    ah.re.test(ah.cfg('swarm_guard.re_scratch_only').split('{path}').join(path), 'i', t) && !ah.re.test(ah.cfg('swarm_guard.re_repo_write'), 'i', t);
+  var exempt = scratchOnly || ah.re.test(scratch, 'i', t) || ah.re.test(ah.cfg('swarm_guard.re_api_only'), 'i', t) || swgNamesOtherTree(t, tree);
+  if (!exempt || ah.re.test(ah.cfg('swarm_guard.re_scratch_negated'), 'i', t)) return false;
+  // blank each exempting bare statement by offset (same length, so the replace below keeps its place)
+  var blanked = t;
+  swgBareSpans.forEach(function (h) { blanked = blanked.slice(0, h[0]) + ' '.repeat(h[1] - h[0]) + blanked.slice(h[1]); });
+  return !ah.re.test(place, 'i', blanked.replace(new RegExp(negated, 'gi'), ' '));
 }
 
 function swgSharesTree(inp, tree) { return swgWriteCapable(inp) && !swgIsolated(inp) && !swgInScratch(inp, tree); }
@@ -125,11 +218,18 @@ function swgRepoDocsMatch(dir0, re) {
 
 // The advisory text, '' when silent, null when the answer cannot be reproduced (counted; no note).
 function swgSharedTreeNote(p) {
+  swgBareAvoided = false; // a stale flag from the previous call must never count
   if (!ah.settings.bool('swarm_guard.shared_tree_setting')) return '';
   var inp = swgIsObj(p.tool_input) ? p.tool_input : null;
   var tree = swgTree(p.cwd);
   if (tree === 'unsure') return null;
-  if (!inp || !swgSharesTree(inp, tree)) return '';
+  swgBareHit = false;
+  // exempt only by the bare matcher: flagged below once the warning is known to have been due (the caller counts it only when the spawn is allowed); later scans clobber swgBareHit
+  var bareExempt = false;
+  if (!inp || !swgSharesTree(inp, tree)) {
+    if (!swgBareHit) return '';
+    bareExempt = true;
+  }
   var tp = p.transcript_path;
   if (!tp || typeof tp !== 'string') return '';
   var scan = ah.transcript.agentsWindow(tp); // Node's runningAgents: the default window only
@@ -141,6 +241,10 @@ function swgSharedTreeNote(p) {
   if (!p.cwd) return null;
   var noWt = swgRepoDocsMatch(String(p.cwd), ah.cfg('swarm_guard.re_no_worktrees'));
   if (noWt === null) return null;
+  if (ah.settings.bool('swarm_guard.quiet_no_worktrees_setting')) { // a rule that says main-only / no worktrees makes the hint moot
+    if (noWt || swgMemoryNoWorktrees(String(p.cwd))) return '';
+  }
+  if (bareExempt) { swgBareAvoided = true; return ''; }
   return text.message('warn', ah.cfg('swarm_guard.shared_tree_label'), {
     what: ah.cfg('swarm_guard.msg_shared_what'), why: ah.cfg('swarm_guard.msg_shared_why'),
     instead: ah.cfg(noWt ? 'swarm_guard.msg_shared_instead_no_worktrees' : 'swarm_guard.msg_shared_instead'),
@@ -160,6 +264,74 @@ function swgDescribe(p) {
 // check reads (ctxbudget.usage_cache) and the running agents of the session transcript (the tracker's scan). Tokens against outcome is the
 // metric; parallelism itself is fine, so the ceiling is a generous safety net that shrinks only when the 5-hour or weekly limit is near.
 
+// The owner's concurrent-agent cap (guards.maxConcurrentAgents): a block reason, or null with the allowed spawn's slot reserved. The
+// whole decision (the running agents, the reservations, the count, the new reservation) is taken under the reservation lock, never a
+// snapshot read before it, so overlapping checks cannot pass the cap however launches interleave (GH #494). A reservation (keyed by the
+// tool call id) counts until a tool result of its call shows in the transcript (an async launch or a foreground answer, running or
+// finished) or it is older than spawn_ceiling.reservation_ttl_ms. Only a background call reserves (spawn_ceiling.background_field);
+// an agent type of guards.cap_excluded_agent_types is outside the cap. Lock busy: the same count, read unlocked, decides and nothing
+// is reserved; a lock left by a dead or hung check is taken over (the spawn_reservation lock group).
+function swgCapGate(p, home) {
+  var cap = ah.settings.num('spawn_ceiling.max_concurrent_setting');
+  if (!(cap > 0) || typeof p.transcript_path !== 'string' || p.transcript_path === '') return null; // no transcript: nothing to count against, as before
+  var inp = swgIsObj(p.tool_input) ? p.tool_input : {};
+  if (swgCapExcluded(swgAgentType(inp))) { ah.metric('spawn_reservations', ['outcome', 'excluded_type']); return null; }
+  var bgv = inp[ah.cfg('spawn_ceiling.background_field')];
+  var bg = typeof bgv === 'boolean' ? bgv : ah.cfg('spawn_ceiling.reserve_unflagged');
+  var session = typeof p.session_id === 'string' ? p.session_id : '', dir = ah.cfg('swarm_guard.state_dir');
+  var rel = dir + '/' + ah.cfg('spawn_ceiling.reservation_file');
+  var lock = ah.state.lock(dir + '/' + ah.cfg('spawn_ceiling.reservation_lock'), ah.cfg('spawn_ceiling.reservation_lock_group'));
+  if (lock === null) { ah.unable('swarm-guard:cap_lock_busy'); ah.metric('spawn_reservations', ['outcome', 'lock_busy']); }
+  var all = swgCapRunning(p), now = Date.now(), ttl = ah.cfgNum('spawn_ceiling.reservation_ttl_ms');
+  var rows = [], raw = ah.fs.readText(ah.path.join(home, rel)), doc = null;
+  if (raw !== null) { try { doc = JSON.parse(raw); } catch (e) { doc = null; } }
+  if (doc && Array.isArray(doc.rows)) rows = doc.rows.filter(function (r) {
+    return r && typeof r.id === 'string' && typeof r.at === 'number' && now - r.at < ttl && !(r.session === session && all.toolUseIds[r.id]);
+  });
+  // A counted tracker child with no launch id in its meta is still the launch of one reservation: the oldest open reservation of this
+  // session with its agent type (an unknown type on either side matches) is released, one to one. The children already matched are
+  // kept in the file (doc.matched), so a child releases one reservation once, not one on every later check.
+  var matched = {}, nowMatched = {};
+  if (doc && doc.matched && typeof doc.matched === 'object') Object.keys(doc.matched).forEach(function (k) { if (doc.matched[k] === true) matched[k] = true; });
+  all.children.forEach(function (c) {
+    if (c.toolUseId !== '') return;
+    nowMatched[c.id] = true;
+    if (matched[c.id]) return;
+    var best = -1;
+    rows.forEach(function (r, i) {
+      if (r.session !== session) return;
+      var rt = typeof r.type === 'string' ? r.type : '';
+      if (rt !== '' && c.agentType !== '' && rt !== c.agentType) return;
+      if (best < 0 || r.at < rows[best].at) best = i;
+    });
+    if (best >= 0) rows.splice(best, 1);
+  });
+  var open = {};
+  rows.forEach(function (r) { if (r.session === session) open[r.id] = true; });
+  var answered = swgAnsweredIds(p.transcript_path, open);
+  rows = rows.filter(function (r) { return !(r.session === session && answered[r.id]); });
+  var mine = rows.filter(function (r) { return r.session === session; }).length, n = all.n + mine;
+  if (n >= cap) {
+    if (lock !== null) ah.state.unlock(lock);
+    ah.advisory('flagged', 'spawn_cap_block');
+    ah.metric('spawns_denied_over_cap', []);
+    return text.message('block', ah.cfg('spawn_ceiling.guard_name'), {
+      what: text.render(ah.cfg('spawn_ceiling.msg_cap_what'), { n: n, cap: cap, names: all.names.join(ah.cfg('spawn_ceiling.join')), more: n > all.names.length ? text.render(ah.cfg('spawn_ceiling.msg_more'), { n: n - all.names.length }) : '' }),
+      why: ah.cfg('spawn_ceiling.msg_why'), instead: ah.cfg('spawn_ceiling.msg_cap_instead'),
+    });
+  }
+  if (lock === null) return null;
+  if (bg) {
+    var id = typeof p.tool_use_id === 'string' && p.tool_use_id !== '' ? p.tool_use_id : now + '-' + Math.random().toString(36).slice(2);
+    rows.push({ id: id, session: session, at: now, type: swgAgentType(inp) });
+  }
+  var ok = ah.state.writeAtomic(rel, JSON.stringify({ rows: rows, matched: nowMatched }));
+  ah.state.unlock(lock);
+  if (!ok) ah.unable('swarm-guard:cap_reserve_write');
+  ah.metric('spawn_reservations', ['outcome', !ok ? 'write_failed' : bg ? 'reserved' : 'foreground']);
+  return null;
+}
+
 // A block reason, an advisory line to ride an allowed spawn ('' for none).
 function swgBudgetGates(p, home) {
   var full = null, usageOn = ah.settings.bool('spawn_usage.setting') && !ah.settings.skipped(ah.cfg('spawn_usage.guard_name'));
@@ -169,6 +341,7 @@ function swgBudgetGates(p, home) {
   var note = '';
   if (usageOn && full) {
     if (full.pct >= ah.cfgNum('spawn_usage.block_pct')) {
+      dedupe.advisory(p, 'usage', null, ''); // observe the changed facts; the block text is never deduped
       ah.advisory('flagged', 'spawn_usage_block');
       return { block: text.message('block', ah.cfg('spawn_usage.guard_name'), {
         what: text.render(ah.cfg('spawn_usage.msg_block_what'), { limit: full.name, pct: Math.round(full.pct), cap: ah.cfgNum('spawn_usage.block_pct'), resets: swgResetText(full) }),
@@ -183,7 +356,10 @@ function swgBudgetGates(p, home) {
       });
     }
   }
+  var usageFacts = full ? [full.name, Math.floor(full.pct / ah.settings.num('tool_advisory.usage_bucket_pct')), swgResetText(full), !!note] : null;
   if (ceilOn) {
+    var capBlock = swgCapGate(p, home);
+    if (capBlock !== null) return { block: capBlock, note: '' };
     var run = swgRunning(p), ceil = swgCeiling(full);
     if (run !== null && run.n >= ceil) {
       ah.advisory('flagged', 'spawn_ceiling_block');
@@ -193,7 +369,7 @@ function swgBudgetGates(p, home) {
       }), note: '' };
     }
   }
-  return { block: null, note: note };
+  return { block: null, note: note, usageFacts: usageFacts };
 }
 
 function swgBlock(reason) { return { exact: { code: 2, out: text.blockJson(reason), err: '' } }; }
@@ -228,7 +404,6 @@ function decide(p) {
 
   var note = swgSharedTreeNote(p);
   if (note === null) { ah.unable('swarm-guard:shared_tree_note_unsure'); note = ''; }
-  if (gates.note) note = note ? gates.note + '\n' + note : gates.note;
 
   var dir = ah.cfg('swarm_guard.state_dir');
   var logRel = dir + '/' + ah.cfg('swarm_guard.log_file');
@@ -261,7 +436,12 @@ function decide(p) {
     ah.state.writeAtomic(logRel, recent.join('\n') + '\n'); // a failed write allows the spawn unrecorded, as Node
   }
   ah.state.unlock(lock);
-  if (reason === null) return note ? { advisory: text.advisoryJson('PreToolUse', note) } : 'allow';
+  if (reason === null) {
+    // an avoided warning is counted only on an allowed spawn that was recorded: a rate block or an unlocked allow shows no note either way
+    if (swgBareAvoided) { ah.advisory('swarm_guard_fp', 'named_tree_bare'); ah.metric('named_tree_bare', []); }
+    if (dedupe.advisory(p, 'usage', gates.usageFacts, gates.note) && gates.note) note = note ? gates.note + '\n' + note : gates.note;
+    return note ? { advisory: text.advisoryJson('PreToolUse', note) } : 'allow';
+  }
   // telemetry only, after the lock: a trip is observable but never feeds the rate window
   ah.state.appendFile(dir + '/' + ah.cfg('swarm_guard.trip_file'), new Date(now).toISOString() + '\t' + tripped + '\t' + label + '\n');
   return swgBlock(reason);

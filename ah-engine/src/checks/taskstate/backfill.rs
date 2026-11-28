@@ -38,7 +38,7 @@ fn terminal(s: &str) -> bool {
     res().terminal.is_match(s)
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct Found {
     status: bool,
     owner: bool,
@@ -47,18 +47,19 @@ struct Found {
     subject: bool,
 }
 
-struct Rec {
+#[derive(Clone)]
+pub(super) struct Rec {
     need_status: bool,
     f: Found,
-    st: Option<String>,
-    own: String,
-    bo: Option<Value>,
-    bb: Vec<String>,
-    adds: Vec<String>,
-    subject: String,
-    cr: bool,
-    ab: bool,
-    done: bool,
+    pub(super) st: Option<String>,
+    pub(super) own: String,
+    pub(super) bo: Option<Value>,
+    pub(super) bb: Vec<String>,
+    pub(super) adds: Vec<String>,
+    pub(super) subject: String,
+    pub(super) cr: bool,
+    pub(super) ab: bool,
+    pub(super) done: bool,
 }
 
 impl Rec {
@@ -79,12 +80,12 @@ impl Rec {
     }
 }
 
-struct Need {
-    subject: bool,
-    status: bool,
-    owner: bool,
-    blocked_by: bool,
-    blocked_on: bool,
+pub(super) struct Need {
+    pub(super) subject: bool,
+    pub(super) status: bool,
+    pub(super) owner: bool,
+    pub(super) blocked_by: bool,
+    pub(super) blocked_on: bool,
 }
 
 fn blocked_on_of(inp: &Value) -> Option<Value> {
@@ -245,7 +246,7 @@ fn apply_rec(task: &mut Task, need: &Need, rec: &Rec) {
 }
 
 /// One classified transcript line.
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct Line {
     msg_id: Option<String>,
     cands: Vec<(String, f64)>,
@@ -328,6 +329,7 @@ fn classify(line: &str) -> R<Line> {
 }
 
 /// Read `n` bytes ending at `pos + n`.
+#[cfg(test)]
 fn read_at(f: &mut std::fs::File, pos: u64, n: usize) -> Option<Vec<u8>> {
     let mut buf = vec![0u8; n];
     f.seek(SeekFrom::Start(pos)).ok()?;
@@ -354,6 +356,160 @@ fn prefix_end_of(f: &mut std::fs::File, start: u64) -> Option<u64> {
         read += step as u64;
     }
     None
+}
+
+/// The lines the backward scan reads, classified once and kept between calls by the shared incremental view (#953): a line that names
+/// no task tool (`None`) changes nothing in the scan, and what [`classify`] makes of any other does not depend on the lines around it.
+fn digest_back(text: &str) -> Option<Option<(crate::transcript::view::Item, usize)>> {
+    if !text.contains("Task") && !text.contains("TodoWrite") && !text.contains(defaults::text("taskstate.no_tasks_marker")) {
+        return Some(None);
+    }
+    let r: Result<Line, Unsure> = classify(text);
+    let weight = std::mem::size_of::<Line>()
+        + r.as_ref().map_or(0, |l| {
+            l.creates.iter().map(|(i, v)| i.len() + v.to_string().len()).sum::<usize>()
+                + l.updates.iter().map(|(i, v, t)| i.len() + v.to_string().len() + t.as_ref().map_or(0, String::len)).sum::<usize>()
+                + l.calls.iter().map(|(a, b, c)| a.len() + b.len() + c.as_ref().map_or(0, String::len)).sum::<usize>()
+        });
+    Some(Some((std::sync::Arc::new(r) as crate::transcript::view::Item, weight)))
+}
+
+/// The backward scan from the window start for the records of the `wanted` tasks: what each of them is found to be before the
+/// window. A function of the file's bytes, the window and the wanted set alone, so every reconstruction that wants the same tasks
+/// of the same file state shares one scan ([`super::memo`]). The scan reads the lines before the window start newest first, in the
+/// same chunks of `taskstate.backfill_chunk_bytes` as ever (a chunk decides when the scan has found everything, when it has gone
+/// `taskstate.backfill_exact_bytes` back, and which unreadable line it reaches); the classified lines come from the view, so a call
+/// classifies only the lines that entered the window's neighbourhood since the last one.
+pub(super) fn scan_back(path: &str, size: u64, window: u64, wanted: &[(String, Need)], first: f64) -> R<HashMap<u64, Rec>> {
+    let start = size - window;
+    let mut recs: HashMap<u64, Rec> = HashMap::new();
+    let key = |id: &str| number_of_digits(id) as u64;
+    for (id, need) in wanted {
+        recs.insert(key(id), Rec::new(need.status));
+    }
+    let mut f = std::fs::File::open(path).map_err(|_| Unsure)?;
+    let Some(pos0) = prefix_end_of(&mut f, start) else {
+        // Node returns without applying anything when the straddling line's end is not found (`pos <= 0`).
+        return Err(Unsure);
+    };
+    let chunk = defaults::num("taskstate.backfill_chunk_bytes");
+    let max_scan = defaults::num("taskstate.backfill_exact_bytes");
+    let max_cands = defaults::num("taskstate.backfill_max_candidates") as usize;
+    // one fixed window for every call (its key must not move with the file): everything the scan can reach from the straddling line
+    let reach = window.saturating_add(defaults::num("taskstate.backfill_prefix_scan_bytes")).saturating_add(max_scan).saturating_add(chunk);
+    let q = crate::transcript::view::DigestQuery { key: "backfill", window: reach, crlf: false, line_max: 0, digest: &digest_back };
+    let Ok(Some(found)) = crate::transcript::view::digests(path, &q) else { return Err(Unsure) };
+    let before: Vec<(u64, &Result<Line, Unsure>)> =
+        found.starts.iter().zip(&found.items).filter(|(s, _)| **s < pos0).filter_map(|(s, i)| i.downcast_ref::<Result<Line, Unsure>>().map(|l| (*s, l))).collect();
+    let mut next = before.len();
+    let mut min_created = first;
+    let mut group_id: Option<String> = None;
+    let mut group_base = first;
+    let mut cands: Vec<(String, f64)> = Vec::new();
+    let mut reset_cands: Vec<(String, &'static [&'static str])> = Vec::new();
+    let mut failed: HashSet<String> = HashSet::new();
+    let mut pos = pos0;
+    let mut scanned = 0u64;
+    let mut stopped = false;
+    let pending = |recs: &HashMap<u64, Rec>| recs.values().filter(|r| !r.done).count();
+    while pos > 0 && !stopped {
+        if pending(&recs) == 0 {
+            break;
+        }
+        // #763: the byte cap bounds the scan, the call's cut (deadline or the check's cap) ends it sooner: unsure, never a partial answer
+        if scanned >= max_scan || crate::deadline::cut_due() {
+            return Err(Unsure);
+        }
+        let n = chunk.min(pos);
+        pos -= n;
+        scanned += n;
+        // this chunk's lines: those that start after its first newline, i.e. after `pos` (the line that starts at `pos` waits for the
+        // next chunk, which holds it); the last chunk, at the file's start, takes them all
+        while next > 0 && !stopped {
+            let (s, line) = before[next - 1];
+            if pos > 0 && s <= pos {
+                break;
+            }
+            next -= 1;
+            let r = match line {
+                Ok(r) => r,
+                Err(_) => return Err(Unsure),
+            };
+            for c in &r.cands {
+                if cands.len() >= max_cands {
+                    cands.remove(0);
+                }
+                match cands.iter_mut().find(|(k, _)| *k == c.0) {
+                    Some(slot) => *slot = c.clone(),
+                    None => cands.push(c.clone()),
+                }
+            }
+            for x in &r.resets {
+                if reset_cands.len() >= max_cands {
+                    reset_cands.remove(0);
+                }
+                match reset_cands.iter_mut().find(|(k, _)| *k == x.0) {
+                    Some(slot) => *slot = x.clone(),
+                    None => reset_cands.push(x.clone()),
+                }
+            }
+            if r.todo {
+                stopped = true;
+                break;
+            }
+            for (cid, cname, ctask) in &r.calls {
+                let Some((_, tools)) = reset_cands.iter().find(|(k, _)| k == cid) else { continue };
+                if !tools.contains(&cname.as_str()) {
+                    continue;
+                }
+                if cname == "TaskList" {
+                    stopped = true;
+                    break;
+                }
+                failed.insert(cid.clone());
+                let rec = ctask.as_ref().filter(|t| super::is_digits(t)).and_then(|t| recs.get_mut(&key(t)));
+                if let Some(rec) = rec
+                    && !rec.done
+                {
+                    rec.ab = !rec.f.status;
+                    rec.done = true;
+                }
+            }
+            if stopped {
+                break;
+            }
+            for (uid, inp, tid) in &r.updates {
+                if tid.as_ref().is_some_and(|t| failed.contains(t)) {
+                    continue;
+                }
+                let rec = super::is_digits(uid).then(|| recs.get_mut(&key(uid))).flatten();
+                if let Some(rec) = rec
+                    && !rec.done
+                {
+                    rec_update(rec, inp)?;
+                }
+            }
+            if !r.creates.is_empty() && !(r.msg_id.is_some() && r.msg_id == group_id) {
+                group_id = r.msg_id.clone();
+                group_base = min_created;
+            }
+            for (cid, inp) in &r.creates {
+                let Some(idx) = cands.iter().position(|(k, _)| k == cid) else { continue };
+                let (_, num) = cands.remove(idx);
+                if num >= group_base {
+                    stopped = true;
+                    break;
+                }
+                min_created = min_created.min(num);
+                if let Some(rec) = recs.get_mut(&(num as u64))
+                    && !rec.done
+                {
+                    rec_create(rec, inp)?;
+                }
+            }
+        }
+    }
+    Ok(recs)
 }
 
 /// `backfillSubjects(taskMap, transcriptPath, { windowReset, firstCreated })`: mutates `facts.tasks` in place.
@@ -387,14 +543,39 @@ pub fn backfill(facts: &mut Facts, path: &str, window: u64) -> R<()> {
         return Ok(());
     }
     let size = std::fs::metadata(path).map_err(|_| Unsure)?.len();
-    let win = window;
-    if size <= win {
+    if size <= window {
         return Ok(());
     }
-    let start = size - win;
+    let key = |id: &str| number_of_digits(id) as u64;
+    // the wanted set names the scan: the same tasks wanted of the same file state are scanned for once, whichever reconstruction asks
+    let sig = format!(
+        "{first}|{}",
+        wanted
+            .iter()
+            .map(|(id, n)| format!("{id}:{}{}{}{}{}", n.subject as u8, n.status as u8, n.owner as u8, n.blocked_by as u8, n.blocked_on as u8))
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+    let mut recs = super::memo::memoized(path, super::memo::Tag::Backfill, window, &sig, || scan_back(path, size, window, &wanted, first), |r| r.is_ok())?;
+    for (id, need) in &wanted {
+        let rec = recs.remove(&key(id)).unwrap_or_else(|| Rec::new(need.status));
+        if let Some(t) = facts.tasks.get_mut(id) {
+            apply_rec(t, need, &rec);
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+/// The backward scan as it was before the classified lines were kept between calls (#953), verbatim: the oracle the parity test
+/// compares the replay to. The backward scan from the window start for the records of the `wanted` tasks: what each of them is found to be before the
+/// window. A function of the file's bytes, the window and the wanted set alone, so every reconstruction that wants the same tasks
+/// of the same file state shares one scan ([`super::memo`]).
+pub(super) fn scan_back_reference(path: &str, size: u64, window: u64, wanted: &[(String, Need)], first: f64) -> R<HashMap<u64, Rec>> {
+    let start = size - window;
     let mut recs: HashMap<u64, Rec> = HashMap::new();
     let key = |id: &str| number_of_digits(id) as u64;
-    for (id, need) in &wanted {
+    for (id, need) in wanted {
         recs.insert(key(id), Rec::new(need.status));
     }
     let mut f = std::fs::File::open(path).map_err(|_| Unsure)?;
@@ -421,7 +602,8 @@ pub fn backfill(facts: &mut Facts, path: &str, window: u64) -> R<()> {
             exhausted = false;
             break;
         }
-        if scanned >= max_scan {
+        // #763: the byte cap bounds the scan, the call's cut (deadline or the check's cap) ends it sooner: unsure, never a partial answer
+        if scanned >= max_scan || crate::deadline::cut_due() {
             return Err(Unsure);
         }
         let n = (chunk as u64).min(pos) as usize;
@@ -527,11 +709,7 @@ pub fn backfill(facts: &mut Facts, path: &str, window: u64) -> R<()> {
         }
     }
     let _ = exhausted;
-    for (id, need) in &wanted {
-        let rec = recs.remove(&key(id)).unwrap_or_else(|| Rec::new(need.status));
-        if let Some(t) = facts.tasks.get_mut(id) {
-            apply_rec(t, need, &rec);
-        }
-    }
-    Ok(())
+    Ok(recs)
 }
+
+

@@ -85,7 +85,7 @@ mod tests {
 
     #[test]
     fn the_legacy_key_opt_in_cannot_be_judged_from_a_request_environment() {
-        let home = std::env::temp_dir().join(format!("ah-judge-optin-{}", std::process::id()));
+        let home = crate::testtmp::path(format!("ah-judge-optin-{}", std::process::id()));
         std::fs::create_dir_all(home.join(".anti-hall")).unwrap();
         std::fs::write(home.join(".anti-hall/settings.json"), r#"{"guards":{"allowAnthropicEnvKey":true}}"#).unwrap();
         let s = |pairs: &[(&str, &str)]| Settings { home: home.to_string_lossy().into_owned(), ..st(pairs) };

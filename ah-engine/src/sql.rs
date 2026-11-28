@@ -188,6 +188,12 @@ pub const ROLLUP_SAVE: &str = "INSERT INTO metrics_rollup (resolution, bucket_ms
 /// Rollups of one resolution from bucket ?2 on, oldest first.
 pub const ROLLUP_LIST: &str = "SELECT bucket_ms, ts_ms, body FROM metrics_rollup WHERE resolution = ?1 AND bucket_ms >= ?2 ORDER BY bucket_ms";
 
+/// The newest rollup of one resolution taken at or before time ?2 (the baseline of a windowed funnel report).
+pub const ROLLUP_AT: &str = "SELECT ts_ms, body FROM metrics_rollup WHERE resolution = ?1 AND ts_ms <= ?2 ORDER BY ts_ms DESC LIMIT 1";
+
+/// The oldest rollup of one resolution (the baseline when none is as old as the window).
+pub const ROLLUP_OLDEST: &str = "SELECT ts_ms, body FROM metrics_rollup WHERE resolution = ?1 ORDER BY ts_ms LIMIT 1";
+
 /// Forget rollups of one resolution older than bucket ?2 (derived data, D59).
 pub const ROLLUP_PRUNE: &str = "DELETE FROM metrics_rollup WHERE resolution = ?1 AND bucket_ms < ?2";
 
@@ -333,7 +339,18 @@ pub const MESH_SENT_BY: &str = "SELECT id, ts, hash, body, sender, recipient, mt
 pub const MESH_MESSAGE_COUNT: &str = "SELECT COUNT(*) AS c FROM messages WHERE workspace_id = ?1";
 /// How many of one workspace's messages were NOT sent by any of the given senders (`%s` = the placeholders of the ids); a
 /// message with no sender counts.
-pub const MESH_MESSAGE_COUNT_FROM_OTHERS: &str = "SELECT COUNT(*) AS c FROM messages WHERE workspace_id = ? AND (sender IS NULL OR sender NOT IN (%s)) AND (? = '' OR substr(COALESCE(body, ''), 1, length(?)) <> ?)";
+pub const MESH_MESSAGE_COUNT_FROM_OTHERS: &str = "SELECT COUNT(*) AS c FROM messages WHERE workspace_id = ? AND (sender IS NULL OR sender NOT IN (%s)) AND (? = '' OR mtype IS NOT NULL OR substr(COALESCE(body, ''), 1, length(?)) <> ?)";
+/// [`MESH_MESSAGE_COUNT_FROM_OTHERS`] without the rows of one chat kind (the last placeholder; GH #845: an ack-only message wakes no
+/// one). Fails on a store whose `messages` table has no `chat_kind` column yet; the caller then counts without it.
+pub const MESH_MESSAGE_COUNT_FROM_OTHERS_EXCEPT_KIND: &str = "SELECT COUNT(*) AS c FROM messages WHERE workspace_id = ? AND (sender IS NULL OR sender NOT IN (%s)) AND (? = '' OR mtype IS NOT NULL OR substr(COALESCE(body, ''), 1, length(?)) <> ?) AND (chat_kind IS NULL OR chat_kind <> ?)";
+/// GH #845 (identities): the seq and stored sender_kind of a partition's rows whose kind is set and is not `?2` (the workspace kind).
+pub const MESH_SENDER_KINDS_OF: &str =
+    "SELECT seq, sender_kind FROM messages WHERE workspace_id = ?1 AND sender_kind IS NOT NULL AND sender_kind <> ?2 AND seq IS NOT NULL";
+/// GH #845 review P1-4: the seq and hash of every row of a partition with chat kind `?2` (the explicit acks a tick does not wake on).
+pub const MESH_ROWS_OF_KIND: &str = "SELECT seq, hash FROM messages WHERE workspace_id = ?1 AND chat_kind = ?2";
+/// The GH #845 columns of one workspace's rows past seq `?2` that have any (fails on a store without them).
+pub const MESH_EXTRAS_OF: &str =
+    "SELECT seq, chat_kind, wake_audience FROM messages WHERE workspace_id = ?1 AND seq > ?2 AND (chat_kind IS NOT NULL OR wake_audience IS NOT NULL)";
 /// Every workspace id that has messages.
 pub const MESH_IDS_MESSAGES: &str = "SELECT DISTINCT workspace_id AS id FROM messages";
 /// Every registered workspace id.
@@ -394,6 +411,9 @@ pub const MESHW_TABLE_INFO_MESSAGES: &str = "PRAGMA table_info(messages);";
 pub const MESHW_TABLE_INFO_REGISTRY: &str = "PRAGMA table_info(registry);";
 /// `appendMeshRow` with a hash: a duplicate hash is ignored; the mesh seq is computed inside the statement.
 pub const MESHW_APPEND_OR_IGNORE: &str = "INSERT OR IGNORE INTO messages (workspace_id, ts, hash, body, sender, recipient, mtype, urgency, is_heartbeat, needs_reply, orig_hash, instance_nonce, seq) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(seq),0)+1 FROM messages));";
+/// Set the GH #845 columns of row `?3` (chat kind `?1`, wake audience `?2`); fails on a store with neither column, which the
+/// caller tolerates.
+pub const MESHW_SET_EXTRAS: &str = "UPDATE messages SET chat_kind = ?1, wake_audience = ?2, sender_kind = ?3 WHERE id = ?4";
 /// `appendMeshRow` without a hash.
 pub const MESHW_APPEND: &str = "INSERT INTO messages (workspace_id, ts, hash, body, sender, recipient, mtype, urgency, is_heartbeat, needs_reply, orig_hash, instance_nonce, seq) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(seq),0)+1 FROM messages));";
 /// `appendMessage` with a hash (the native-ingest insert): no mesh columns, no seq; a duplicate hash is ignored.
@@ -422,6 +442,8 @@ pub const MESHW_SET_GATE: &str = "INSERT INTO gates (workspace_id, gate_name, va
 pub const MESHW_SET_CURSOR: &str = "INSERT INTO cursors (workspace_id, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(workspace_id) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at;";
 /// `setBroadcastCursor` and the write half of `advanceBroadcastCursor`.
 pub const MESHW_SET_BROADCAST_CURSOR: &str = "INSERT INTO broadcast_cursors (workspace_id, value, updated_at) VALUES (?, ?, ?) ON CONFLICT(workspace_id) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at;";
+/// GH #845 review P2-7: move a broadcast cursor up to `?2`, capped at the broadcast head, in one statement that never lowers it.
+pub const MESHW_RAISE_BROADCAST_CURSOR: &str = "INSERT INTO broadcast_cursors (workspace_id, value, updated_at) VALUES (?1, MAX(0, MIN(?2, COALESCE((SELECT MAX(seq) FROM messages WHERE mtype = 'broadcast'), 0))), ?3) ON CONFLICT(workspace_id) DO UPDATE SET value = MAX(value, excluded.value), updated_at = excluded.updated_at;";
 /// The head of the broadcast partition (`advanceBroadcastCursor`).
 pub const MESHW_BROADCAST_HEAD: &str = "SELECT MAX(seq) AS m FROM messages WHERE mtype = 'broadcast';";
 /// `readerCursorTxn`'s put: the value only ever rises; `retired_line` is replaced only when the record carries it.
@@ -491,8 +513,6 @@ pub const RT_COUNT: &str = "SELECT COUNT(*) FROM messages WHERE workspace_id = ?
 pub const RT_ROWS: &str = "SELECT id, ts, seq, needs_reply, is_heartbeat, sender, urgency, body IS NULL AS tomb, COALESCE(LENGTH(body),0) AS blen, hash, typeof(body) AS bt FROM messages WHERE workspace_id = ?1 ORDER BY id ASC";
 /// The same, with the body (the broadcast partition's run detection reads it).
 pub const RT_ROWS_BODY: &str = "SELECT id, ts, seq, needs_reply, is_heartbeat, sender, urgency, body IS NULL AS tomb, COALESCE(LENGTH(body),0) AS blen, hash, typeof(body) AS bt, body FROM messages WHERE workspace_id = ?1 ORDER BY id ASC";
-/// One row's body.
-pub const RT_BODY: &str = "SELECT body FROM messages WHERE id = ?1";
 /// Every workspace's broadcast cursor.
 pub const RT_BC_ALL: &str = "SELECT value FROM broadcast_cursors";
 /// One workspace's broadcast cursor.

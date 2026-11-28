@@ -18,9 +18,10 @@
 //! `transcript.tasks_cache_idle_ms` goes. Nothing here is the source of truth: the file is. A cache that cannot answer (the feature
 //! off, a file that cannot be read) hands the call to the plain reader, so a failure here is slower, never different.
 use crate::checks::guardkit::text::{js_trim, lossy_owned};
+use crate::checks::taskkit::jsval::R;
 use crate::checks::taskkit::jsval::{get, truthy};
-use crate::checks::taskstate::parse::{collect_tool_uses, maybe_valid_for_js};
-use crate::checks::taskstate::scanview;
+use crate::checks::taskstate::parse::{Facts, collect_tool_uses, maybe_valid_for_js, reconstruct};
+use crate::checks::taskstate::{Variant, scanview};
 use crate::defaults;
 use crate::mem::{BoundedCache, Spec};
 use serde_json::Value;
@@ -48,6 +49,17 @@ struct Kept {
     back: u64,
     task_calls: HashSet<String>,
     lines: VecDeque<Line>,
+    /// The reconstructions of exactly these kept lines (and this unfinished last line), one per variant: dropped the moment a kept
+    /// line is added or leaves the window, so an entry is only ever served for the input it was built from.
+    memo: Vec<Memo>,
+}
+
+/// One reconstruction of the kept lines, before any backfill (which depends on where the window starts and is run afresh).
+#[derive(Clone)]
+struct Memo {
+    variant: Variant,
+    pending: Option<String>,
+    facts: Facts,
 }
 
 fn cache() -> &'static BoundedCache<String, Kept> {
@@ -61,8 +73,22 @@ fn cache() -> &'static BoundedCache<String, Kept> {
     })
 }
 
-fn digest_at(f: &std::fs::File, at: u64, len: u64) -> Option<u64> {
+#[cfg(test)]
+thread_local! {
+    /// Bytes this thread's [`digest_at`] read since [`take_digest_read`] (tests measure the verification reads with it).
+    static DIGEST_READ: std::cell::Cell<u64> = std::cell::Cell::default();
+}
+
+/// The bytes [`digest_at`] read on this thread since the last call, and reset.
+#[cfg(test)]
+pub(crate) fn take_digest_read() -> u64 {
+    DIGEST_READ.with(std::cell::Cell::take)
+}
+
+pub(crate) fn digest_at(f: &std::fs::File, at: u64, len: u64) -> Option<u64> {
     use std::hash::Hasher;
+    #[cfg(test)]
+    DIGEST_READ.with(|c| c.set(c.get() + len));
     let mut b = vec![0u8; len as usize];
     f.read_exact_at(&mut b, at).ok()?;
     let mut h = std::collections::hash_map::DefaultHasher::new();
@@ -72,7 +98,7 @@ fn digest_at(f: &std::fs::File, at: u64, len: u64) -> Option<u64> {
 
 /// Where the first line of a window starts: the byte after the first newline at or after `from` (`Ok(None)`: no newline follows,
 /// so the window holds no whole line).
-fn first_line_start(f: &std::fs::File, from: u64, size: u64) -> Option<Option<u64>> {
+pub(crate) fn first_line_start(f: &std::fs::File, from: u64, size: u64) -> Option<Option<u64>> {
     // a line is usually short: look in small steps first, then in larger ones up to the configured chunk
     let chunk = defaults::num("transcript.evidence_read_chunk_bytes").max(1);
     let mut step = chunk.min(defaults::num("transcript.tasks_cache_probe_bytes").max(1));
@@ -157,7 +183,25 @@ fn make_line(start: u64, bytes: &[u8], task_calls: &mut HashSet<String>, record:
 fn weight(k: &Kept) -> usize {
     k.lines.iter().map(|l| l.text.len() + std::mem::size_of::<Line>()).sum::<usize>()
         + k.task_calls.iter().map(|i| i.len() + 32).sum::<usize>()
+        + k.memo.iter().map(memo_weight).sum::<usize>()
         + std::mem::size_of::<Kept>()
+}
+
+fn memo_weight(m: &Memo) -> usize {
+    m.pending.as_ref().map_or(0, String::len)
+        + m.facts
+            .tasks
+            .values()
+            .map(|t| {
+                std::mem::size_of_val(t)
+                    + t.id.len()
+                    + t.content.len()
+                    + t.description.len()
+                    + t.owner.len()
+                    + t.blocked_by.iter().map(|b| b.len() + 24).sum::<usize>()
+                    + 128
+            })
+            .sum::<usize>()
 }
 
 /// Why a kept entry cannot serve a window starting at `fls`, or `None` when it can.
@@ -182,6 +226,29 @@ fn miss_reason(k: &Kept, f: &std::fs::File, m: &std::fs::Metadata, fls: u64) -> 
 /// The relevant lines of the last `w` bytes of `path` (the line still being written last) and whether the file was cut; `None`
 /// when the call is left to the plain reader (the cache is off, or the file cannot be read here).
 pub fn lines(path: &str, w: u64) -> Option<(Vec<String>, bool)> {
+    match kept(path, w, None)? {
+        (Answer::Lines(l), truncated) => Some((l, truncated)),
+        (Answer::Facts(_), _) => None,
+    }
+}
+
+/// The reconstruction of `variant` over the relevant lines of the last `w` bytes of `path` (as `reconstruct` gives it over them) and
+/// whether the file was cut; `None` when the call is left to the plain reader. A call that finds the kept lines unchanged since the
+/// last one for this variant reuses that reconstruction instead of parsing every kept line again (the backfill, which looks before
+/// the window, stays the caller's and runs on every call).
+pub fn facts(path: &str, w: u64, variant: Variant) -> Option<(R<Facts>, bool)> {
+    match kept(path, w, Some(variant))? {
+        (Answer::Facts(f), truncated) => Some((f, truncated)),
+        (Answer::Lines(_), _) => None,
+    }
+}
+
+enum Answer {
+    Lines(Vec<String>),
+    Facts(R<Facts>),
+}
+
+fn kept(path: &str, w: u64, want: Option<Variant>) -> Option<(Answer, bool)> {
     if defaults::num("transcript.tasks_cache_max_paths") == 0 {
         return None;
     }
@@ -196,7 +263,15 @@ pub fn lines(path: &str, w: u64) -> Option<(Vec<String>, bool)> {
         match first_line_start(&f, size - w, size)? {
             Some(s) => s,
             // the window holds no newline: its one piece is the cut first line, which is dropped
-            None => return Some((Vec::new(), true)),
+            None => {
+                return Some((
+                    match want {
+                        Some(v) => Answer::Facts(reconstruct(&[], v)),
+                        None => Answer::Lines(Vec::new()),
+                    },
+                    true,
+                ));
+            }
         }
     } else {
         0
@@ -212,6 +287,7 @@ pub fn lines(path: &str, w: u64) -> Option<(Vec<String>, bool)> {
         back: 0,
         task_calls: HashSet::new(),
         lines: VecDeque::new(),
+        memo: Vec::new(),
     };
     let mut k = match cache().remove(&key) {
         Some(k) => match miss_reason(&k, &f, &m, fls) {
@@ -233,28 +309,68 @@ pub fn lines(path: &str, w: u64) -> Option<(Vec<String>, bool)> {
     };
     while k.lines.front().is_some_and(|l| l.start < fls) {
         k.lines.pop_front();
+        k.memo.clear();
     }
     k.base = fls;
-    // read what was appended: the complete lines are judged for good, a last line without its newline now and again next time
-    let mut buf = vec![0u8; (size - k.parsed_to) as usize];
-    f.read_exact_at(&mut buf, k.parsed_to).ok()?;
-    crate::load::note_scan(buf.len() as u64);
-    let mut at = 0usize;
-    while let Some(i) = buf.get(at..).and_then(|r| r.iter().position(|b| *b == b'\n')) {
-        let start = k.parsed_to;
-        let mut calls = std::mem::take(&mut k.task_calls);
-        if let Some(line) = make_line(start, buf.get(at..at + i).unwrap_or_default(), &mut calls, true) {
-            k.lines.push_back(line);
+    // read what was appended, a block at a time: the complete lines are judged for good, a last line without its newline now and again next time
+    let _turn = crate::transcript::scan::permit();
+    let block = crate::transcript::scan::block_bytes();
+    let mut buf = vec![0u8; block];
+    let mut carry: Vec<u8> = Vec::new();
+    let mut pos = k.parsed_to;
+    while pos < size {
+        let n = ((size - pos) as usize).min(block);
+        f.read_exact_at(buf.get_mut(..n).unwrap_or_default(), pos).ok()?;
+        crate::load::note_scan(n as u64);
+        pos += n as u64;
+        let mut rest = buf.get(..n).unwrap_or_default();
+        while let Some(i) = rest.iter().position(|b| *b == b'\n') {
+            let (head, tail) = rest.split_at(i);
+            rest = tail.get(1..).unwrap_or_default();
+            let start = k.parsed_to;
+            let consumed = (carry.len() + head.len() + 1) as u64;
+            let mut calls = std::mem::take(&mut k.task_calls);
+            let made = if carry.is_empty() {
+                make_line(start, head, &mut calls, true)
+            } else {
+                carry.extend_from_slice(head);
+                let m = make_line(start, &carry, &mut calls, true);
+                carry.clear();
+                m
+            };
+            if let Some(line) = made {
+                k.lines.push_back(line);
+                k.memo.clear();
+            }
+            k.task_calls = calls;
+            k.parsed_to += consumed;
         }
-        k.task_calls = calls;
-        k.parsed_to += (i + 1) as u64;
-        at += i + 1;
+        carry.extend_from_slice(rest);
     }
-    let pending = (at < buf.len()).then(|| {
+    let pending = (!carry.is_empty()).then(|| {
         let mut calls = k.task_calls.clone();
-        make_line(k.parsed_to, buf.get(at..).unwrap_or_default(), &mut calls, false)
+        make_line(k.parsed_to, &carry, &mut calls, false)
     });
-    let out: Vec<String> = k.lines.iter().map(|l| l.text.clone()).chain(pending.into_iter().flatten().map(|l| l.text)).collect();
+    let pending: Option<String> = pending.flatten().map(|l| l.text);
+    let answer = match want {
+        None => Answer::Lines(k.lines.iter().map(|l| l.text.clone()).chain(pending).collect()),
+        Some(v) => match k.memo.iter().find(|m| m.variant == v && m.pending == pending) {
+            Some(m) => {
+                crate::load::note_count("tasks_cache", "facts", "reuse");
+                Answer::Facts(Ok(m.facts.clone()))
+            }
+            None => {
+                crate::load::note_count("tasks_cache", "facts", "build");
+                let texts: Vec<&str> = k.lines.iter().map(|l| l.text.as_str()).chain(pending.as_deref()).collect();
+                let built = reconstruct(&texts, v);
+                if let Ok(f) = &built {
+                    k.memo.retain(|m| m.variant != v);
+                    k.memo.push(Memo { variant: v, pending: pending.clone(), facts: f.clone() });
+                }
+                Answer::Facts(built)
+            }
+        },
+    };
     // keep it for the next call, with a digest of both ends
     let fp = defaults::num("transcript.evidence_fingerprint_bytes").max(1);
     let n = fp.min(k.parsed_to - k.base);
@@ -268,12 +384,12 @@ pub fn lines(path: &str, w: u64) -> Option<(Vec<String>, bool)> {
         let exp = (ttl > 0).then(|| crate::health::now_ms().saturating_add(ttl));
         cache().insert_with_ttl(key, k, w_bytes, exp);
     }
-    Some((out, truncated))
+    Some((answer, truncated))
 }
 
 // ---- the widened search for task activity ---------------------------------------------------------------------------------------
 
-use crate::checks::taskkit::jsval::{R, Unsure};
+use crate::checks::taskkit::jsval::Unsure;
 use crate::checks::taskstate::scanview::{Decisive, judge_wide_line, wide_finders};
 
 /// What is kept of the widened search of one transcript: the lines from `from` to `to` that decide it (a task tool use, or a line
@@ -461,7 +577,7 @@ mod tests {
     use std::io::Write;
 
     fn path(tag: &str) -> String {
-        std::env::temp_dir().join(format!("ah-tkcache-{tag}-{}", std::process::id())).to_string_lossy().into_owned()
+        crate::testtmp::path(format!("ah-tkcache-{tag}-{}", std::process::id())).to_string_lossy().into_owned()
     }
 
     /// One transcript line of kind `i % 16`: task calls and their results mixed with lines that mean nothing to a reconstruction.
@@ -561,6 +677,32 @@ mod tests {
         // the generator must leave most windows answerable, or the comparisons above prove little
         let a = transcript_tasks(&p, "guard", (1 << 20) as f64, 0.0);
         assert!(a.contains("\"tasks\":[{"), "the largest window holds tasks: {a}");
+        crate::discard::harmless(std::fs::remove_file(&p)); // keep: cleanup; an absent file is the goal state
+    }
+
+    /// The reconstruction is reused while the kept lines stand still: a repeat call, an appended line that means nothing to it and a
+    /// finished line that was pending must each answer as a whole read does; a task line appended, a front line dropped by the
+    /// window, a truncation and a rewrite must each drop the reuse.
+    #[test]
+    fn a_reused_reconstruction_answers_as_a_whole_read_does_across_append_truncate_and_rewrite() {
+        let p = path("memo");
+        std::fs::write(&p, "").unwrap();
+        let mut f = std::fs::OpenOptions::new().append(true).open(&p).unwrap();
+        for step in 0..40usize {
+            // lines of kind 4, 5, 14, 15 are irrelevant to a reconstruction: the kept lines stand still across them
+            let kind = if step % 4 == 0 { step } else { step - step % 16 + [4, 5, 14, 15][step % 4] };
+            f.write_all(line(kind).as_bytes()).unwrap();
+            same(&p, &format!("step {step} first call"));
+            same(&p, &format!("step {step} repeat call (reused)"));
+        }
+        let before = std::fs::read_to_string(&p).unwrap();
+        std::fs::write(&p, &before[..before.len() / 2]).unwrap();
+        same(&p, "truncated");
+        same(&p, "truncated, repeated");
+        let rewritten: String = before.replace("task ", "work ");
+        std::fs::write(&p, &rewritten).unwrap();
+        same(&p, "rewritten");
+        same(&p, "rewritten, repeated");
         crate::discard::harmless(std::fs::remove_file(&p)); // keep: cleanup; an absent file is the goal state
     }
 

@@ -51,6 +51,7 @@ fn review_due_peak(home: &Path) -> (u64, String) {
         .env("HOME", home)
         .env("AH_ENGINE_DIR", home.join("eng"))
         .env("CLAUDE_PLUGIN_ROOT", plugin_src())
+        .env("AH_ENGINE_PLUGIN_ROOT", plugin_src())
         .env("ANTIHALL_INGEST_DRY_RUN", "1")
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
@@ -74,8 +75,8 @@ fn review_due_peak(home: &Path) -> (u64, String) {
 
 #[test]
 fn review_scan_memory_does_not_grow_with_the_decision_log() {
-    let small = TempDir::at(std::env::temp_dir().join(format!("ah-jrs-small-{}", std::process::id())));
-    let large = TempDir::at(std::env::temp_dir().join(format!("ah-jrs-large-{}", std::process::id())));
+    let small = TempDir::at(crate::common::testtmp::path(format!("ah-jrs-small-{}", std::process::id())));
+    let large = TempDir::at(crate::common::testtmp::path(format!("ah-jrs-large-{}", std::process::id())));
     home_with_rows(&small, 10);
     home_with_rows(&large, 80_000); // ~28 MB of log
     let (base, _) = review_due_peak(&small);

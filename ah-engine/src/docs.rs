@@ -85,7 +85,10 @@ fn env_section(o: &mut String, all: &[&defaults::Entry]) {
     let mut rows: std::collections::BTreeMap<String, (String, String)> = std::collections::BTreeMap::new();
     for e in all {
         // a setting whose whole value is a variable name (`env.*`, `diagnostics.allocator_env`, ...) documents that variable
-        let named = e.value.as_str().filter(|v| v.starts_with("AH_ENGINE_") && v.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_'));
+        let named = e
+            .value
+            .as_str()
+            .filter(|v| v.starts_with("AH_ENGINE_") && !v.ends_with('_') && v.chars().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_'));
         if let Some(name) = named {
             let setting = if e.key.starts_with("env.") { String::new() } else { format!("`{}`", e.key) };
             rows.entry(name.to_string()).and_modify(|r| r.1.push_str(&format!(" {}", esc(e.doc)))).or_insert((setting, esc(e.doc)));

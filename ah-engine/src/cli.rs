@@ -54,6 +54,7 @@ fn handlers() -> &'static [(&'static str, Handler)] {
         ("check", cmd_check),
         ("gen-hooks", cmd_gen_hooks),
         ("version", cmd_version),
+        ("capacity-hashes", crate::dispatch::cmd_capacity_hashes),
         ("ctl", cmd_ctl),
         ("diag", cmd_diag),
         ("stop", cmd_stop),
@@ -86,6 +87,8 @@ fn handlers() -> &'static [(&'static str, Handler)] {
         ("coordinator-work-baseline", crate::ops::cmd_coordinator_work_baseline),
         ("statusline", crate::ops::cmd_statusline),
         ("phase", crate::ops::cmd_phase),
+        ("afk", crate::ops::afk::cmd_afk),
+        ("back", crate::ops::afk::cmd_back),
         ("shadow-run", crate::nodeback::cmd_shadow_run),
         ("shadow-compare", crate::nodeback::report::run),
         ("fallback", crate::nodeback::fallback::run),
@@ -330,8 +333,7 @@ fn run_recorded(p: &Parsed, h: Handler) -> i32 {
 fn cmd_serve(p: &Parsed) -> i32 {
     let reason = health::starts::requested(&p.rest);
     crate::daemonenv::sanitize(); // before any thread: the daemon serves every session, so it keeps nothing of the one that started it
-    daemon::serve(&reason);
-    0
+    daemon::serve(&reason)
 }
 
 fn cmd_hook(p: &Parsed) -> i32 {
@@ -525,6 +527,12 @@ fn cmd_diag(p: &Parsed) -> i32 {
         };
         emit(p, msg.clone(), json!({"error": msg}));
         return 64;
+    }
+    if topic == defaults::text("diagnostics.burst_dump_topic") {
+        let v = crate::burstsym::run(&p.rest[1..]);
+        let failed = v.get("error").is_some();
+        emit(p, human(&v), v);
+        return i32::from(failed);
     }
     let report = crate::obs::diagverbs::local(topic, p.rest.get(1).map_or("", String::as_str)).or_else(|| client::ctl_json(&format!("diag {topic}")));
     match report {
@@ -765,6 +773,7 @@ fn cmd_config_explain(p: &Parsed) -> i32 {
             let (layers, _) = crate::cfgstore::load_layers_cold(&crate::cfgstore::Paths::from_env());
             let project = crate::layers::project(&cwd).map(|p| p.settings.clone()).unwrap_or_default();
             crate::cfgstore::explain_setting_here(key, &layers, &project)
+                .or_else(|| crate::cfgstore::explain_descriptor(key, &crate::reqenv::RequestEnv::capture()))
         }
     };
     let Some(v) = found else {

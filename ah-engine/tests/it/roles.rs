@@ -27,7 +27,7 @@ fn the_committed_skills_equal_the_generated_ones_for_both_hosts() {
             let committed = std::fs::read_to_string(plugin().join(&s.path)).unwrap_or_default();
             assert!(
                 committed == s.text,
-                "{} is stale: run ah-engine/scripts/gen-engine-skills.sh and commit ({} bytes committed, {} generated)",
+                "{} is stale: run `cargo run -q --bin ah-regen` (from ah-engine/) and commit ({} bytes committed, {} generated)",
                 s.path,
                 committed.len(),
                 s.text.len()
@@ -244,7 +244,10 @@ fn payload(event: &str, extra: Value) -> String {
 }
 
 fn note(extra: Value, env_pairs: &[(&str, &str)], event: &str) -> String {
-    let (code, out, err) = run(&["check", "engine-role-note"], env_pairs, &payload(event, extra));
+    // the full note under test: the one-line form (context.roleNoteShort) ships on, so it is switched off here
+    let mut env = env_pairs.to_vec();
+    env.push(("ANTIHALL_ROLE_NOTE_SHORT", "0"));
+    let (code, out, err) = run(&["check", "engine-role-note"], &env, &payload(event, extra));
     assert_eq!(code, 0, "{err}");
     let v: Value = serde_json::from_str(out.trim()).unwrap_or_else(|_| panic!("no note: {out:?} {err}"));
     v["hookSpecificOutput"]["additionalContext"].as_str().unwrap().to_string()
@@ -307,6 +310,11 @@ fn the_pretooluse_guard_refuses_what_a_subagent_or_a_workspace_child_may_not_run
     let (code, err) = guard("ah-engine mesh read --db x --id ws-2", json!({}), &ws);
     assert_eq!(code, 2);
     assert!(err.contains("ws-2"), "{err}");
+    // #844 item 9: an owner-level word inside quoted text is part of that text, not an owner argument
+    assert_eq!(guard("ah-engine defect report --check x --text \"this rule misfired; archive it\"", json!({}), &ws).0, 0, "quoted text");
+    assert_eq!(guard("ah-engine defect report --text 'the rule | archive' && ls", json!({}), &ws).0, 0, "single-quoted, then an operator");
+    assert_eq!(guard("ah-engine defect archive abc", json!({}), &ws).0, 2, "a bare owner argument is still refused");
+    assert_eq!(guard("sh -c \"ah-engine defect archive abc\"", json!({}), &ws).0, 2, "inside the quote it runs in");
     // no engine call, no work
     assert_eq!(guard("git status", json!({"agent_id": "a1"}), &[]).0, 0);
     // switch off
@@ -409,4 +417,136 @@ fn settings_tunables_lists_every_shipped_default_key() {
     let (code, one) = go(&["settings", "get", "github_rt.enabled"]);
     assert_eq!(code, 0);
     assert!(one.contains("github_rt.enabled"), "{one}");
+}
+
+#[test]
+fn every_block_text_has_a_rule_row_and_every_listed_rule_is_in_the_generated_output() {
+    let problems = skillgen::rule_problems();
+    assert!(problems.is_empty(), "rule registry drift (fix guard_rules.toml, then run ah-regen): {problems:#?}");
+}
+
+#[test]
+fn the_clear_step_allowlist_holds_only_registered_rules_that_still_have_no_instead() {
+    // the ratchet (#538): an id that gained an instead must leave the list, and a rule with an instead is never on it
+    let allow = ah_engine::defaults::list("guard_rules.no_step_allow");
+    assert!(!allow.is_empty(), "the allowlist is the measured set of rules without a clear step");
+    for id in allow {
+        let row = skillgen::rules().into_iter().find(|r| r.id == id).unwrap_or_else(|| panic!("{id} is not a registered rule"));
+        assert!(skillgen::rule_parts(row.source).2.trim().is_empty(), "{id} has an instead now: remove it from guard_rules.no_step_allow");
+    }
+}
+
+#[test]
+fn the_digest_fits_its_budget_and_the_committed_digest_is_the_generated_one() {
+    let text = skillgen::digest_text();
+    assert!(text.len() as u64 <= ah_engine::defaults::num("roles.digest_budget"), "digest is {} bytes", text.len());
+    assert!(text.len() < 10_000, "10k injection cap");
+    let file = plugin().join(ah_engine::defaults::text("guard_rules.digest_file"));
+    assert_eq!(std::fs::read_to_string(file).unwrap_or_default(), skillgen::digest_file(), "stale: run ah-regen");
+}
+
+#[test]
+fn rules_json_keeps_no_message_text_of_its_own_where_a_defaults_text_exists() {
+    let rules: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(plugin().join("engine/rules.json")).unwrap()).unwrap();
+    for r in rules["rules"].as_array().unwrap() {
+        // every rule takes its text from the defaults (one source with the skill and the digest), never its own copy
+        let k = r.get("message_ref").and_then(|v| v.as_str()).unwrap_or_else(|| panic!("{} has no message_ref", r["id"]));
+        assert!(r.get("message").is_none(), "{} keeps its own message beside message_ref", r["id"]);
+        let action = r["action"].as_str().unwrap_or_default();
+        assert!(!skillgen::compose(action, k).is_empty(), "{} message_ref {k} has no text for action {action}", r["id"]);
+        assert!(skillgen::rules().iter().any(|row| row.source == k), "{} message_ref {k} has no guard_rules.rules row", r["id"]);
+    }
+    let text = serde_json::to_string(&rules).unwrap();
+    assert!(!text.contains("Rewriting published history"), "the force-push text is duplicated in rules.json");
+}
+
+#[test]
+fn the_session_summary_has_no_codex_twin_because_codex_has_no_session_end_event() {
+    // the summary speaks at SessionEnd. If Codex ever lists that event, this fails: port the summary then (parity rule).
+    let events = |host: &str| ah_engine::defaults::raw("dispatch.thin_events").get(host).map(|v| v.strings()).unwrap_or_default();
+    assert!(events("claude").contains(&"SessionEnd"), "the Claude summary event moved");
+    assert!(!events("codex").contains(&"SessionEnd"), "Codex now has SessionEnd: add session-summary to its hook table");
+    let claude = std::fs::read_to_string(plugin().join("hooks/hooks.registry.json")).unwrap();
+    let codex = std::fs::read_to_string(plugin().join("codex/hooks/hooks.registry.json")).unwrap();
+    assert!(claude.contains("session-summary") && !codex.contains("session-summary"));
+}
+
+const DIGEST_HOSTS: [&str; 2] = ["claude", "codex"];
+
+/// The digest field of an essential rule for `host` (#462): `digest` inside an inline message table, or the sibling key with
+/// `what` replaced by `digest`; a string for every host or a table by host.
+fn digest_field(source: &str, host: &str) -> Option<String> {
+    use ah_engine::defaults;
+    let v = defaults::raw(source);
+    let d = if v.get("what").is_some() {
+        v.get("digest")?
+    } else {
+        let (sec, key) = source.split_once('.')?;
+        let k = format!("{sec}.{}", key.replacen("what", "digest", 1));
+        if !defaults::has(&k) {
+            return None;
+        }
+        defaults::raw(&k)
+    };
+    d.as_str().or_else(|| d.get(host).and_then(|x| x.as_str())).map(str::to_string)
+}
+
+fn digest_path(host: &str) -> PathBuf {
+    let key = if host == "claude" { "guard_rules.digest_file".to_string() } else { format!("guard_rules.digest_file_{host}") };
+    assert!(ah_engine::defaults::has(&key), "no digest file key {key}");
+    plugin().join(ah_engine::defaults::text(&key))
+}
+
+fn digest_essentials(host: &str) -> Vec<String> {
+    let raw = std::fs::read_to_string(digest_path(host)).unwrap_or_default();
+    let sep = format!("\n{}\n", ah_engine::defaults::text("guard_rules.digest_sep"));
+    raw.split(&sep)
+        .next()
+        .unwrap_or("")
+        .lines()
+        .filter(|l| !l.is_empty())
+        .map(|l| l.split_once(ah_engine::defaults::text("guard_rules.digest_gate_sep")).map_or(l, |(_, t)| t).to_string())
+        .collect()
+}
+
+#[test]
+fn every_essential_rule_has_a_short_digest_field_for_each_host() {
+    for r in skillgen::rules().into_iter().filter(|r| r.tier == "essential") {
+        for h in DIGEST_HOSTS.into_iter().filter(|h| r.applies(h)) {
+            assert!(digest_field(r.source, h).is_some(), "{}: essential rule without a digest field for {h}", r.id);
+            let d = skillgen::digest_field(r.source, h); // {cfg:<key>} expanded at generation
+            assert!(!d.trim().is_empty() && !d.contains('{'), "{}: digest for {h} is empty or has a placeholder: {d}", r.id);
+        }
+    }
+}
+
+#[test]
+fn each_host_digest_line_says_what_to_do_has_no_placeholder_and_the_whole_fits_the_budget() {
+    use ah_engine::defaults;
+    let verbs = [
+        "never", "ask", "push", "unstage", "remove", "write", "verify", "delegate", "hand", "track", "confirm", "wait", "assign", "report", "use", "label",
+        "stop", "keep", "fix", "spawn", "route", "do ",
+    ];
+    for h in DIGEST_HOSTS {
+        let n = skillgen::rules().iter().filter(|r| r.tier == "essential" && r.applies(h)).count();
+        let lines = digest_essentials(h);
+        assert_eq!(lines.len(), n, "{h}: one digest line per essential rule");
+        for l in &lines {
+            assert!(!l.contains(defaults::text("guard_rules.placeholder")), "{h}: digest line with a placeholder: {l}");
+            assert!(verbs.iter().any(|v| l.to_lowercase().contains(v)), "{h}: digest line names no action: {l}");
+        }
+        let size = defaults::text("guard_rules.digest_head").len() + defaults::text("guard_rules.digest_foot").len() + 2 + lines.join("\n").len();
+        assert!(size as u64 <= defaults::num("roles.digest_budget"), "{h}: digest is {size} bytes, over roles.digest_budget");
+    }
+    let codex = std::fs::read_to_string(digest_path("codex")).unwrap_or_default().to_lowercase();
+    for m in ["haiku", "sonnet", "opus", "fable"] {
+        assert!(!codex.contains(m), "the codex digest names the Claude model {m}");
+    }
+}
+
+#[test]
+fn the_digest_cohort_and_retry_metrics_are_registered() {
+    for m in ["metric.rule_digest", "metric.rule_digest_calls", "metric.rule_retry_compliant"] {
+        assert!(ah_engine::defaults::has(m), "{m} is not registered");
+    }
 }

@@ -3,6 +3,7 @@
 //! `/api/manage/cfg`, so this file carries no text of its own. A write goes to the engine, which validates, writes and audits it;
 //! the page only shows the engine's answer inline (running, then done or the reason it failed). Full and Lite share this screen:
 //! it is forms and lists, drawn the same, and Lite only drops the transitions (CSS).
+use crate::tx;
 use leptos::prelude::*;
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -374,8 +375,8 @@ fn ManageLoader() -> impl IntoView {
     leptos::task::spawn_local(async move { cfg.set(Some(fetch(CFG_URL, None).await)) });
     view! {
         {move || match cfg.get() {
-            None => view! { <p class="empty">"\u{2026}"</p> }.into_any(),
-            Some(Err(e)) => view! { <p class="empty">{e}</p> }.into_any(),
+            None => view! { <crate::load::Pending have=Signal::derive(move || cfg.with(Option::is_some)) failed=Signal::derive(move || false) endpoint=CFG_URL retry=move || { cfg.set(None); leptos::task::spawn_local(async move { cfg.set(Some(fetch(CFG_URL, None).await)) }); } /> }.into_any(),
+            Some(Err(e)) => view! { <p class="load-err" role="alert"><span class="load-ep">{CFG_URL}</span> " " {e}<button type="button" class="chip" on:click=move |_| { cfg.set(None); leptos::task::spawn_local(async move { cfg.set(Some(fetch(CFG_URL, None).await)) }); }>{tx("load_retry")}</button></p> }.into_any(),
             Some(Ok(c)) => {
                 provide_context(M(Arc::new(c)));
                 view! { <ManageBody /> }.into_any()

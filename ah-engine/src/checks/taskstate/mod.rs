@@ -11,8 +11,10 @@
 //! makes the whole call [`Unsure`] and the Node hook decides (D74). A task map is only ever answered from when every
 //! record in the window was understood.
 pub mod backfill;
+pub mod memo;
 pub mod parse;
 pub mod scanview;
+pub mod store;
 pub mod tail;
 pub mod unknown;
 
@@ -67,7 +69,7 @@ pub struct Task {
     pub id: String,
     /// The subject (`String(content)`).
     pub content: String,
-    /// The description (the state variant only; empty otherwise).
+    /// The description, including owner-decision markers used by the guard.
     pub description: String,
     /// The status; `None` is JavaScript's `undefined` (unknown).
     pub status: Option<String>,
@@ -87,6 +89,9 @@ pub struct Task {
     pub block_unknown: bool,
     /// When the task was created or last set pending or in progress (the guard variant only; `sinceMs`).
     pub since: Since,
+    /// When a TaskUpdate of this transcript last wrote the `blockedOn` marker, even with the text it had (the guard variant only;
+    /// `blockedOnAtMs`): it is the session's own re-confirmation of the blocker.
+    pub blocked_on_at: Since,
 }
 
 /// A task's `sinceMs`: `NaN` when unknown, a time, or a timestamp only JavaScript's date parser could read.
@@ -151,6 +156,7 @@ impl Task {
             unknown: Some(Unknown::all()),
             block_unknown: false,
             since: Since::Unknown,
+            blocked_on_at: Since::Unknown,
         }
     }
 
@@ -243,6 +249,23 @@ impl TaskMap {
     pub fn max_numeric_key(&self) -> f64 {
         self.order.iter().filter(|k| is_digits(k)).map(|k| number_of_digits(k)).fold(0.0, f64::max)
     }
+}
+
+/// Whether a transcript row is part of the conversation the task model may read. Only the row types listed in
+/// `taskstate.skipped_row_types` (request replays, which carry copies of tool uses and tool results of tasks the conversation has long
+/// settled) are skipped. Any other type (unknown, empty, missing, null, numeric) is read: a wrongly skipped row can drop a real open task
+/// and let a Stop through, a wrongly read one at worst keeps a task visible.
+pub fn is_conversation_row(entry: &Value) -> bool {
+    match entry.get("type").and_then(Value::as_str) {
+        Some(t) => !defaults::list("taskstate.skipped_row_types").contains(&t),
+        None => true,
+    }
+}
+
+/// Count the rows a pass skipped as non-conversation rows (`taskstate_rows_skipped`); the pass may run in the hook dispatcher or the
+/// daemon, so the count goes through the shared bump.
+pub fn note_rows_skipped(n: u64) {
+    crate::metrics::bump_by_shared("taskstate_rows_skipped", &[], n);
 }
 
 /// `/^\d+$/.test(s)` for an ASCII digit run.

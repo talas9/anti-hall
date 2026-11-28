@@ -7,8 +7,8 @@
 # the process as a whole. `ah-engine status --memory` shows every holder against these numbers.
 
 [mem.global_soft_bytes]
-doc = "SOFT limit (125 MB, owner decision 2026-10-23; a limit, not a target). Process memory (the figure `daemon.mem_metric` selects) at which every holder is asked to shrink to its low-water mark. Logged once per excursion. The RSS cap (`daemon.rss_cap_kb`) stays the absolute backstop above it."
-value = 131072000
+doc = "SOFT limit (150 MB; was 125 MB, owner decision 2026-10-23, raised 2026-11-08 by memory plan C phase 0: the live steady footprint measured 119.7 MB with spikes of 40-90 MB, so 125 MB left the daemon at the edge and every tick past it shrank the regex cache and the other holders again; a limit, not a target, and the 100 MB target is diagnostics.mem_target_mb). Process memory (the figure `daemon.mem_metric` selects) at which every holder is asked to shrink to its low-water mark. Logged once per excursion. The RSS cap (`daemon.rss_cap_kb`) stays the absolute backstop above it."
+value = 157286400
 min = 1048576
 unit = "bytes"
 
@@ -65,9 +65,19 @@ doc = "Compiled regular expressions the process-wide `ah.re.*` cache keeps at mo
 value = 256
 min = 8
 
+[mem.regex_trim_scratch]
+doc = "On a memory shrink (the cache's soft limit, or the process soft limit) and on a recycle, drop the lazy-DFA scratch of the cached `ah.re.*` patterns while keeping the compiled programs (a clone of the pattern shares its program and starts with empty search caches), and evict programs only if that is not enough; a recycle clears the cache only if it is still over its hard limit. A pattern trimmed this way weighs the scratch estimate again until its searches are measured. Off: a shrink evicts and a recycle clears, as before."
+value = true
+
+[mem.regex_latched_bytes]
+doc = "While the process is over its global hard limit every cache insert is refused, so every `ah.re.*` call compiled its pattern again (2448 compiles for 237 patterns in 2 h on the live daemon). The regex cache may still keep patterns up to this many reported bytes during that time, so each pattern is compiled at most once per excursion; past it inserts are refused as before. 0: refuse every insert."
+value = 16777216
+min = 0
+unit = "bytes"
+
 [mem.quickjs_soft_bytes]
-doc = "What ONE worker thread's script interpreter may hold after loading a check (measured after a collection). At or above it the least recently called checks are unloaded down to the low-water mark and rebuilt from their files by their next call. All shipped checks loaded take about 3.84 MB per worker after a collection (measured 2026-10-16 with 73 checks, `examples/script_mem.rs`, 4 threads) plus the garbage a request leaves before the next collection; the default keeps headroom above that cold set so the first hook call does not unload and rebuild checks while racing the client deadline. At 4 MiB the loaded set sat 9% under the limit and live20.1 unloaded and rebuilt checks 154 times (four workers, bytes held 4.2 MB each: at the limit). A limit near 3 MB made the replay about twice as slow (the checks one request runs are reloaded again and again), and 4 MB costs a few percent. Default 5 MiB; the 4 MiB of the replay below was the knee when the cold set was smaller. The sweep, from a 600-event replay on a scratch daemon (4 workers): soft 6 MiB held 18.9 MB in the interpreters (footprint 58.8 MB, CPU 6.7 s), 4 MiB 14.7 MB (55.2 MB, 7.6 s), 3 MiB 8.7 MB (51.8 MB) but CPU tripled (19.6 s, checks reloaded constantly), 2 MiB the same thrash."
-value = 5242880
+doc = "Measured 2026-11-08 on a scratch daemon (4 workers, 352 golden payloads of every check, same ruleset): soft 5 MiB tripped 59 times (p50 33 ms, p95 64 ms, footprint 82 MB), 6 MiB 19 times (25/50 ms, 78 MB), 8 MiB never (25/46 ms, 79 MB): the loaded set (about 4.75 MB per interpreter with every check used) sits above 5 MiB, so 5 MiB unloaded and rebuilt checks constantly; 8 MiB is the default. What ONE worker thread's script interpreter may hold after loading a check (measured after a collection). At or above it the least recently called checks are unloaded down to the low-water mark and rebuilt from their files by their next call. All shipped checks loaded take about 3.84 MB per worker after a collection (measured 2026-10-16 with 73 checks, `examples/script_mem.rs`, 4 threads) plus the garbage a request leaves before the next collection; the default keeps headroom above that cold set so the first hook call does not unload and rebuild checks while racing the client deadline. At 4 MiB the loaded set sat 9% under the limit and live20.1 unloaded and rebuilt checks 154 times (four workers, bytes held 4.2 MB each: at the limit). A limit near 3 MB made the replay about twice as slow (the checks one request runs are reloaded again and again), and 4 MB costs a few percent. Default 8 MiB (was 5 MiB; the 4 MiB of the replay below was the knee when the cold set was smaller). The sweep, from a 600-event replay on a scratch daemon (4 workers): soft 6 MiB held 18.9 MB in the interpreters (footprint 58.8 MB, CPU 6.7 s), 4 MiB 14.7 MB (55.2 MB, 7.6 s), 3 MiB 8.7 MB (51.8 MB) but CPU tripled (19.6 s, checks reloaded constantly), 2 MiB the same thrash."
+value = 8388608
 min = 524288
 unit = "bytes"
 
@@ -85,14 +95,14 @@ max = 100
 
 
 [mem.agent_scan_walk_soft_bytes]
-doc = "Bytes of retained transcript agent-scan walks held before the least recently used are dropped down to the low-water mark."
-value = 16777216
+doc = "Bytes of retained transcript agent-scan walks held before the least recently used are dropped down to the low-water mark. One long transcript is kept once per scan window (the 1.5 MiB, 12 MiB and 64 MiB windows of the Stop checks): a 20 MB transcript measured about 9 MB, 5.5 MB and 0.7 MB estimated, so a limit under their sum made every Stop rebuild the walks it had just dropped (about 57 ms a rebuild instead of about 2 ms a reuse)."
+value = 33554432
 min = 4096
 unit = "bytes"
 
 [mem.agent_scan_walk_hard_bytes]
 doc = "Bytes of retained transcript agent-scan walks at which an insert is refused and the cache is recycled."
-value = 33554432
+value = 67108864
 min = 4096
 unit = "bytes"
 
@@ -152,6 +162,24 @@ unit = "bytes"
 
 [mem.tasks_cache_low_water_pct]
 doc = "Percent of mem.tasks_cache_soft_bytes the kept transcript task lines are evicted down to when the soft limit is reached."
+value = 80
+min = 1
+max = 100
+
+[mem.transcript_view_soft_bytes]
+doc = "Bytes of kept transcript-view lines held before the least recently used are dropped down to the low-water mark."
+value = 8388608
+min = 4096
+unit = "bytes"
+
+[mem.transcript_view_hard_bytes]
+doc = "Bytes of kept transcript-view lines at which an insert is refused (the answer is returned, not kept) and the cache is recycled."
+value = 16777216
+min = 4096
+unit = "bytes"
+
+[mem.transcript_view_low_water_pct]
+doc = "Percent of mem.transcript_view_soft_bytes the kept transcript-view lines are evicted down to when the soft limit is reached."
 value = 80
 min = 1
 max = 100
@@ -507,6 +535,11 @@ value = 90
 min = 1
 max = 100
 
+[mem.leak_floor_buckets]
+doc = "The footprint, heap and holder slopes are fitted to the series' floor: the trend window is cut into this many equal time slices and each keeps its lowest reading. A burst (interpreters growing to their working size while hooks run, then falling back when idle) is not a climb; a leak lifts the floor. Under 2 fits the raw samples. A newer-half slope uses half as many slices."
+value = 8
+min = 0
+
 [mem.leak_min_samples]
 doc = "Fewest samples in a window for any slope to be trusted."
 value = 10
@@ -609,3 +642,21 @@ value = "footprint"
 [mem.leak_basis_heap]
 doc = "Word for the counted heap in the leak notice's `basis` placeholder."
 value = "heap"
+
+[mem.transcript_store_soft_bytes]
+doc = "Bytes of the per-session transcript fact stores (the `transcript_store` holder) logged as a soft excursion; the least recently used sessions are evicted down to the low-water mark."
+value = 25165824
+min = 65536
+unit = "bytes"
+
+[mem.transcript_store_hard_bytes]
+doc = "Bytes of the per-session transcript fact stores past which every session is dropped (each is rebuilt from its transcript on the next request)."
+value = 33554432
+min = 65536
+unit = "bytes"
+
+[mem.transcript_store_low_water_pct]
+doc = "Percent of mem.transcript_store_soft_bytes the stores are evicted down to when the soft limit is reached."
+value = 75
+min = 1
+max = 100

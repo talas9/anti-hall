@@ -1,0 +1,2 @@
+#!/bin/sh
+. ./tidy.sh

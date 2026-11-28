@@ -18,6 +18,8 @@ trap 'rm -rf "$stage"' EXIT
 mkdir -p "$stage/$name/.cargo" "$out"
 cp -R "$root/src" "$stage/$name/src"
 cp "$root/Cargo.toml" "$root/Cargo.lock" "$root/build.rs" "$stage/$name/"
+# build.rs includes its helpers from build_support/ (#[path]): without them the tarball does not build
+cp -R "$root/build_support" "$stage/$name/build_support"
 for opt in rust-toolchain.toml README.md; do
   [ -e "$root/$opt" ] && cp -R "$root/$opt" "$stage/$name/$opt"
 done

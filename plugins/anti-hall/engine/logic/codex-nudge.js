@@ -220,6 +220,6 @@ function decide(p) {
   if (!linked) gk.pruneStale(dirRel, cxT('nudge_state_prefix'));
   var shownMax = cxN('nudge_shown_files'), shown = scan.files.slice(0, shownMax).join(cxT('nudge_names_sep'));
   var what = text.render(cxT('nudge_what'), { edits: scan.edits, files: scan.files.length, names: shown, more: scan.files.length > shownMax ? cxT('nudge_more') : '' });
-  var reason = text.message('tip', cxT('nudge_guard'), { what: what, why: cxT('nudge_why'), instead: cxT('nudge_instead'), allowed: cxT('nudge_allowed'), override: cxT('nudge_override') });
+  var reason = text.message('order', cxT('nudge_guard'), { what: what, why: cxT('nudge_why'), instead: cxT('nudge_instead'), allowed: cxT('nudge_allowed'), override: cxT('nudge_override') });
   return { advisory: JSON.stringify({ decision: 'block', reason: reason }) };
 }

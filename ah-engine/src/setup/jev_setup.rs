@@ -1011,7 +1011,7 @@ mod tests {
     use super::*;
 
     fn home() -> Result<PathBuf, SetupError> {
-        let d = std::env::temp_dir().join(format!("ah-setup-{}-{:?}", std::process::id(), std::thread::current().id()));
+        let d = crate::testtmp::path(format!("ah-setup-{}-{:?}", std::process::id(), std::thread::current().id()));
         if d.exists() {
             std::fs::remove_dir_all(&d).map_err(io_err("clear the scratch home"))?;
         }

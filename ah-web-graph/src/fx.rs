@@ -122,8 +122,10 @@ fn ease_out(u: f32) -> f32 {
     1.0 - (1.0 - u.clamp(0.0, 1.0)).powi(3)
 }
 
+/// An effect colour for the page's colour scheme now (a light page takes `colors_light` when it names the key).
 fn colour(cfg: &FxCfg, key: &str) -> [f32; 4] {
-    cfg.colors.get(key).and_then(|c| crate::color::parse_oklch(c)).unwrap_or([1.0, 1.0, 1.0, 1.0])
+    let light = if crate::color::page_dark() { None } else { cfg.colors_light.get(key) };
+    light.or_else(|| cfg.colors.get(key)).and_then(|c| crate::color::parse_oklch(c)).unwrap_or([1.0, 1.0, 1.0, 1.0])
 }
 
 fn center(data: &GraphData, pos: &Pos, cfg: &GraphConfig, id: &str) -> Option<[f32; 2]> {
@@ -250,7 +252,7 @@ pub fn flash(root: &web_sys::Element, id: &str, kind: FxKind, color: &str, ms: u
 
 /// CSS rules that map `data-fxc="<key>"` to its colour (written once into the graph's own `<style>`).
 pub fn colour_rules(cfg: &FxCfg) -> String {
-    cfg.colors.iter().map(|(k, v)| format!(".ahg-node[data-fxc=\"{k}\"]{{--fx-c:{v}}}")).collect()
+    cfg.colors.iter().map(|(k, v)| format!(".ahg-node[data-fxc=\"{k}\"]{{--fx-c:{}}}", GraphConfig::scheme_css(v, cfg.colors_light.get(k)))).collect()
 }
 
 pub fn reduced_motion() -> bool {

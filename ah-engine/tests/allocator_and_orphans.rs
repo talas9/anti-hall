@@ -7,7 +7,7 @@ mod common;
 use serde_json::{Value, json};
 use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 const BIN: &str = env!("CARGO_BIN_EXE_ah-engine");
@@ -15,7 +15,7 @@ const BIN: &str = env!("CARGO_BIN_EXE_ah-engine");
 struct Serve {
     root: common::TempDir,
     state: PathBuf,
-    child: Child,
+    child: crate::common::Daemon,
 }
 
 impl Drop for Serve {
@@ -30,7 +30,7 @@ fn plugin_root() -> PathBuf {
 }
 
 fn scratch(label: &str) -> (common::TempDir, PathBuf) {
-    let root = common::TempDir::at(std::env::temp_dir().join(format!("ah-engine-{label}-{}-{}", std::process::id(), nanos())));
+    let root = common::TempDir::at(common::testtmp::path(format!("ah-engine-{label}-{}-{}", std::process::id(), nanos())));
     let state = root.join("state");
     std::fs::create_dir_all(root.join("home")).unwrap();
     std::fs::create_dir_all(&state).unwrap();
@@ -67,14 +67,16 @@ fn wait_for(what: &str, mut f: impl FnMut() -> bool) {
 
 fn start(label: &str, allocator: &str) -> Serve {
     let (root, state) = scratch(label);
-    let child = base_cmd(&root, &state)
-        .env("AH_ENGINE_ALLOCATOR", allocator)
-        .arg("serve")
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
+    let child = crate::common::Daemon::new(
+        base_cmd(&root, &state)
+            .env("AH_ENGINE_ALLOCATOR", allocator)
+            .arg("serve")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
     wait_for("daemon ping", || engine(&root, &state, &["ctl", "ping"], "").0 == 0);
     Serve { root, state, child }
 }
@@ -161,7 +163,7 @@ fn serve_without_the_malloc_env_applies_the_decay_settings() {
     for var in ["_RJEM_MALLOC_CONF", "MALLOC_CONF"] {
         cmd.env_remove(var);
     }
-    let child = cmd.env("AH_ENGINE_ALLOCATOR", "jemalloc").arg("serve").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+    let child = crate::common::Daemon::new(cmd.env("AH_ENGINE_ALLOCATOR", "jemalloc").arg("serve").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap());
     let serve = Serve { root, state, child };
     wait_for("daemon ping", || engine(&serve.root, &serve.state, &["ctl", "ping"], "").0 == 0);
     let (code, stdout, stderr) = engine(&serve.root, &serve.state, &["status", "--memory", "--json"], "");

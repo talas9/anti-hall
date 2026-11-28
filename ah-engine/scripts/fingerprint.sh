@@ -22,7 +22,7 @@ set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$root"
 
-inputs=(src build.rs Cargo.toml Cargo.lock rust-toolchain.toml targets.json scripts/build.sh scripts/lib-target.sh scripts/package.sh scripts/package-src.sh README.md ../LICENSE ../ah-launcher/src ../ah-launcher/Cargo.toml ../ah-launcher/Cargo.lock ../ah-launcher/rust-toolchain.toml)
+inputs=(src build.rs build_support Cargo.toml Cargo.lock rust-toolchain.toml targets.json scripts/build.sh scripts/lib-target.sh scripts/package.sh scripts/package-src.sh README.md ../LICENSE ../ah-launcher/src ../ah-launcher/build.rs ../ah-launcher/Cargo.toml ../ah-launcher/Cargo.lock ../ah-launcher/rust-toolchain.toml)
 present=()
 for p in "${inputs[@]}"; do [ -e "$p" ] && present+=("$p"); done
 

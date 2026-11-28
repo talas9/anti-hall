@@ -143,12 +143,14 @@ pub fn run_env_guarded(check: &dyn Check, subject: &Subject<'_>, payload: &Value
     crate::load::note_check_mem(mem);
     if let Some(d) = mem {
         crate::memdiag::note_check_mem(check.name(), d.peak, d.alloc);
+        crate::burst::note_check(check.name(), d.peak);
     }
     verdict
 }
 
 fn run_env_unmeasured(check: &dyn Check, subject: &Subject<'_>, payload: &Value, opts: &Value, env: &RequestEnv) -> Option<Verdict> {
     crate::script::set_session(payload.get("session_id").and_then(Value::as_str).unwrap_or_default());
+    crate::script::set_call(payload);
     if env.is_incomplete() {
         return Some(crate::script::failed(check.name(), subject.event, crate::defaults::text("script.msg_env_incomplete")));
     }
@@ -180,7 +182,7 @@ pub(crate) fn lit_re(pattern: &str) -> regex::Regex {
 
 /// Every built-in check, in a fixed order.
 pub fn registry() -> &'static [&'static dyn Check] {
-    static ALL: [&dyn Check; 79] = [
+    static ALL: [&dyn Check; 89] = [
         &scripted::GIT_GUARD,
         &scripted::MERGE_SIDE_PICK,
         &scripted::SHIP_IT_GUARD,
@@ -194,6 +196,9 @@ pub fn registry() -> &'static [&'static dyn Check] {
         &scripted::VERIFY_FIRST_SUBAGENT,
         &scripted::VERIFY_FIRST_FULL,
         &scripted::FABLE_AVAILABILITY,
+        &scripted::RULE_DIGEST,
+        &scripted::SESSION_BANNER,
+        &scripted::SESSION_SUMMARY,
         &scripted::INBOX_READ_GUARD,
         &scripted::PHASE_TRACKER,
         &scripted::ORCH_ON_SPAWN,
@@ -215,6 +220,8 @@ pub fn registry() -> &'static [&'static dyn Check] {
         &scripted::SPECULATION_GUARD,
         &scripted::SPECULATION_JUDGE,
         &scripted::CLAIM_LEDGER,
+        &scripted::CLAIM_EVIDENCE_GUARD,
+        &scripted::REPLY_LENGTH_GUARD,
         &scripted::OUTPUT_VERIFY_GUARD,
         &scripted::ASK_GUARD,
         &scripted::SILENT_AGENT_NUDGE,
@@ -225,9 +232,13 @@ pub fn registry() -> &'static [&'static dyn Check] {
         &scripted::ENGINE_ROLE_GUARD,
         &scripted::BROAD_KILL_GUARD,
         &scripted::QUEUED_WAIT_GUARD,
+        &scripted::CACHE_TTL_WAIT_GUARD,
         &scripted::LANE_TEST_GUARD,
         &scripted::WIDE_SEARCH_GUARD,
+        &scripted::ADVISOR_GUARD,
         &scripted::SWITCH_NOTICE,
+        &scripted::TASKLIST_HYGIENE,
+        &scripted::AFK_MODE,
         &scripted::ENGINE_ROLE_NOTE,
         &scripted::GH_RT_ADVISORY,
         &scripted::DEVSWARM_COMMS_GUARD,
@@ -243,6 +254,7 @@ pub fn registry() -> &'static [&'static dyn Check] {
         &scripted::TASK_LIFECYCLE_LOG,
         &scripted::DISPATCH_TIER,
         &scripted::TASK_GUARD,
+        &scripted::TASK_PAIR_GUARD,
         &scripted::TASKLIST_GUARD,
         &scripted::DEVSWARM_PARENT_INBOX,
         &scripted::DEVSWARM_CHILD_TURN,
@@ -372,7 +384,7 @@ mod tests {
     /// file both parsers reject is missing for both and changes nothing.
     #[test]
     fn a_settings_file_only_javascript_can_parse_takes_the_failure_policy_of_every_check() {
-        let home = std::env::temp_dir().join(format!("ah-badsettings-{}", std::process::id()));
+        let home = crate::testtmp::path(format!("ah-badsettings-{}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&home)); // keep: cleanup that raced; an absent file is the goal state
         std::fs::create_dir_all(home.join(".anti-hall")).unwrap();
         let h = home.to_string_lossy().to_string();
@@ -386,9 +398,13 @@ mod tests {
         // the baseline: a readable file with the block mode on is answered, not deferred
         write(r#"{"guards":{"noBlockingQuestions":"block"}}"#);
         assert!(!held(run()), "a readable settings file is answered by the check");
-        // a number beyond f64 (JavaScript: Infinity)
-        write(r#"{"guards":{"noBlockingQuestions":"block"},"x":1e400}"#);
-        assert!(held(run()), "1e400");
+        // a number beyond f64 (JavaScript: Infinity) invalidates its own key only (#569): the block mode in the same file still decides
+        write(r#"{"guards":{"noBlockingQuestions":"block"}}"#);
+        let baseline = format!("{:?}", run());
+        for bad in ["1e400", "-1e400", &format!("1{}", "0".repeat(400))] {
+            write(&format!(r#"{{"guards":{{"noBlockingQuestions":"block"}},"x":{bad}}}"#));
+            assert_eq!(format!("{:?}", run()), baseline, "{bad}: the same answer as the file without the number");
+        }
         // nesting past serde's recursion limit
         write(&format!(r#"{{"guards":{{"noBlockingQuestions":"block"}},"deep":{}1{}}}"#, "[".repeat(200), "]".repeat(200)));
         assert!(held(run()), "depth 200");
@@ -401,24 +417,24 @@ mod tests {
         // review 3: the legacy Jev file (`jev.json`) is read below settings.json by Node's resolver, so it counts too
         write(r#"{"guards":{"noBlockingQuestions":"block"}}"#);
         let jev = home.join(".anti-hall/jev.json");
+        std::fs::write(&jev, r#"{"enabled":true,"x":"\ud800"}"#).unwrap();
+        assert!(held(run()), "jev surrogate");
         for (name, body) in [
             ("jev 1e400", r#"{"enabled":true,"integrations":{"dispatchTier":"on"},"x":1e400}"#.to_string()),
             ("jev bigint", format!(r#"{{"enabled":true,"x":1{}}}"#, "0".repeat(400))),
-            ("jev surrogate", r#"{"enabled":true,"x":"\ud800"}"#.to_string()),
+            ("jev plain", r#"{"enabled":true}"#.to_string()),
         ] {
             std::fs::write(&jev, body).unwrap();
-            assert!(held(run()), "{name}");
+            assert!(!held(run()), "{name}: a jev.json that holds only an out-of-range number is answered (#569)");
         }
-        std::fs::write(&jev, r#"{"enabled":true}"#).unwrap();
-        assert!(!held(run()), "a readable jev.json is answered");
         crate::discard::harmless(std::fs::remove_file(&jev)); // keep: cleanup that raced; an absent file is the goal state
         // the host's settings file and the skip file are read by the same chain
         write(r#"{"guards":{"noBlockingQuestions":"block"}}"#);
         std::fs::create_dir_all(home.join(".claude")).unwrap();
-        std::fs::write(home.join(".claude/settings.json"), r#"{"pluginConfigs":{"a":{"n":1e999}}}"#).unwrap();
+        std::fs::write(home.join(".claude/settings.json"), r#"{"pluginConfigs":{"a":{"n":"\ud800"}}}"#).unwrap();
         assert!(held(run()), "~/.claude/settings.json");
         std::fs::write(home.join(".claude/settings.json"), "{}").unwrap();
-        std::fs::write(home.join(".anti-hall/skip.json"), r#"{"ask-guard":1e999}"#).unwrap();
+        std::fs::write(home.join(".anti-hall/skip.json"), r#"{"ask-guard":"\ud800"}"#).unwrap();
         assert!(held(run()), "skip.json");
         crate::discard::harmless(std::fs::remove_dir_all(&home)); // keep: cleanup that raced; an absent file is the goal state
     }

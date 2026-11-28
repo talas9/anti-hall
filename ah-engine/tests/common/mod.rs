@@ -6,19 +6,44 @@
 #![allow(dead_code)] // each test binary uses a subset
 
 pub mod scale;
+pub mod testtmp;
+
+/// This checkout's plugin (`plugins/anti-hall`): the one plugin root every test passes to the engine it spawns, explicitly, so no
+/// test resolves defaults through $HOME (the installed plugin, a snapshot cache or an install record there). #910
+pub fn plugin_root() -> std::path::PathBuf {
+    std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("plugins/anti-hall")
+}
 
 /// The built thin client (`ah-launcher`, binary `ah-hook`): AH_HOOK_BIN, else its release or debug build in this checkout. The
 /// hook command of both hosts is this binary (the plugin ships no shell wrapper), so a test that drives "the hook" runs it.
+///
+/// #908: when none exists it is built here (`cargo build --release` in `ah-launcher/`, by the same cargo that runs the tests) instead of
+/// failing the dozen tests that drive the hook: a fresh clone has no launcher build, and those tests were red on it for that alone.
+/// Parallel tests and test processes wait on cargo's own build lock, so the build runs once. Only when the build itself fails does a
+/// test fail, with cargo's output in the message.
 pub fn launcher_bin() -> std::path::PathBuf {
     if let Some(p) = std::env::var_os("AH_HOOK_BIN").map(std::path::PathBuf::from).filter(|p| p.is_file()) {
         return p;
     }
-    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("ah-launcher/target");
-    ["release", "debug"]
-        .iter()
-        .map(|b| root.join(b).join("ah-hook"))
-        .find(|p| p.is_file())
-        .expect("no ah-hook binary: build ah-launcher (cargo build in ah-launcher/) or set AH_HOOK_BIN")
+    let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("ah-launcher");
+    let found = || ["release", "debug"].iter().map(|b| dir.join("target").join(b).join("ah-hook")).find(|p| p.is_file());
+    if let Some(p) = found() {
+        return p;
+    }
+    static BUILT: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    let _one = BUILT.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(p) = found() {
+        return p;
+    }
+    let cargo = std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into());
+    let out = std::process::Command::new(cargo)
+        // the target dir is named, not inherited: a CARGO_TARGET_DIR in the developer's or CI's environment would build elsewhere
+        .args(["build", "--release", "--quiet", "--target-dir"])
+        .arg(dir.join("target"))
+        .current_dir(&dir)
+        .output()
+        .unwrap_or_else(|e| panic!("no ah-hook binary and cargo could not start to build ah-launcher ({e}); set AH_HOOK_BIN"));
+    found().unwrap_or_else(|| panic!("no ah-hook binary: building ah-launcher failed ({}): {}", out.status, String::from_utf8_lossy(&out.stderr)))
 }
 #[allow(unused_imports)] // each test binary uses a subset
 pub use scale::{scaled, scaled_ms, time_scale};
@@ -157,4 +182,95 @@ pub fn stop_child(sock: &Path, child: &mut std::process::Child) {
     }
     ah_engine::discard::harmless(child.kill());
     ah_engine::discard::harmless(child.wait());
+}
+
+/// Every daemon a test starts as its own child lives in a `Daemon`: dropping it (also on a failed assertion) stops the
+/// daemon and reaps it, and a panic hook kills the daemons the panicking thread still holds, so no `ah-engine serve` ever
+/// outlives its test (#895). It derefs to the `Child`; `into_child` hands the child back and ends the guarding.
+pub struct Daemon {
+    child: Option<std::process::Child>,
+    sock: Option<std::path::PathBuf>,
+}
+
+type Registry = std::sync::Mutex<Vec<(std::thread::ThreadId, u32)>>;
+
+fn registry() -> &'static Registry {
+    static REG: std::sync::OnceLock<Registry> = std::sync::OnceLock::new();
+    REG.get_or_init(|| {
+        // The hook only touches the panicking thread's own daemons: tests run in parallel threads, and a failure in one
+        // must not kill a daemon another test is still using. The earlier hook still runs (the failure message).
+        let prev = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            let me = std::thread::current().id();
+            if let Ok(reg) = registry().lock() {
+                for (_, pid) in reg.iter().filter(|(t, _)| *t == me) {
+                    // Only a child not yet reaped is killed: a test may have waited its daemon through the guard (Deref), and
+                    // then the pid is free for reuse by an unrelated process. WNOWAIT leaves a zombie for the guard's own wait.
+                    // SAFETY: a zeroed siginfo_t is a valid out-buffer; `waitid` and `kill` take plain integers otherwise.
+                    let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+                    let ours = unsafe { libc::waitid(libc::P_PID, *pid as libc::id_t, &mut info, libc::WEXITED | libc::WNOHANG | libc::WNOWAIT) } == 0;
+                    if ours {
+                        // SAFETY: see above; the pid is still this process's unreaped child, so it cannot name another process.
+                        unsafe { libc::kill(*pid as i32, libc::SIGKILL) };
+                    }
+                }
+            }
+            prev(info);
+        }));
+        Registry::default()
+    })
+}
+
+impl Daemon {
+    /// Guard `child` (a freshly spawned `ah-engine serve`); it is killed and waited for on drop.
+    pub fn new(child: std::process::Child) -> Daemon {
+        if let Ok(mut reg) = registry().lock() {
+            reg.push((std::thread::current().id(), child.id()));
+        }
+        Daemon { child: Some(child), sock: None }
+    }
+    /// Like `new`, and the drop first asks the daemon to stop over `sock` (the polite way), then kills.
+    pub fn with_sock(child: std::process::Child, sock: std::path::PathBuf) -> Daemon {
+        let mut d = Daemon::new(child);
+        d.sock = Some(sock);
+        d
+    }
+    /// The child back, no longer guarded (the caller owns its end).
+    pub fn into_child(mut self) -> std::process::Child {
+        self.forget();
+        self.child.take().expect("daemon child present until into_child")
+    }
+    fn forget(&self) {
+        if let (Some(c), Ok(mut reg)) = (&self.child, registry().lock()) {
+            reg.retain(|(_, pid)| *pid != c.id());
+        }
+    }
+}
+
+impl std::ops::Deref for Daemon {
+    type Target = std::process::Child;
+    fn deref(&self) -> &std::process::Child {
+        self.child.as_ref().expect("daemon child present until into_child")
+    }
+}
+
+impl std::ops::DerefMut for Daemon {
+    fn deref_mut(&mut self) -> &mut std::process::Child {
+        self.child.as_mut().expect("daemon child present until into_child")
+    }
+}
+
+impl Drop for Daemon {
+    fn drop(&mut self) {
+        self.forget();
+        if let Some(mut c) = self.child.take() {
+            match &self.sock {
+                Some(sock) => stop_child(sock, &mut c),
+                None => {
+                    ah_engine::discard::harmless(c.kill()); // keep: already exited is fine
+                    ah_engine::discard::harmless(c.wait());
+                }
+            }
+        }
+    }
 }

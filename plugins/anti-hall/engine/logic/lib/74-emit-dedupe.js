@@ -1,5 +1,5 @@
-// Shared helpers of the emit-dedupe store (mirror hooks/lib/emit-dedupe.js): the per-session state file the UserPromptSubmit hooks
-// share and the context-loss marker. Files, limits and switches: prompt_emit.toml (emit_dedupe.*).
+// Shared emit-dedupe store: UserPromptSubmit delivery state, tool-hook advisory fingerprints and the context-loss marker.
+// The prompt-delivery helpers mirror hooks/lib/emit-dedupe.js. Files, limits and switches: prompt_emit.toml (emit_dedupe.*).
 'use strict';
 var dedupe = {
   // `disabled()`: guards.emitDedupe is off, or context.dedupeWindowMin is 0.
@@ -20,12 +20,36 @@ var dedupe = {
     state[key] = entry;
     Object.keys(state).forEach(function (k) {
       var e = state[k], seen = e && typeof e.lastSeenAt === 'number' && isFinite(e.lastSeenAt) ? e.lastSeenAt : 0;
-      if (now - seen > ah.cfgNum('emit_dedupe.key_ttl_ms')) delete state[k];
+      if (!(e && e.sessionOnly) && now - seen > ah.cfgNum('emit_dedupe.key_ttl_ms')) delete state[k];
     });
     var ok = false;
     try { ok = ah.state.writeAtomic(rel, JSON.stringify(state), { leaveTemp: true }); } catch (e) { return false; }
     if (ok) gk.pruneStale(rel.slice(0, rel.lastIndexOf('/')), ah.cfg('emit_dedupe.file_prefix'));
     return ok;
+  },
+  // Tool-event attachments are not UserPromptSubmit attachments: transcript delivery scans cannot prove them.
+  // Store the LAST normalized facts, including silent recovery, not a set of facts ever seen. The caller
+  // supplies advisory text only; block text never passes through this method. Persistence failures always speak.
+  advisory: function (p, source, facts, content, subject) {
+    try {
+      var sid = p && p.session_id, profiles = ah.cfg('tool_advisory.profiles'), profile = profiles[source];
+      if (!profile || dedupe.disabled() || !ah.settings.bool(profile.setting) || typeof sid !== 'string' || !sid) return !!content;
+      var now = ah.clock.now(), key = ah.cfg('tool_advisory.key_prefix') + source + ':' + (subject || '');
+      var state = dedupe.readState(dedupe.stateRel(sid)), prev = state[key], hash = ah.sha1(JSON.stringify(facts === undefined ? null : facts));
+      var reset = state[ah.cfg('emit_dedupe.reset_key')], resetAt = reset && reset.resetAt || 0;
+      var sessionOnly = profile.session_only === true;
+      // The saved reset marker distinguishes a new context even when its reset and the previous emit share a timestamp.
+      var valid = prev && typeof prev.lastEmittedAt === 'number' && isFinite(prev.lastEmittedAt) && prev.lastEmittedAt <= now && prev.lastEmittedAt >= resetAt && (prev.resetAt || 0) === resetAt;
+      var seconds = ah.settings.num(profile.repeat), elapsed = valid ? now - prev.lastEmittedAt : 0;
+      var emit = !!content && (!valid || prev.hash !== hash || (seconds > 0 && elapsed >= seconds * ah.cfgNum('emit_dedupe.ms_per_second')));
+      var entry = { hash: hash, lastSeenAt: now, lastEmittedAt: emit || !valid ? now : prev.lastEmittedAt, sessionOnly: sessionOnly, resetAt: resetAt };
+      if (!dedupe.writeEntry(sid, key, entry, now)) return !!content;
+      if (content && !emit) {
+        dedupe.bumpSuppressed(sid, now);
+        waste.note(sid, 'repeated_advisory', source, content.length);
+      }
+      return emit;
+    } catch (e) { return !!content; } // absent/unreadable home or a failed state operation must not lose context
   },
   // `resetSession`: mark a context loss, so every record emitted before now counts as absent.
   reset: function (sessionId) {
@@ -77,6 +101,57 @@ var dedupe = {
     }
     return any ? false : null;
   },
+  // guards.keepaliveCountsScheduled: true restores the old rule (a scheduled turn counts toward the keepalive like any other).
+  countsScheduled: function () { return ah.settings.bool('emit_dedupe.sw_counts_scheduled'); },
+  // The turns of the transcript newer than `afterTs` that count toward a keepalive: {n, sched, maxTs}, or null when the tail holds no user turn
+  // that names its origin (or cannot be read), so the caller counts the old way. Scheduled turns (emit_dedupe.uncounted_origins) are
+  // passed over: they advance `maxTs` and are counted in `sched`, but not in `n`.
+  countedTurns: function (tp, afterTs) {
+    if (!tp || typeof tp !== 'string') return null;
+    var r = ah.transcript.grep(tp, ah.cfgNum('emit_dedupe.tail_bytes_wide'), ah.cfg('emit_dedupe.origin_needles'), '', '');
+    if (!r || r.unsure || !Array.isArray(r.lines)) return null;
+    var field = ah.cfg('emit_dedupe.origin_field'), skip = ah.cfg('emit_dedupe.uncounted_origins');
+    var n = 0, sched = 0, maxTs = afterTs, seen = false;
+    r.lines.forEach(function (line) {
+      var rec;
+      try { rec = JSON.parse(line); } catch (e) { return; }
+      if (!rec || rec.type !== ah.cfg('emit_dedupe.origin_record_type') || typeof rec[field] !== 'string') return;
+      seen = true;
+      var ts = Date.parse(rec[ah.cfg('emit_dedupe.origin_ts_field')]);
+      if (!isFinite(ts) || ts <= afterTs) return;
+      if (skip.indexOf(rec[field]) < 0) n += 1; else sched += 1;
+      if (ts > maxTs) maxTs = ts;
+    });
+    return seen ? { n: n, sched: sched, maxTs: maxTs } : null;
+  },
+  // Whether the prompt now submitted is a turn the host scheduler delivered, PROVABLY: the newest user PROMPT record of the transcript (tool
+  // results are not prompts) names a scheduled origin (emit_dedupe.uncounted_origins), its text is this prompt, and no assistant record
+  // follows it (one would mean this prompt's own record is not written yet and the match is an earlier tick). A person's prompt differs from
+  // the cron's text, so it never reads as scheduled. Everything else - an unreadable transcript, a newer record naming no origin, an earlier
+  // tick with the same text - reads as not scheduled, so the caller speaks.
+  scheduledTurn: function (tp, prompt) {
+    if (!tp || typeof tp !== 'string' || typeof prompt !== 'string' || prompt.trim() === '') return false;
+    var r = ah.transcript.grep(tp, ah.cfgNum('emit_dedupe.tail_bytes_wide'), ah.cfg('emit_dedupe.record_needles'), '', '');
+    if (!r || r.unsure || !Array.isArray(r.lines)) return false;
+    var field = ah.cfg('emit_dedupe.origin_field'), userType = ah.cfg('emit_dedupe.origin_record_type'), asstType = ah.cfg('emit_dedupe.assistant_record_type');
+    var resultType = ah.cfg('emit_dedupe.tool_result_block_type'), last = null, answered = false;
+    r.lines.forEach(function (line) {
+      var rec;
+      try { rec = JSON.parse(line); } catch (e) { return; }
+      if (!rec || typeof rec !== 'object') return;
+      if (rec.type === asstType) { answered = true; return; }
+      if (rec.type !== userType) return;
+      var c = rec.message ? rec.message.content : null;
+      var isResult = Array.isArray(c) && c.length > 0 && c.every(function (b) { return b && b.type === resultType; });
+      if (isResult) return;
+      last = rec;
+      answered = false;
+    });
+    if (last === null || answered || typeof last[field] !== 'string' || ah.cfg('emit_dedupe.uncounted_origins').indexOf(last[field]) < 0) return false;
+    var c = last.message ? last.message.content : null;
+    var body = typeof c === 'string' ? c : Array.isArray(c) ? c.map(function (b) { return b && typeof b.text === 'string' ? b.text : ''; }).join('') : '';
+    return body.trim() === prompt.trim();
+  },
   windowMs: function () {
     var mins = ah.settings.num('emit_dedupe.num_window_min');
     return isFinite(mins) && mins > 0 ? mins * ah.cfgNum('emit_dedupe.ms_per_minute') : ah.cfgNum('emit_dedupe.window_default_ms');
@@ -91,7 +166,7 @@ var dedupe = {
   },
   // Whether the store can decide this block exactly (false: a transcript timestamp only V8 reads exactly, so the caller defers). Writes nothing.
   canDecide: function (o) { return dedupe.evaluate(o, false) !== 'unsure'; },
-  // The decision of `shouldEmit` (true / false, or 'unsure'); with `commit` false nothing is written.
+  // The decision of `shouldEmit` (true / false, or 'unsure'); false writes nothing, 'suppressed' writes only suppression records.
   evaluate: function (o, commit) {
     dedupe.scanMemo = {}; // the memo lives for one decision: the context outlives the request, and a transcript grows between requests
     if (dedupe.disabled()) return true;
@@ -103,32 +178,61 @@ var dedupe = {
     var rk = ah.cfg('emit_dedupe.reset_key');
     var resetAt = state[rk] && typeof state[rk].resetAt === 'number' && isFinite(state[rk].resetAt) ? state[rk].resetAt : 0;
     var fin = function (v) { return typeof v === 'number' && isFinite(v); };
-    var prevOk = prev && typeof prev.hash === 'string' && fin(prev.lastEmittedAt) && prev.lastEmittedAt <= now && prev.lastEmittedAt >= resetAt && (prev.tp || null) === tp;
+    var prevOk = prev && typeof prev.hash === 'string' && fin(prev.lastEmittedAt) && prev.lastEmittedAt <= now && prev.lastEmittedAt >= resetAt && (prev.tp || null) === tp && (!o.stateOnly || (prev.resetAt || 0) === resetAt);
     var same = prevOk && prev.hash === hash, lastSeen = prevOk && fin(prev.lastSeenAt) ? prev.lastSeenAt : 0, turns = prevOk && fin(prev.turnsSinceEmit) ? prev.turnsSinceEmit : 0;
-    var emit = true, nextTurns = 0;
+    var emit = true, nextTurns = 0, ctNext = null, delivered = false;
     if (same) {
       var since = prev.lastEmittedAt - tol, ch = typeof prev.ch === 'string' ? prev.ch : '', k = fin(prev.k) && prev.k > 0 ? prev.k : 1;
-      var consumed = dedupe.findInTail(o.readPath || o.transcriptPath, function (a) { return a.ts >= since && !!ch && dedupe.matchesExact(a.els, ch, k); });
+      // A state-only caller may name the stable content that survives the dispatcher cuts.
+      // Neither a pending emission nor an unrelated attachment proves delivery.
+      var consumed = o.stateOnly && prev.delivered === true ? true : dedupe.findInTail(o.readPath || o.transcriptPath, function (a) {
+        return a.ts >= since && ((!!ch && dedupe.matchesExact(a.els, ch, k)) ||
+          (o.stateOnly && typeof prev.deliveryCh === 'string' && dedupe.matchesExact(a.els, prev.deliveryCh, prev.deliveryK)));
+      });
       if (consumed === 'unsure') return 'unsure';
-      if (consumed === null) {
+      delivered = consumed === true;
+      if (o.stateOnly && delivered) { emit = false; nextTurns = turns; }
+      else if (consumed === null) {
         if ((now - prev.lastEmittedAt) < windowMs) { emit = false; nextTurns = turns; }
-        else if (keepalive > 0) {
+        else if (keepalive > 0 && !o.stateOnly) {
           var newTurn = (now - lastSeen) >= ah.cfgNum('emit_dedupe.window_default_ms');
           if (!(newTurn && turns >= keepalive)) { emit = false; nextTurns = turns + (newTurn ? 1 : 0); }
         }
       } else if (!consumed) {
         if ((now - prev.lastEmittedAt) < maxPending) { emit = false; nextTurns = turns; }
       } else if (keepalive > 0) {
-        var nt = dedupe.findInTail(o.readPath || o.transcriptPath, function (a) { return a.ts >= lastSeen - tol; });
-        if (nt === 'unsure') return 'unsure';
-        var t = turns + (nt === true ? 1 : 0);
-        if (t > keepalive) emit = true; else { emit = false; nextTurns = t; }
+        // #709: a cron-delivered (scheduled) turn is not a turn the model needs a reminder for. Unless guards.keepaliveCountsScheduled is
+        // on, count the user turns of the transcript that are not scheduled and are newer than the last one counted (`ct`, absent until the first count: then the emit time); a wall-clock
+        // floor (guards.injectionRepeatMinS) still re-shows the block in a session that only ever sees scheduled turns. A transcript
+        // that shows no turn origin (another host, an old file) counts as before: one turn per call that finds a delivery.
+        var counted = dedupe.countsScheduled() ? null : dedupe.countedTurns(o.readPath || o.transcriptPath, fin(prev.ct) ? prev.ct : lastSeen);
+        var t;
+        if (counted !== null) { t = turns + counted.n; ctNext = counted.maxTs; }
+        else {
+          var nt = dedupe.findInTail(o.readPath || o.transcriptPath, function (a) { return a.ts >= lastSeen - tol; });
+          if (nt === 'unsure') return 'unsure';
+          t = turns + (nt === true ? 1 : 0);
+        }
+        var floorS = ah.settings.num('emit_dedupe.num_repeat_min_s');
+        var floorHit = counted !== null && isFinite(floorS) && floorS > 0 && (now - prev.lastEmittedAt) >= floorS * ah.cfgNum('emit_dedupe.ms_per_second');
+        if (t > keepalive || floorHit) emit = true; else {
+          emit = false; nextTurns = t;
+          // each evaluation that passed over a scheduled turn and still suppressed the block is one repeat of an unchanged advisory that
+          // the old rule (every delivered turn counts) moved toward re-sending: counted once, whatever the keepalive length
+          if (commit && counted !== null && counted.sched > 0) waste.note(o.sessionId, 'repeated_advisory', 'keepalive_scheduled', content.length);
+        }
       }
     }
     var entry = emit
       ? Object.assign({ hash: hash, tp: tp, lastEmittedAt: now, lastSeenAt: now, turnsSinceEmit: 0 }, dedupe.exactId(content))
-      : { hash: prev.hash, tp: prev.tp || null, ch: prev.ch, k: prev.k, lastEmittedAt: prev.lastEmittedAt, lastSeenAt: now, turnsSinceEmit: nextTurns };
-    if (!commit) return emit;
+      : { hash: prev.hash, tp: prev.tp || null, ch: prev.ch, k: prev.k, lastEmittedAt: prev.lastEmittedAt, lastSeenAt: now, turnsSinceEmit: nextTurns, ct: ctNext !== null ? ctNext : prev.ct };
+    if (o.stateOnly) {
+      entry.sessionOnly = true; entry.resetAt = resetAt; entry.delivered = delivered;
+      if (emit && typeof o.deliveryContent === 'string' && o.deliveryContent) {
+        var deliveryId = dedupe.exactId(o.deliveryContent); entry.deliveryCh = deliveryId.ch; entry.deliveryK = deliveryId.k;
+      } else if (!emit) { entry.deliveryCh = prev.deliveryCh; entry.deliveryK = prev.deliveryK; }
+    }
+    if (!commit || (emit && commit === 'suppressed')) return emit;
     if (!dedupe.writeEntry(o.sessionId, key, entry, now)) return true;
     if (!emit) dedupe.bumpSuppressed(o.sessionId, now);
     return emit;

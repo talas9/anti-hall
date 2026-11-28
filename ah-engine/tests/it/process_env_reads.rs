@@ -21,6 +21,10 @@ const ALLOW: &[(&str, &str)] = &[
         "the daemon's start-up sanitising (`sanitize`): it lists the process environment once, before any thread exists, only to REMOVE every variable that is not on `daemon.spawn_env_allow`, so no request is ever answered from the starting session's values",
     ),
     ("src/memdiag.rs", "the daemon's own environment, once at start: whether the allocator already got its tuning from the variables a starter set"),
+    (
+        "src/setup/supervise.rs",
+        "`unit_matches_client`, run in the hook client process before it asks the service manager for the daemon: it looks for `AH_ENGINE_*` overrides this client would pass to a daemon it started itself, which the unit cannot carry. Its environment IS the host's; no request is answered from it",
+    ),
     ("src/client.rs", "the hook client process: its environment IS the host's; reads the Node path and the fallback command"),
     (
         "src/checks/mcp_reaper/sys.rs",
@@ -62,6 +66,10 @@ const ALLOW: &[(&str, &str)] = &[
     (
         "src/meshw/simple.rs",
         "the detached `ah-engine mesh --verify` checker (same process as meshw/verify.rs): the real home it hands to the Node check it compares against",
+    ),
+    (
+        "src/checks/agent_scan/tests.rs",
+        "test builds only (`#[cfg(test)]`, `#[ignore]`d diagnostics): `AH_WALK_SRC` (real transcripts to compare or measure) and `AH_HORIZON`; no request is ever answered from them",
     ),
     (
         "src/script/golden_d6/tests.rs",
@@ -106,6 +114,18 @@ const ALLOW: &[(&str, &str)] = &[
     (
         "src/ghrt/ready.rs",
         "`workspace_owns`, the GitHub poller (daemon background duty, no request): locates the DevSwarm app database from the engine process's own environment, like the DevSwarm layer's startup in `dswire/mod.rs`; `github_rt.ready_app_db` overrides it",
+    ),
+    (
+        "src/meshw/union.rs",
+        "`provenance_of_process`, for the engine's own mesh reads that no request drives (reconcile, live and wake probes): the settings file under the home plus this process's own environment are that read's settings; every request-driven read takes the request's `Settings` through `provenance_of` instead (GH #429)",
+    ),
+    (
+        "src/metrics.rs",
+        "`child_counts`, reached from `bump_by` (only when `in_daemon` is false) and from the exit emitter `write_child_counts` (src/main.rs after `cli::run`, which has no daemon exclusion and so also runs in the daemon process once serve returns): reads the marker variable (name from `schedule.child_counts_env`) the daemon set on a scheduled subprocess job, honoured only while the parent pid is the one named in the marker; the answer is resolved once and kept; no request is answered from it",
+    ),
+    (
+        "src/script/host_tests_d/tests.rs",
+        "test builds only (a file of its own so the scan's `#[cfg(test)]` cut does not apply): `AH_T_CHILD` and `AH_T_LOSTUPDATE`, the variables with which a test re-runs its own test binary as a child process; no request is ever answered from them",
     ),
     (
         "src/dswire/cli.rs",

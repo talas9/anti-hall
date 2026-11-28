@@ -5,6 +5,9 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
 #![allow(clippy::panic, clippy::unreachable)] // integration tests: a panic is the failure report; production crates deny these in Cargo.toml
 
+#[path = "common/testtmp.rs"]
+mod testtmp;
+
 use ah_engine::defaults;
 use ah_engine::watch::poll::Filter;
 use ah_engine::watch::{Config, Watcher};
@@ -45,7 +48,7 @@ fn drain(w: &Watcher, quiet: Duration) {
 struct Tmp(PathBuf);
 impl Tmp {
     fn new(tag: &str) -> Tmp {
-        let p = std::env::temp_dir().join(format!("ah-watch-{tag}-{}", std::process::id()));
+        let p = testtmp::path(format!("ah-watch-{tag}-{}", std::process::id()));
         fs::remove_dir_all(&p).unwrap_or_default();
         fs::create_dir_all(&p).unwrap();
         Tmp(p)

@@ -277,13 +277,50 @@ pub(crate) fn blocks(r: &HookResult) -> bool {
     r.code == Some(2) || (r.code.is_some() && json_blocks(&r.out))
 }
 
+/// Whether a finished hook or check said anything the host passes on: a block, a non-empty `additionalContext` or `systemMessage`,
+/// stderr, or plain stdout. A JSON reply whose context is empty is silence: it is not an advisory, not decided and not delivered
+/// (GH #894: limit-conserve-inject and auto-handover print the empty context line on every quiet turn, which the funnel had counted as
+/// a delivery each time).
+pub(crate) fn says_something(event: &str, r: &HookResult) -> bool {
+    r.code == Some(2) || !channel_keys(event, r).is_empty()
+}
+
+/// The output channels one answer of a check uses, as the keys of `delivery.channel_label` (B1 funnel): `block` (exit 2 or a JSON
+/// block), `soft_block` (a non-blocking answer of a `dispatch.stop_events` event that carries `additionalContext`: it continues
+/// the turn), `advisory` (`additionalContext` on any other event), `system_message` (a non-empty `systemMessage`), `stderr` (stderr
+/// text on an answer that does not block), `plain` (stdout that is not a JSON object). An answer on several channels is on each.
+pub(crate) fn channel_keys(event: &str, r: &HookResult) -> Vec<&'static str> {
+    let parsed = parse_object(&r.out);
+    let non_empty = |v: Option<&Ordered>| v.and_then(Ordered::as_str).is_some_and(|s| !s.is_empty());
+    let blocking = r.code == Some(2) || json_blocks(&r.out);
+    let ctx = parsed.as_ref().is_some_and(|p| non_empty(p.get(HSO_KEY).and_then(|h| h.get(HSO_CTX))));
+    let sys = parsed.as_ref().is_some_and(|p| non_empty(p.get(TOP_MSG)));
+    let stop = defaults::list("dispatch.stop_events").contains(&event);
+    let mut keys = Vec::new();
+    if blocking {
+        keys.push("block");
+    } else if ctx {
+        keys.push(if stop { "soft_block" } else { "advisory" });
+    }
+    if sys {
+        keys.push("system_message");
+    }
+    if !blocking && !r.err.trim().is_empty() {
+        keys.push("stderr");
+    }
+    if parsed.is_none() && !r.out.trim().is_empty() && !blocking {
+        keys.push("plain");
+    }
+    keys
+}
+
 const TOP_DECISION: &str = "decision";
 const TOP_REASON: &str = "reason";
-const TOP_MSG: &str = "systemMessage";
-const HSO_KEY: &str = "hookSpecificOutput";
+pub(crate) const TOP_MSG: &str = "systemMessage";
+pub(crate) const HSO_KEY: &str = "hookSpecificOutput";
 const HSO_REASON: &str = "permissionDecisionReason";
-const HSO_CTX: &str = "additionalContext";
-const HSO_EVENT: &str = "hookEventName";
+pub(crate) const HSO_CTX: &str = "additionalContext";
+pub(crate) const HSO_EVENT: &str = "hookEventName";
 
 /// True when a top-level `decision` value blocks: the block's reason is then the top-level `reason`; any other JSON block is
 /// a `hookSpecificOutput` deny, whose reason is its `permissionDecisionReason`.
@@ -294,7 +331,7 @@ fn decision_blocks(d: Option<&Ordered>) -> bool {
 
 /// The text the host gives the model for one blocking result: a JSON block's reason (the host takes it over stderr even on
 /// exit 2), else the stderr of the exit 2, without its trailing newlines.
-fn block_reason(r: &HookResult) -> String {
+pub(crate) fn block_reason(r: &HookResult) -> String {
     let text = match parse_object(&r.out).filter(|_| json_blocks(&r.out)) {
         Some(v) if decision_blocks(v.get(TOP_DECISION)) => v.get(TOP_REASON).and_then(Ordered::as_str).unwrap_or_default().to_string(),
         Some(v) => v.get(HSO_KEY).and_then(|h| h.get(HSO_REASON)).and_then(Ordered::as_str).unwrap_or_default().to_string(),
@@ -309,6 +346,43 @@ fn set(obj: &mut Vec<(String, Ordered)>, key: &str, v: Ordered) {
         Some(slot) => slot.1 = v,
         None => obj.push((key.to_string(), v)),
     }
+}
+
+/// `s` cut to at most `max` characters at a word boundary (the last whitespace within the limit; a single word longer than the
+/// limit is cut hard), without the trailing whitespace.
+fn cut_at_word(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.trim_end().to_string();
+    }
+    let head: String = s.chars().take(max).collect();
+    if s.chars().nth(max).is_some_and(char::is_whitespace) {
+        return head.trim_end().to_string(); // the cut falls between two words
+    }
+    match head.rfind(char::is_whitespace).and_then(|i| head.get(..i)) {
+        Some(words) if !words.trim().is_empty() => words.trim_end().to_string(),
+        _ => head,
+    }
+}
+
+/// The advisories of the hooks that did not block, as one reason part the model reads (`dispatch.msg_stop_advisories`), cut at a
+/// word to `dispatch.stop_advisory_chars`; `None` when they say nothing or the limit is 0 (off: not even the header is added).
+fn folded(advisories: &[&HookResult]) -> Option<String> {
+    let max = defaults::num("dispatch.stop_advisory_chars") as usize;
+    if max == 0 {
+        return None;
+    }
+    let mut parts: Vec<String> = Vec::new();
+    for r in advisories {
+        let Some(o) = parse_object(&r.out) else { continue };
+        if let Some(m) = o.get(TOP_MSG).and_then(Ordered::as_str).filter(|m| !m.trim().is_empty()) {
+            parts.push(m.to_string());
+        }
+        if let Some(c) = o.get(HSO_KEY).and_then(|h| h.get(HSO_CTX)).and_then(Ordered::as_str).filter(|c| !c.trim().is_empty()) {
+            parts.push(c.to_string());
+        }
+    }
+    let text = cut_at_word(&parts.join(defaults::text("dispatch.message_joiner")), max);
+    (!text.is_empty()).then(|| defaults::render("dispatch.msg_stop_advisories", &[("text", &text)]))
 }
 
 /// The answer for several blocking results (rule 1 of the module docs). The host runs the hooks separately and gives the
@@ -327,11 +401,17 @@ fn set(obj: &mut Vec<(String, Ordered)>, key: &str, v: Ordered) {
 /// give the model such text on an event whose plain stdout is not context (Stop, PreToolUse, ...), so it is kept where it says
 /// nothing to the model either: after the blocks' plain stdout on an exit 2 without JSON, else on stderr after the rest, as
 /// [`sequential`] moves plain text next to JSON. It is only added when there is some: a lone block stays byte for byte.
-fn blocked(blockers: &[&HookResult], advisories: &[&HookResult], notes: &str) -> Combined {
+fn blocked(blockers: &[&HookResult], advisories: &[&HookResult], notes: &str, fold: bool) -> Combined {
     if let ([one], [], "") = (blockers, advisories, notes) {
         return verbatim(one);
     }
-    let reasons: Vec<String> = blockers.iter().map(|r| block_reason(r)).filter(|s| !s.is_empty()).collect();
+    let mut reasons: Vec<String> = blockers.iter().map(|r| block_reason(r)).filter(|s| !s.is_empty()).collect();
+    // #516: on a Stop the model reads only the block reason (exit 2: stderr; exit 0: the reason field), never a systemMessage or a
+    // context, so with the ladder on (`fold`) the advisories that ride along are also folded into the reason, bounded by
+    // dispatch.stop_advisory_chars. With the ladder off the reason is the blocks' own, as before.
+    if let Some(f) = fold.then(|| folded(advisories)).flatten() {
+        reasons.push(f);
+    }
     let joined = reasons.join(defaults::text("dispatch.reason_joiner"));
     let line = |s: &str| if s.ends_with('\n') { s.to_string() } else { format!("{s}\n") };
     let reasons_err = if joined.is_empty() { String::new() } else { line(&joined) };
@@ -400,6 +480,12 @@ pub fn combine(results: &[HookResult]) -> Combined {
 /// [`combine`], with `keep_advisories` for an event whose hooks each give their own answer to the host and whose block must not
 /// hide the others' advisories (Stop and SubagentStop, `dispatch.stop_events`).
 pub fn combine_for(results: &[HookResult], keep_advisories: bool) -> Combined {
+    combine_with(results, keep_advisories, false)
+}
+
+/// [`combine_for`], with `fold` (the nudge ladder is on, `nudges.enabled`) to also carry the advisories that ride along with a
+/// block into the block reason, the only text the model reads on a Stop (#516).
+pub fn combine_with(results: &[HookResult], keep_advisories: bool, fold: bool) -> Combined {
     let blockers: Vec<&HookResult> = results.iter().filter(|r| blocks(r)).collect();
     if !blockers.is_empty() {
         let notes: String = results
@@ -409,7 +495,7 @@ pub fn combine_for(results: &[HookResult], keep_advisories: bool) -> Combined {
             .collect();
         let advisories: Vec<&HookResult> =
             results.iter().filter(|r| keep_advisories && r.code == Some(0) && !blocks(r) && parse_object(&r.out).is_some()).collect();
-        return blocked(&blockers, &advisories, &notes);
+        return blocked(&blockers, &advisories, &notes, fold);
     }
     let active: Vec<&HookResult> = results.iter().filter(|r| r.active()).collect();
     let answer = match active.len() {
@@ -532,9 +618,71 @@ fn merge(active: &[&HookResult], lenient: bool) -> Combined {
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_stop_block_carries_the_other_hooks_advisories_in_its_reason() {
+        let block = r("a", 2, "", "stop: open tasks");
+        let adv = r("b", 0, r#"{"systemMessage":"finish agent x"}"#, "");
+        let Combined::Answer(o) = combine_with(&[block.clone(), adv.clone()], true, true) else { panic!("an answer") };
+        assert_eq!(o.code, 2);
+        assert!(o.err.contains("stop: open tasks") && o.err.contains("finish agent x"), "{}", o.err);
+        let Combined::Answer(lone) = combine_with(std::slice::from_ref(&block), true, true) else { panic!("an answer") };
+        assert_eq!(lone.err, "stop: open tasks", "a lone block stays byte for byte");
+        // the ladder off (nudges.enabled): the reason is the block's own, as before the fold existed
+        let Combined::Answer(off) = combine_for(&[block, adv], true) else { panic!("an answer") };
+        assert_eq!(off.err, "stop: open tasks\n", "no fold with the ladder off: {}", off.err);
+    }
+
+    #[test]
+    fn the_folded_advisories_are_cut_at_a_word_and_zero_chars_adds_nothing() {
+        assert_eq!(cut_at_word("alpha beta gamma", 16), "alpha beta gamma");
+        assert_eq!(cut_at_word("alpha beta gamma", 12), "alpha beta", "cut back to the last whole word");
+        assert_eq!(cut_at_word("alpha beta gamma", 10), "alpha beta", "the limit falls right after a word");
+        assert_eq!(cut_at_word("alphabetagamma", 5), "alpha", "one word longer than the limit is cut hard");
+        let adv = r("b", 0, r#"{"systemMessage":"   "}"#, "");
+        assert_eq!(folded(&[&adv]), None, "advisories that say nothing add no header");
+        let said = r("b", 0, r#"{"systemMessage":"finish agent x"}"#, "");
+        assert!(folded(&[&said]).is_some_and(|f| f.contains("finish agent x")));
+    }
+
     fn r(id: &str, code: i32, out: &str, err: &str) -> HookResult {
         HookResult { id: id.into(), code: Some(code), out: out.into(), err: err.into() }
     }
+
+    /// GH #894: the empty context line a quiet UserPromptSubmit check prints is silence. Before, every such line was counted as an
+    /// advisory decided and delivered (about 12k a window for limit-conserve-inject and auto-handover), and then as ignored.
+    #[test]
+    fn an_empty_additional_context_says_nothing_and_any_real_channel_does() {
+        let ups = "UserPromptSubmit";
+        let empty = r("e", 0, "{\"hookSpecificOutput\":{\"hookEventName\":\"UserPromptSubmit\",\"additionalContext\":\"\"}}\n", "");
+        assert!(!says_something(ups, &empty), "an empty context is not an advisory");
+        assert!(!says_something(ups, &r("q", 0, "", "")), "no output");
+        let ctx = r("c", 0, r#"{"hookSpecificOutput":{"hookEventName":"UserPromptSubmit","additionalContext":"write a handover"}}"#, "");
+        assert!(says_something(ups, &ctx));
+        assert!(says_something(ups, &r("s", 0, r#"{"systemMessage":"note"}"#, "")));
+        assert!(says_something(ups, &r("b", 2, "", "blocked")), "a block always says something");
+        assert!(says_something(ups, &r("p", 0, "plain advice", "")), "plain stdout is an advisory");
+    }
+
+    #[test]
+    fn an_answer_is_classified_into_the_channels_it_uses() {
+        let ctx = |ev: &str| format!("{{\"hookSpecificOutput\":{{\"hookEventName\":\"{ev}\",\"additionalContext\":\"x\"}}}}\n");
+        // hard blocks: exit 2 (stderr is the block's own text), and a JSON block on exit 0
+        assert_eq!(channel_keys("PreToolUse", &r("a", 2, "", "no\n")), vec!["block"]);
+        assert_eq!(channel_keys("Stop", &r("a", 0, "{\"decision\":\"block\",\"reason\":\"R\"}\n", "")), vec!["block"]);
+        // additionalContext: a soft block on a Stop event (it continues the turn), an advisory anywhere else
+        assert_eq!(channel_keys("Stop", &r("a", 0, &ctx("Stop"), "")), vec!["soft_block"]);
+        assert_eq!(channel_keys("PreToolUse", &r("a", 0, &ctx("PreToolUse"), "")), vec!["advisory"]);
+        // systemMessage and stderr text on an allow are shown to the user, not the model
+        assert_eq!(channel_keys("Stop", &r("a", 0, "{\"systemMessage\":\"m\"}\n", "")), vec!["system_message"]);
+        assert_eq!(channel_keys("PostToolUse", &r("a", 0, "", "note\n")), vec!["stderr"]);
+        // plain stdout, and an answer on several channels counts on each
+        assert_eq!(channel_keys("UserPromptSubmit", &r("a", 0, "hello\n", "")), vec!["plain"]);
+        let both = "{\"systemMessage\":\"m\",\"hookSpecificOutput\":{\"hookEventName\":\"Stop\",\"additionalContext\":\"x\"}}\n";
+        assert_eq!(channel_keys("Stop", &r("a", 0, both, "e\n")), vec!["soft_block", "system_message", "stderr"]);
+        // an empty additionalContext says nothing to the host, so it is no channel
+        assert!(channel_keys("Stop", &r("a", 0, "{\"hookSpecificOutput\":{\"hookEventName\":\"Stop\",\"additionalContext\":\"\"}}\n", "")).is_empty());
+    }
+
     fn ans(c: Combined) -> Outcome {
         match c {
             Combined::Answer(o) => o,
@@ -610,6 +758,11 @@ mod tests {
         // exit 0 JSON block: the advisory's message is kept next to the block
         let o = ans(combine_for(&[r("a", 0, adv, ""), r("b", 0, block, "")], true));
         assert_eq!(o, Outcome { code: 0, out: "{\"decision\":\"block\",\"reason\":\"B\",\"systemMessage\":\"adv\"}\n".into(), err: String::new() });
+        // with the ladder on (#516) it is also folded into the reason the model reads
+        let o = ans(combine_with(&[r("a", 0, adv, ""), r("b", 0, block, "")], true, true));
+        let folded = defaults::render("dispatch.msg_stop_advisories", &[("text", &"adv")]).replace('\n', "\\n");
+        let want = format!("{{\"decision\":\"block\",\"reason\":\"B\\n\\n{folded}\",\"systemMessage\":\"adv\"}}\n");
+        assert_eq!(o, Outcome { code: 0, out: want, err: String::new() });
         // exit 2 JSON block (the host reads stderr as the reason): a plain note must not land on stderr, it joins the message
         let note = "[x] note\n";
         let o = ans(combine(&[r("a", 0, note, ""), r("b", 2, block, "B\n")]));

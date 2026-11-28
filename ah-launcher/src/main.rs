@@ -23,10 +23,12 @@ mod install;
 mod integrity;
 mod launcher;
 mod limits;
+mod loadscale;
 mod nodeback;
 mod proc;
 mod rec;
 mod selftest;
+mod shellwords;
 mod update;
 mod util;
 

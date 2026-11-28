@@ -54,7 +54,7 @@ value = { task_open_line = 12, task_demand_line = 12 }
 
 [advisory.cap_hard_by_kind]
 doc = "Per-kind override of advisory.cap_hard_default."
-value = { task_open_line = 60, task_demand_line = 60 }
+value = { task_open_line = 60, task_demand_line = 60, advisor_review = 3, advisor_plan = 3, advisor_retry = 3 }
 
 [advisory.fallback_per_session]
 doc = "How many times per session the rule-only fallback of a judgment advisory may fire when Jev cannot confirm it (error, no key, too slow)."
@@ -62,8 +62,8 @@ value = 1
 min = 1
 
 [advisory.metric_names]
-doc = "The metric names the scripts count per advisory kind, by role: a rule flagged a candidate, a question was put to Jev, Jev confirmed, the advisory reached the model, it was held back (unchanged table, repeat, cap, Jev declined, rate-limited fallback), a Jev question failed, an advisory fired past its soft cap."
-value = { flagged = "flagged", asked = "asked", confirmed = "confirmed", injected = "injected", suppressed = "suppressed", jev_error = "jev_error", over_soft = "over_soft_cap" }
+doc = "The metric names the scripts count per advisory kind, by role: a rule flagged a candidate, a question was put to Jev, Jev confirmed, the advisory reached the model, it was held back (unchanged table, repeat, cap, Jev declined, rate-limited fallback), a Jev question failed, an advisory fired past its soft cap; the advisor-mode adherence counts: a failure armed the retry rule, the advisor was consulted after that failure, a retry block was acted on (advisor consulted before the next edit), an advisor call was seen; phase 3 (GH #404): an advisor call after a phase-3 nudge or block (nudged) or with none pending (spontaneous), a thinking dispatch, one with an advisor call since the owner message (consulted_before), a nudge, a block, a hit past the one block per task (block_capped), a nudge followed by routine work (false_nag), a second fix attempt gated, an announced advisor call that did not follow (miss)."
+value = { flagged = "flagged", asked = "asked", confirmed = "confirmed", injected = "injected", suppressed = "suppressed", jev_error = "jev_error", over_soft = "over_soft_cap", armed = "armed", consulted = "consulted", acted_on = "acted_on", consult = "consult", consult_nudged = "nudged", consult_spontaneous = "spontaneous", dispatch = "dispatch", consulted_before = "consulted_before", nudge = "nudge", blocked = "blocked", block_capped = "block_capped", false_nag = "false_nag", gated = "gated", miss = "miss" }
 
 [advisory.kind_task_open_line]
 doc = "The advisory kind name of the per-prompt open-tasks line of the task tracker."
@@ -100,3 +100,7 @@ value = "tasklist_omc"
 [advisory.kind_tasklist_plan_mode]
 doc = "The advisory kind name of the task-list guard's plan-mode note."
 value = "tasklist_plan_mode"
+
+[advisory.kind_tasklist_budget]
+doc = "The advisory kind name of the task-list hygiene line (a subject over handover.taskSubjectMax or open tasks over handover.taskListBudget)."
+value = "tasklist_budget"

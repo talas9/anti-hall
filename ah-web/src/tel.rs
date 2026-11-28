@@ -102,11 +102,17 @@ pub struct TelCfg {
     jev_skip_reasons: Value,
     export_path: String,
     refresh_s: u64,
+    impact_good: BTreeMap<String, String>,
     rows_shown: usize,
     boot_keys: Vec<String>,
 }
 
 impl TelCfg {
+    /// Which direction of change is good for an Impact group (`impact_good`); a group not listed reads as neutral (no colour).
+    fn impact_good_of(&self, group: &str) -> String {
+        self.impact_good.get(group).cloned().unwrap_or_default()
+    }
+
     /// Read `path` (`web_tel.toml`: every `[webtel.<name>]` table's `value`).
     pub fn load(path: &Path) -> Result<TelCfg, String> {
         let text = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -1203,8 +1209,13 @@ fn build_impact(raw: &Raw, c: &TelCfg, number: &NumFmt) -> ImpactDoc {
                     .sum()
             })
         };
-        doc.prevention
-            .push(row(&p.id, &p.label, &p.hint, "up", &series));
+        doc.prevention.push(row(
+            &p.id,
+            &p.label,
+            &p.hint,
+            &c.impact_good_of("prevention"),
+            &series,
+        ));
     }
     for f in &c.failures {
         if let Some(src) = parse_src(&f.source) {
@@ -1212,7 +1223,7 @@ fn build_impact(raw: &Raw, c: &TelCfg, number: &NumFmt) -> ImpactDoc {
                 &f.id,
                 &f.label,
                 &f.hint,
-                "down",
+                &c.impact_good_of("failures"),
                 &raw.daily(&|s| eval(&src, s)),
             ));
         }

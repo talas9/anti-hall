@@ -529,8 +529,12 @@ fn run_kept(case: &Case, row: &Row, first: &str, second: &str) -> Run {
         .env_clear()
         .env("PATH", std::env::var("PATH").unwrap_or_default())
         .env("HOME", case.dir.join("home"))
+        .env("AH_ENGINE_PLUGIN_ROOT", crate::common::plugin_root())
         .env("AH_ENGINE_DIR", case.dir.join("state"))
         .env("AH_ENGINE_VERSION", "fail-closed-matrix")
+        // this suite pins the fail-closed machinery (guards.failOpenNonSafety off: every unanswered guard entry blocks, a Stop is held up to
+        // the cap); the default (on) is measured in tests/it/dispatch_config.rs
+        .env("ANTIHALL_FAIL_OPEN_NON_SAFETY", "0")
         .env("AH_ENGINE_DISPATCH_IN_PROCESS", if row.daemon == Daemon::InProcess { "1" } else { "0" })
         .env("AH_ENGINE_NOSPAWN", "1")
         .env("AH_ENGINE_DISPATCH_MAX_TIMEOUT_S", "1")
@@ -642,42 +646,61 @@ fn fake_daemon(case: &Case, mode: Daemon) -> Option<FakeDaemon> {
     Some(FakeDaemon { sock, stop, thread })
 }
 
-fn check(what: &str, row: &Row, want: Want, r: &Run) {
-    let ctx =
-        format!("{what}: code {} out {:?} err {:?} marked {} timed out {}", r.code, r.out.chars().take(300).collect::<String>(), r.err, r.marked, r.timed_out);
-    // the universal invariant: a silent exit 0 needs a hook that ran, or one the event log shows was killed at its timeout
-    // (the host's own discard)
-    if r.code == 0 && r.out.is_empty() && r.err.is_empty() && !r.marked && !r.timed_out && !matches!(want, Want::Quiet) {
-        panic!("SILENT ALLOW with no hook having run: {ctx}");
-    }
+/// Whether `check` is a safety guard: its failure mode in script.failure_mode_by_check is the blocking one.
+fn is_closed_check(check: &str) -> bool {
+    let d = ah_engine::defaults::raw("script.failure_mode_by_check")
+        .get(check)
+        .and_then(|v| v.as_str())
+        .unwrap_or_else(|| ah_engine::defaults::text("script.failure_mode_default"));
+    d == ah_engine::defaults::text("script.failure_mode_closed")
+}
+
+fn check(what: &str, row: &Row, want: Want, r: &Run, can_block: bool) {
+    let ctx = format!(
+        "{what}: code {} out {:?} err {:?} marked {} timed out {} (second hook: expected {} marked {} timed out {})",
+        r.code,
+        r.out.chars().take(300).collect::<String>(),
+        r.err,
+        r.marked,
+        r.timed_out,
+        r.second_expected,
+        r.marked2,
+        r.timed_out2
+    );
+    // Contract (no Node): the dispatcher launches NO hook command. A row's injected hooks (marker files) never run, whatever the row
+    // wants; what is left to decide is the engine's own answer: a CLOSED check or the infra fault blocks (exit 2 with a message), and
+    // an open one lets the call through.
+    assert!(!r.marked && !r.marked2, "an injected hook command was launched, but the dispatcher launches none: {ctx}");
     if r.code == 2 {
         assert!(!r.err.is_empty(), "exit 2 without a message: {ctx}");
     }
-    let closed = r.code == 2 && r.err.contains("could not run the guards");
-    // every hook the dispatcher starts runs, whatever another one says: a skipped second guard is not an allow
-    if !closed && !matches!(want, Want::Quiet | Want::Open | Want::Closed | Want::Defer | Want::InfraDefer) && r.second_expected {
-        assert!(r.marked2 || r.timed_out2, "the second hook never ran: {ctx}");
+    // fail-closed = a block that says the guards could not answer: the dispatcher's infra block, or a CLOSED check's own failure policy
+    // (script.msg_fail_closed with script.msg_unanswered as the reason)
+    let closed =
+        r.code == 2 && (r.err.contains("could not run the guards") || r.err.contains(&format!("({})", ah_engine::defaults::text("script.msg_unanswered"))));
+    // An event with no safety guard (Stop, SubagentStop: a test holds that none is closed) cannot block on its own failure: every
+    // unanswered entry is open, so the call is let through, whatever the row's Node-era wording asked for.
+    if !can_block {
+        // (an infrastructure fault, which is no check's failure, still holds the call: that is the dispatcher's infra block)
+        assert!(closed || (r.code == 0 && r.out.is_empty()), "an event with no safety guard lets an unanswered call through: {ctx}");
+        return;
     }
+    // a silent exit 0 is only right where the row says nothing applies (Quiet) or the flag fails a Stop open (Open)
+    let silent_allow = r.code == 0 && r.out.is_empty() && r.err.is_empty();
     match want {
         Want::Closed => assert!(closed, "expected fail-closed: {ctx}"),
-        Want::Blocks(s) => assert!(r.code == 2 && r.err.contains(s), "expected the hook's block {s:?}: {ctx}"),
-        Want::BlocksOrClosed(s) => assert!(r.code == 2 && (closed || r.err.contains(s)), "expected the hook's block {s:?} or fail-closed: {ctx}"),
-        Want::OneJson(s) => {
-            let v: Result<Value, _> = serde_json::from_str(r.out.trim());
-            assert!(r.code == 0 && v.as_ref().is_ok_and(Value::is_object) && r.out.contains(s), "expected one JSON object with {s:?}: {ctx}");
-        }
         Want::Quiet => assert_eq!(r.code, 0, "{ctx}"),
-        Want::ClosedOrAllow => assert!(closed || (r.code == 0 && r.marked), "expected closed or a real allow: {ctx}"),
-        Want::Allow => assert!(r.code == 0 && (r.marked || r.timed_out) && !closed, "expected an allow from hooks that ran: {ctx}"),
-        Want::Discarded => {
-            assert!(r.code == 0 && r.out.is_empty() && !r.marked && r.timed_out, "expected the timed-out hook to be discarded: {ctx}")
-        }
         Want::Open => assert!(r.code == 0 && r.out.is_empty() && r.err.contains("could not run the guards"), "expected a fail-open note: {ctx}"),
-        Want::InfraDefer => assert!(
-            r.code == ah_engine::defaults::num("dispatch.defer_exit") as i32 && r.out.is_empty() && r.err.contains("the Node hooks decide"),
-            "expected an infrastructure deferral to the Node hooks: {ctx}"
-        ),
-        Want::Defer => assert!(r.code == 75 && !r.marked && r.out.is_empty(), "expected a deferral to the Node fallback: {ctx}"),
+        // every row that used to depend on a Node hook's own decision: the hooks do not run, so the answer is the engine's alone
+        // a block a built-in answer (here the fake daemon's) carries stays that block
+        Want::Blocks(s) if r.err.contains(s) => assert_eq!(r.code, 2, "{ctx}"),
+        Want::Blocks(s) | Want::BlocksOrClosed(s) | Want::OneJson(s) if closed || r.err.contains(s) || r.out.contains(s) => {}
+        Want::Blocks(_) | Want::BlocksOrClosed(_) | Want::OneJson(_) | Want::ClosedOrAllow | Want::Allow | Want::Discarded | Want::InfraDefer | Want::Defer => {
+            assert!(
+                closed || (r.code == 0 && !silent_allow || r.code == 0 && matches!(want, Want::Allow | Want::Discarded | Want::ClosedOrAllow)),
+                "expected the engine's own answer (fail-closed or a let-through): {ctx}"
+            )
+        }
     }
     let _ = row;
 }
@@ -689,7 +712,7 @@ fn every_guard_event_fails_closed_or_keeps_the_hooks_decision() {
         for event in ah_engine::defaults::list("dispatch.guard_events") {
             if !table::entries(host, event).is_empty() {
                 let host: &'static str = Box::leak(host.to_string().into_boxed_str());
-                cases.push(Case { host, event: event.to_string(), dir: std::env::temp_dir().join(format!("ahd-fc-{host}-{event}-{}", std::process::id())) });
+                cases.push(Case { host, event: event.to_string(), dir: crate::common::testtmp::path(format!("ahd-fc-{host}-{event}-{}", std::process::id())) });
             }
         }
     }
@@ -710,6 +733,7 @@ fn every_guard_event_fails_closed_or_keeps_the_hooks_decision() {
         }
     }
     let mut failures = Vec::new();
+    let mut blocked = std::collections::BTreeSet::new();
     for case in &cases {
         for row in rows() {
             if !row.events.is_empty() && !row.events.contains(&case.event.as_str()) {
@@ -739,9 +763,26 @@ fn every_guard_event_fails_closed_or_keeps_the_hooks_decision() {
                 ],
                 Hook::Cmd { first, second } => vec![(label("injected"), run(case, &row, first, second), row.want)],
             };
+            let can_block = table::entries(case.host, &case.event).iter().any(|e| e.check.as_deref().is_some_and(is_closed_check));
             for (what, r, want) in attempts {
-                if let Err(p) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| check(&what, &row, want, &r))) {
+                for line in r.err.lines() {
+                    if let Some(name) = line.strip_prefix("anti-hall ").and_then(|l| l.split_once(": BLOCKED")).map(|(n, _)| n) {
+                        blocked.insert(format!("{}/{}/{name}", case.host, case.event));
+                    }
+                }
+                if let Err(p) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| check(&what, &row, want, &r, can_block))) {
                     failures.push(p.downcast_ref::<String>().cloned().or_else(|| p.downcast_ref::<&str>().map(|s| s.to_string())).unwrap_or(what));
+                }
+            }
+        }
+    }
+    // every CLOSED safety guard registered on a guard event was seen to BLOCK (its name in a script.msg_fail_closed block) when it got no answer
+    for case in &cases {
+        for e in table::entries(case.host, &case.event) {
+            if let Some(c) = e.check.as_deref().filter(|c| is_closed_check(c)) {
+                let key = format!("{}/{}/{c}", case.host, case.event);
+                if !blocked.contains(&key) {
+                    failures.push(format!("closed guard {key} never blocked when unanswered (seen: {blocked:?})"));
                 }
             }
         }
@@ -757,7 +798,7 @@ fn a_truly_absent_daemon_fails_open_without_running_hooks() {
                 continue;
             }
             let host: &'static str = Box::leak(host.to_string().into_boxed_str());
-            let case = Case { host, event: event.to_string(), dir: std::env::temp_dir().join(format!("ahd-absent-{host}-{event}-{}", std::process::id())) };
+            let case = Case { host, event: event.to_string(), dir: crate::common::testtmp::path(format!("ahd-absent-{host}-{event}-{}", std::process::id())) };
             let row = Row { name: "absent daemon", daemon: Daemon::Absent, ..BASE };
             ah_engine::discard::harmless(std::fs::remove_dir_all(&case.dir));
             // the first run builds the defaults cache (slow in a debug binary on a busy box); the wrapper's watchdog bounds that
@@ -785,13 +826,13 @@ fn a_truly_absent_daemon_fails_open_without_running_hooks() {
 fn pretooluse_invalid_utf8_fails_closed_before_hooks_run() {
     for host in table::hosts() {
         let host: &'static str = Box::leak(host.to_string().into_boxed_str());
-        let case = Case { host, event: "PreToolUse".to_string(), dir: std::env::temp_dir().join(format!("ahd-utf8-pre-{host}-{}", std::process::id())) };
+        let case = Case { host, event: "PreToolUse".to_string(), dir: crate::common::testtmp::path(format!("ahd-utf8-pre-{host}-{}", std::process::id())) };
         if table::entries(case.host, &case.event).is_empty() {
             continue;
         }
         let row = Row { name: "non-UTF-8 stdin", stdin: Stdin::NotUtf8, want: Want::Closed, events: PRE, ..BASE };
         let r = run(&case, &row, MARK, MARK2);
-        check(&format!("[{host}/PreToolUse] direct non-UTF-8"), &row, Want::Closed, &r);
+        check(&format!("[{host}/PreToolUse] direct non-UTF-8"), &row, Want::Closed, &r, true);
     }
 }
 
@@ -803,7 +844,8 @@ fn stop_active_invalid_utf8_fails_open_before_utf8_rejection() {
                 continue;
             }
             let host: &'static str = Box::leak(host.to_string().into_boxed_str());
-            let case = Case { host, event: event.to_string(), dir: std::env::temp_dir().join(format!("ahd-utf8-stop-{host}-{event}-{}", std::process::id())) };
+            let case =
+                Case { host, event: event.to_string(), dir: crate::common::testtmp::path(format!("ahd-utf8-stop-{host}-{event}-{}", std::process::id())) };
             let row = Row {
                 name: "stop_hook_active with non-UTF-8 stdin",
                 stdin: Stdin::StopActiveNotUtf8,
@@ -813,7 +855,7 @@ fn stop_active_invalid_utf8_fails_open_before_utf8_rejection() {
                 ..BASE
             };
             let r = run(&case, &row, MARK, MARK2);
-            check(&format!("[{host}/{event}] direct stop_hook_active non-UTF-8"), &row, Want::Open, &r);
+            check(&format!("[{host}/{event}] direct stop_hook_active non-UTF-8"), &row, Want::Open, &r, true);
         }
     }
 }
@@ -830,7 +872,7 @@ fn consecutive_stops_with_a_broken_install_end_in_an_exit_0_within_the_cap() {
                 continue;
             }
             let host: &'static str = Box::leak(host.to_string().into_boxed_str());
-            let case = Case { host, event: event.to_string(), dir: std::env::temp_dir().join(format!("ahd-fl-{host}-{event}-{}", std::process::id())) };
+            let case = Case { host, event: event.to_string(), dir: crate::common::testtmp::path(format!("ahd-fl-{host}-{event}-{}", std::process::id())) };
             // checks down: every Stop entry has a built-in check by now, which would answer in the client without needing the install;
             // the count is about hooks that cannot run
             let broken = Row { name: "broken install", runnable: false, daemon: Daemon::Down, ..BASE };
@@ -859,7 +901,7 @@ fn the_unknown_session_counter_resets_wording_and_pruning() {
                 continue;
             }
             let host: &'static str = Box::leak(host.to_string().into_boxed_str());
-            let case = Case { host, event: event.to_string(), dir: std::env::temp_dir().join(format!("ahd-un-{host}-{event}-{}", std::process::id())) };
+            let case = Case { host, event: event.to_string(), dir: crate::common::testtmp::path(format!("ahd-un-{host}-{event}-{}", std::process::id())) };
             ah_engine::discard::harmless(std::fs::remove_dir_all(&case.dir));
             let counters = case.dir.join("state").join(dir_name);
             std::fs::create_dir_all(&counters).unwrap();
@@ -888,7 +930,7 @@ fn the_unknown_session_counter_resets_wording_and_pruning() {
 /// a SubagentStop when its script hit the limit on a long transcript). Every shipped engine-only check is `open`.
 #[test]
 fn an_engine_only_advisory_whose_script_fails_on_a_guard_event_allows() {
-    let dir = std::env::temp_dir().join(format!("ah-fcm-script-{}", std::process::id()));
+    let dir = crate::common::testtmp::path(format!("ah-fcm-script-{}", std::process::id()));
     ah_engine::discard::harmless(std::fs::remove_dir_all(&dir));
     std::fs::create_dir_all(dir.join("home/.anti-hall/logic")).unwrap();
     let t = dir.join("t.jsonl");
@@ -911,6 +953,7 @@ fn an_engine_only_advisory_whose_script_fails_on_a_guard_event_allows() {
             .env_clear()
             .env("PATH", std::env::var("PATH").unwrap_or_default())
             .env("HOME", dir.join("home"))
+            .env("AH_ENGINE_PLUGIN_ROOT", crate::common::plugin_root())
             .env("AH_ENGINE_DIR", dir.join("state"))
             .env("AH_ENGINE_SCRIPT_TIME_MS", "50")
             .stdin(Stdio::piped())

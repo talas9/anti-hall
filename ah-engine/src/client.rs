@@ -23,9 +23,25 @@ use std::time::{Duration, Instant};
 
 thread_local! {
     static LAST_NON_OK_REPLY: Cell<bool> = const { Cell::new(false) };
+    /// The last non-OK reply was BUSY (load shedding: a full queue or a rate limit), not ERR: the daemon had no capacity for the
+    /// request, which says nothing about the call, so it follows the capacity failure mode, not the failure policy of each check.
+    static LAST_BUSY_REPLY: Cell<bool> = const { Cell::new(false) };
+    /// The last call's daemon was there but gave no reply within the whole wait window (`Exch::Slow`): late under load, not down.
+    static LAST_SLOW: Cell<bool> = const { Cell::new(false) };
     static LAST_UNAVAILABLE: Cell<bool> = const { Cell::new(false) };
     /// Set by the dispatcher for a guard event (dispatch.guard_events): such a call waits for a starting daemon.
     static GUARD_CALL: Cell<bool> = const { Cell::new(false) };
+    /// The hook event of the call this thread makes next (empty = unknown): its late-reply bound is the event's own.
+    static CALL_EVENT: std::cell::RefCell<String> = std::cell::RefCell::default();
+    /// Unit tests only: the progress gate is off (a test's fake daemon writes no heartbeat).
+    #[cfg(test)]
+    static GATE_OFF: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Name the hook event of the calls this thread makes next (empty = none): the late-reply bound `client.slow_fallback_max_ms`
+/// is per event (`client.slow_fallback_event_ms`), and the launcher's watchdog applies the same one.
+pub(crate) fn set_call_event(event: &str) {
+    CALL_EVENT.with(|e| event.clone_into(&mut e.borrow_mut()));
 }
 
 /// Mark the calls this thread makes next as a guard event's (or not): a guard call that finds no daemon waits for one to start
@@ -36,6 +52,22 @@ pub(crate) fn set_guard_call(on: bool) {
 
 pub(crate) fn take_non_ok_reply() -> bool {
     LAST_NON_OK_REPLY.replace(false)
+}
+
+/// Whether the last non-OK reply was BUSY (load shedding), once. Read it before [`take_non_ok_reply`], which it does not clear.
+pub(crate) fn take_busy_reply() -> bool {
+    LAST_BUSY_REPLY.replace(false)
+}
+
+/// A complete, valid reply that is not OK: BUSY (load shedding) or ERR.
+fn note_non_ok(kind: Kind) {
+    LAST_NON_OK_REPLY.set(true);
+    LAST_BUSY_REPLY.set(kind == Kind::Busy);
+}
+
+/// Whether the last call's daemon answered nothing within the wait window although it was there (load, not down), once.
+pub(crate) fn take_slow() -> bool {
+    LAST_SLOW.replace(false)
 }
 
 pub(crate) fn take_unavailable() -> bool {
@@ -61,15 +93,22 @@ pub enum Exch {
     /// failure follows unless `client.slow_down_n` such calls come in a row (a wedged daemon).
     Slow(String),
     /// Past the deadline, and the daemon's heartbeat (`files.heartbeat`) is older than `client.heartbeat_stale_ms`: the process is
-    /// stopped or wedged, not slow, so the call stops waiting at once (no slow window). `true` = confirmed (the same heartbeat
+    /// stopped or wedged, not slow, so the call stops waiting at once (no slow window). #905: a process that is still there is
+    /// marked slow (risky calls held), only one that is provably gone is marked down. `true` = confirmed (the same heartbeat
     /// stayed unchanged for `client.heartbeat_confirm_ms` since an earlier call suspected it), and only then is it recovered.
     Hung(String, bool),
 }
 
-/// The longest one exchange waits for its reply: the deadline, extended to `client.slow_fallback_max_ms` less `client.slow_wait_margin_ms` (a daemon
+/// The longest one exchange waits for its reply: the deadline, extended to the event's `client.slow_fallback_max_ms` less `client.slow_wait_margin_ms` (a daemon
 /// that is alive answers late rather than never; the wrapper's watchdog waits for the whole `client.slow_fallback_max_ms`).
 fn wait_window(deadline: Duration) -> Duration {
-    let max = defaults::millis("client.slow_fallback_max_ms");
+    // #969: a loaded machine stretches a guard event's late wait by the factor the launcher fitted; the request carries the same one
+    // to the daemon, so its ceiling moves with it
+    let max = CALL_EVENT.with(|e| {
+        let e = e.borrow();
+        let ms = defaults::num_for_event("client.slow_fallback_max_ms", "client.slow_fallback_event_ms", &e);
+        Duration::from_millis(crate::loadscale::scale(ms, crate::deadline::client_load_factor(&e)))
+    });
     let ends = if max.is_zero() { Duration::ZERO } else { max.saturating_sub(defaults::millis("client.slow_wait_margin_ms")) };
     deadline.max(ends)
 }
@@ -86,13 +125,80 @@ fn rearm_read_timeout(s: &UnixStream, left: Duration) {
 /// Why the daemon counts as hung, and whether that is confirmed: its heartbeat is older than `client.heartbeat_stale_ms` (0 =
 /// never; unknown = alive). One stale sample only raises a suspicion ([`health::weigh_stale`]).
 fn stale_heartbeat() -> Option<(String, bool)> {
-    let stale = defaults::millis("client.heartbeat_stale_ms");
+    hung_if_older_than(defaults::millis("client.heartbeat_stale_ms"))
+}
+
+/// [`stale_heartbeat`] with the age limit given (`ZERO` = never).
+fn hung_if_older_than(stale: Duration) -> Option<(String, bool)> {
     let hb = health::heartbeat_of_lock_holder().filter(|hb| !stale.is_zero() && hb.age > stale)?;
     let (pid, age) = (hb.pid, hb.age.as_millis());
     Some(match health::weigh_stale(&hb) {
         health::Hang::Suspected => (defaults::render("msg.client_hung", &[("pid", &pid), ("age", &age)]), false),
         health::Hang::Confirmed(held) => (defaults::render("msg.client_hung_confirmed", &[("pid", &pid), ("age", &age), ("held", &held)]), true),
     })
+}
+
+/// What a call past its deadline does when the daemon shows no progress.
+enum Stall {
+    /// The daemon's heartbeat itself stopped (older than `client.progress_stale_ms`): stopped or wedged, handled as [`Exch::Hung`].
+    Hung(String, bool),
+    /// The daemon beats but works on nothing the call can see: the call fails open as [`Exch::Slow`].
+    Idle(String),
+}
+
+impl Stall {
+    fn into_exch(self) -> Exch {
+        match self {
+            Stall::Hung(why, confirmed) => Exch::Hung(why, confirmed),
+            Stall::Idle(why) => Exch::Slow(why),
+        }
+    }
+}
+
+/// Past the deadline: `Some` when the daemon shows no progress on its work, so the call stops waiting at once instead of waiting out
+/// the late-reply bound. Progress is the age its longest-silent busy worker recorded in the heartbeat file (`progress_ms`) plus the
+/// heartbeat's own age; it must stay under `client.progress_stale_ms`. A heartbeat that is itself older than that is a stopped
+/// daemon ([`Stall::Hung`], so the replacement path sees it as early as the progress gate does); no heartbeat, or none carrying a
+/// figure, is no progress. 0 turns the gate off.
+fn stalled(idle_seen: &mut Option<u128>) -> Option<Stall> {
+    #[cfg(test)]
+    if GATE_OFF.get() {
+        return None;
+    }
+    // #969: a loaded machine stretches the progress bound by the factor the launcher fitted, as it does the late wait
+    let factor = CALL_EVENT.with(|e| crate::deadline::client_load_factor(&e.borrow()));
+    let limit = Duration::from_millis(crate::loadscale::scale(defaults::num("client.progress_stale_ms"), factor));
+    if limit.is_zero() {
+        return None;
+    }
+    if let Some((why, confirmed)) = hung_if_older_than(limit) {
+        return Some(Stall::Hung(why, confirmed));
+    }
+    let hb = health::heartbeat_of_lock_holder();
+    // the daemon says no worker is busy. That beat may predate the worker picking this request up, so the first idle beat seen is
+    // only remembered (by its modification time); the call fails open when a NEWER beat is still idle (the daemon looked again
+    // after the request arrived and still has no worker on it). No newer beat (a starved watchdog) falls to the stale-heartbeat
+    // bound above, never longer.
+    if let Some(h) = hb.as_ref().filter(|h| h.idle) {
+        match *idle_seen {
+            None => {
+                *idle_seen = Some(h.mtime_ns);
+                return None;
+            }
+            Some(first) if first == h.mtime_ns => return None,
+            Some(_) => {}
+        }
+        return Some(Stall::Idle(defaults::render("msg.client_no_progress", &[("age", &"idle"), ("limit", &limit.as_millis())])));
+    }
+    *idle_seen = None;
+    // #969: the worker serving THIS call's request, when the daemon names it (files.heartbeat_peers); else the longest-silent busy
+    // worker's figure (one slow check elsewhere then still fails this call open, as before)
+    let age = health::peer_progress(std::process::id()).or_else(|| hb.and_then(|hb| hb.progress_ms.map(|p| Duration::from_millis(p) + hb.age)));
+    if age.is_some_and(|a| a < limit) {
+        return None;
+    }
+    let shown = age.map_or_else(|| "unknown".to_string(), |a| a.as_millis().to_string());
+    Some(Stall::Idle(defaults::render("msg.client_no_progress", &[("age", &shown), ("limit", &limit.as_millis())])))
 }
 
 /// Open the daemon socket after checking it is a socket of ours: `Err` carries the exchange result to return.
@@ -112,13 +218,24 @@ fn connect_checked(sock: &Path) -> Result<UnixStream, Exch> {
     }
 }
 
+/// Arm the read timeout. macOS refuses `SO_RCVTIMEO` with EINVAL on a socket whose peer has already closed (the daemon's BUSY
+/// reply is written and the connection dropped at once), so a reply that is already buffered would be read as a failed exchange
+/// and mark a healthy daemon down. A closed peer cannot block a read (buffered bytes, then end-of-stream), so that one error
+/// is not fatal; every other error still is.
+fn set_read_timeout_if_open(s: &UnixStream, t: Duration) -> std::io::Result<()> {
+    match s.set_read_timeout(Some(t)) {
+        Err(e) if e.kind() == std::io::ErrorKind::InvalidInput => Ok(()),
+        r => r,
+    }
+}
+
 fn exchange_inner(sock: &Path, payload: &[u8], deadline: Duration, window: Duration) -> Exch {
     let mut s = match connect_checked(sock) {
         Ok(s) => s,
         Err(e) => return e,
     };
     let io = |r: std::io::Result<()>, what: &str| r.map_err(|e| Exch::Failed(defaults::render("msg.client_io", &[("what", &what), ("err", &e)])));
-    if let Err(e) = io(s.set_read_timeout(Some(deadline)), defaults::text("msg.client_what_timeout"))
+    if let Err(e) = io(set_read_timeout_if_open(&s, deadline), defaults::text("msg.client_what_timeout"))
         .and_then(|_| io(s.set_write_timeout(Some(deadline)), defaults::text("msg.client_what_timeout")))
         .and_then(|_| io(s.write_all(payload), "write"))
         .and_then(|_| io(s.shutdown(std::net::Shutdown::Write), "shutdown"))
@@ -128,6 +245,7 @@ fn exchange_inner(sock: &Path, payload: &[u8], deadline: Duration, window: Durat
     let mut buf = Vec::new();
     let (start, max_reply) = (Instant::now(), defaults::num("client.max_reply"));
     let mut late = false;
+    let mut idle_seen = None;
     // read_to_end keeps the bytes read before an error, so a timeout resumes the same reply instead of restarting it
     while let Err(e) = (&mut s).take(max_reply.saturating_sub(buf.len() as u64)).read_to_end(&mut buf) {
         let why = defaults::render("msg.client_io", &[("what", &"read"), ("err", &e)]);
@@ -144,6 +262,9 @@ fn exchange_inner(sock: &Path, payload: &[u8], deadline: Duration, window: Durat
         }
         if let Some((hung, confirmed)) = stale_heartbeat() {
             return Exch::Hung(hung, confirmed);
+        }
+        if let Some(stall) = stalled(&mut idle_seen) {
+            return stall.into_exch();
         }
         rearm_read_timeout(&s, left.min(defaults::millis("client.heartbeat_poll_ms")));
     }
@@ -206,7 +327,7 @@ fn once_ack(sock: &Path, payload: &[u8], deadline: Duration, window: Duration, r
     let written = Instant::now();
     let (mut buf, mut chunk) = (Vec::new(), vec![0u8; defaults::num("io.small_chunk_bytes") as usize]);
     let mut acked: Option<Instant> = None;
-    if let Err(e) = io(s.set_read_timeout(Some(defaults::millis("wire.ack_timeout_ms").min(window))), defaults::text("msg.client_what_timeout")) {
+    if let Err(e) = io(set_read_timeout_if_open(&s, defaults::millis("wire.ack_timeout_ms").min(window)), defaults::text("msg.client_what_timeout")) {
         return Once::Done(e);
     }
     // ACK(req) first (the reply may follow in the same read, or an error frame may come instead of an ack)
@@ -237,7 +358,8 @@ fn once_ack(sock: &Path, payload: &[u8], deadline: Duration, window: Duration, r
     // acked: never resend from here; wait for the reply up to the hard window (the original read loop's rules)
     let (start, max_reply) = (Instant::now(), defaults::num("client.max_reply") as usize);
     let mut late = false;
-    if let Err(e) = io(s.set_read_timeout(Some(deadline)), defaults::text("msg.client_what_timeout")) {
+    let mut idle_seen = None;
+    if let Err(e) = io(set_read_timeout_if_open(&s, deadline), defaults::text("msg.client_what_timeout")) {
         return Once::Done(e);
     }
     let mut fo_checked = false;
@@ -284,6 +406,9 @@ fn once_ack(sock: &Path, payload: &[u8], deadline: Duration, window: Duration, r
                 if let Some((hung, confirmed)) = stale_heartbeat() {
                     return Once::Done(Exch::Hung(hung, confirmed));
                 }
+                if let Some(stall) = stalled(&mut idle_seen) {
+                    return Once::Done(stall.into_exch());
+                }
                 rearm_read_timeout(&s, left.min(defaults::millis("client.heartbeat_poll_ms")));
             }
         }
@@ -323,9 +448,13 @@ fn exchange_ack(sock: &Path, payload: &[u8], deadline: Duration, window: Duratio
                 if retries >= defaults::num("wire.max_retries") || window.saturating_sub(began.elapsed()) < defaults::millis("wire.retry_min_ms") {
                     // no more resends: like the original exchange, keep watching the daemon's heartbeat for the rest of the window, so a
                     // daemon that went silent and stopped beating is reported hung (and replaced) instead of merely slow
+                    let mut idle_seen = None;
                     while window.saturating_sub(began.elapsed()) > Duration::ZERO {
                         if let Some((hung, confirmed)) = stale_heartbeat() {
                             return Exch::Hung(hung, confirmed);
+                        }
+                        if let Some(stall) = stalled(&mut idle_seen) {
+                            return stall.into_exch();
                         }
                         std::thread::sleep(defaults::millis("client.heartbeat_poll_ms").min(window.saturating_sub(began.elapsed())));
                     }
@@ -362,6 +491,11 @@ fn exchange_for(sock: &Path, payload: &[u8], deadline: Duration, window: Duratio
 /// file as the launcher's, so a call that went through both is told once. The call itself passes through. Empty when this session
 /// already heard it, or when the notice cannot be written (never a second notice for a failed write).
 pub(crate) fn unreachable_notice(raw: &str, event: Option<&str>) -> String {
+    unreachable_notice_why(raw, event, "msg.engine_unreachable_why_daemon")
+}
+
+/// [`unreachable_notice`] with the {why} of the defaults key `why_key` (the same once-per-session state file).
+pub(crate) fn unreachable_notice_why(raw: &str, event: Option<&str>, why_key: &str) -> String {
     let sid = serde_json::from_str::<serde_json::Value>(raw)
         .ok()
         .and_then(|p| p.get("session_id").and_then(|v| v.as_str().map(str::to_owned)))
@@ -372,7 +506,18 @@ pub(crate) fn unreachable_notice(raw: &str, event: Option<&str>) -> String {
     }
     crate::discard::harmless(crate::limits::ensure_private_dir(&paths::dir())); // keep: the notice is still shown when the marker cannot be written
     crate::discard::logged("unreachable_notice_write", crate::atomic::write(&file, format!("{sid}\n")));
-    defaults::render("msg.engine_unreachable_notice", &[("event", &event.unwrap_or_default()), ("why", &defaults::text("msg.engine_unreachable_why_daemon"))])
+    unreachable_text_why(event, why_key)
+}
+
+/// The text of the engine-unreachable notice (`msg.engine_unreachable_notice`) for `event`, without any once-per-session stamp:
+/// the dispatcher stamps it per session and event family itself.
+pub(crate) fn unreachable_text(event: Option<&str>) -> String {
+    unreachable_text_why(event, "msg.engine_unreachable_why_daemon")
+}
+
+/// [`unreachable_text`] with the {why} of the defaults key `why_key`.
+pub(crate) fn unreachable_text_why(event: Option<&str>, why_key: &str) -> String {
+    defaults::render("msg.engine_unreachable_notice", &[("event", &event.unwrap_or_default()), ("why", &defaults::text(why_key))])
 }
 
 fn state_file(key: &str) -> PathBuf {
@@ -392,15 +537,135 @@ pub(crate) fn daemon_down_marked() -> bool {
     fresh_until(&state_file("daemon_down_marker"))
 }
 
+/// The slow-streak marker (`files.daemon_slow_marker`): the daemon is there but loaded, so clients skip it for a while, and a guard
+/// call no check could decide then falls under `dispatch.capacity_hold` instead of passing (#901). A really-down daemon writes the down
+/// marker instead and removes this one.
+pub(crate) fn daemon_slow_marked() -> bool {
+    fresh_until(&state_file("daemon_slow_marker"))
+}
+
 pub(crate) fn fail_open_unavailable() -> bool {
     daemon_down_marked() || health::breaker_remaining().is_some() || health::crashloop_remaining().is_some()
 }
 
-fn mark_daemon_down(reason: &str) {
+/// Time left on the "service manager unhealthy" marker (`files.supervisor_unhealthy_marker`): an ask to the service manager was
+/// accepted but no daemon answered, or the command failed. While it holds, clients skip the ask and start the daemon themselves.
+pub(crate) fn supervisor_unhealthy_remaining() -> Option<Duration> {
+    let until: u64 = std::fs::read_to_string(state_file("supervisor_unhealthy_marker")).ok()?.trim().parse().ok()?;
+    let now = health::now_ms();
+    (until > now).then(|| Duration::from_millis(until - now))
+}
+
+pub(crate) fn supervisor_unhealthy_marked() -> bool {
+    fresh_until(&state_file("supervisor_unhealthy_marker"))
+}
+
+pub(crate) fn mark_supervisor_unhealthy() {
     crate::discard::harmless(crate::limits::ensure_private_dir(&paths::dir())); // keep: marker write below reports failure by absence
+    let until = health::now_ms().saturating_add(defaults::num("units.unhealthy_ttl_ms"));
+    crate::discard::logged("supervisor_unhealthy_marker_write", crate::atomic::write(state_file("supervisor_unhealthy_marker"), until.to_string()));
+}
+
+fn clear_supervisor_unhealthy() {
+    crate::discard::harmless(std::fs::remove_file(state_file("supervisor_unhealthy_marker"))); // keep: absent marker is the desired state
+}
+
+/// Mark the daemon really down (`cause`: why it is provably gone, the counter's reason). Only for a daemon that is gone: no socket,
+/// no process, a failed spawn ([`mark_unusable`] decides for a failed exchange or a hung daemon).
+fn mark_daemon_down(reason: &str, cause: &str) {
+    crate::discard::harmless(crate::limits::ensure_private_dir(&paths::dir())); // keep: marker write below reports failure by absence
+    // really down: the load marker goes, so a call in the window passes (C9) instead of being weighed as load
+    clear_daemon_slow_marker();
     let until = health::now_ms().saturating_add(defaults::num("client.down_marker_ttl_ms"));
     crate::discard::logged("daemon_down_marker_write", crate::atomic::write(state_file("daemon_down_marker"), until.to_string()));
-    health::log_event("client_down", "daemon", reason);
+    crate::obs::counters::marker("down", cause);
+    health::log_event("client_down", cause, reason);
+}
+
+/// #901: the slow streak tripped. The daemon is there but loaded, not down: later clients skip it as they would a down one, but on
+/// the slow marker, never the down marker, so a guard call in a hold class of `dispatch.capacity_hold` is held, never let through.
+/// #905: also a failed exchange or a hung daemon whose process is still there (`cause` names which, the counter's reason).
+fn mark_daemon_slow(reason: &str, cause: &str) {
+    crate::discard::harmless(crate::limits::ensure_private_dir(&paths::dir())); // keep: marker write below reports failure by absence
+    let until = health::now_ms().saturating_add(defaults::num("client.down_marker_ttl_ms"));
+    crate::discard::logged("daemon_slow_marker_write", crate::atomic::write(state_file("daemon_slow_marker"), until.to_string()));
+    crate::obs::counters::marker("slow", cause);
+    health::log_event("client_slow_marked", cause, reason);
+}
+
+/// #905: why the daemon is provably gone, or `None` while a daemon process may still be there. Gone = no socket file, or the
+/// singleton lock names a pid that no longer exists. A lock that names no pid proves nothing (a process that is starting), and a
+/// reused pid reads as alive: both err toward "there", where risky calls are held rather than let through.
+fn daemon_gone(sock: &Path) -> Option<&'static str> {
+    if std::fs::symlink_metadata(sock).is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound) {
+        return Some("no_socket");
+    }
+    let holder = std::fs::read_to_string(paths::lock_for(sock)).ok().and_then(|t| t.trim().parse::<u32>().ok()).filter(|p| *p != 0)?;
+    (!health::pid_alive(holder)).then_some("no_process")
+}
+
+/// #905: while the breaker is open, is a daemon process still there? The same proof as [`mark_unusable`] (`client.down_requires_gone`
+/// 0 = never: the open breaker passes everything, as before). A crash loop or the down marker still passes everything.
+/// R0 (#969 hardening review): whether a crash-loop cooldown of `cooldown` with `left` remaining still holds risky calls: the trip is
+/// younger than `client.crashloop_hold_max_ms` (0 = never hold).
+fn crashloop_holds(cooldown: Duration, left: Duration) -> bool {
+    let max = defaults::millis("client.crashloop_hold_max_ms");
+    !max.is_zero() && cooldown.saturating_sub(left) < max
+}
+
+fn breaker_daemon_there() -> bool {
+    defaults::num("client.down_requires_gone") != 0
+        && health::crashloop_remaining().is_none()
+        && !daemon_down_marked()
+        && daemon_gone(&paths::socket()).is_none()
+        && !load_hold_expired()
+}
+
+/// #905 review: how long the client has been holding risky calls for a daemon that is there but unusable, with no OK reply since
+/// (`files.load_hold_since`, written by the first such hold, removed by an OK reply or a new daemon). Past
+/// `client.load_hold_max_ms` (0 = no cap) the daemon is treated as down, so a live but broken daemon (one that fails every exchange
+/// or is never replaced) cannot hold pushes forever: protective, not disruptive.
+/// The run is continuous: the file holds `<start> <last hold>`, every hold refreshes the last one, and a gap longer than
+/// `client.load_hold_gap_ms` since the last hold (an idle session, an old run nothing answered after) starts a new run, so a stale
+/// run never lets the next risky call through.
+fn load_hold_expired() -> bool {
+    let p = state_file("load_hold_since");
+    let now = health::now_ms();
+    let text = std::fs::read_to_string(&p).unwrap_or_default();
+    let mut nums = text.split_whitespace().map(|n| n.parse::<u64>().ok());
+    let since = nums.next().flatten();
+    let last = nums.next().flatten().or(since);
+    let since = match (since, last) {
+        (Some(s), Some(l)) if now.saturating_sub(l) <= defaults::num("client.load_hold_gap_ms") => s,
+        _ => now, // no run yet, an unreadable stamp, or the last hold too long ago: a new run
+    };
+    crate::discard::harmless(crate::limits::ensure_private_dir(&paths::dir())); // keep: the write below reports failure by absence
+    crate::discard::logged("load_hold_since_write", crate::atomic::write(&p, format!("{since} {now}")));
+    let max = defaults::num("client.load_hold_max_ms");
+    max != 0 && now.saturating_sub(since) > max
+}
+
+/// #905: the daemon could not be used (a failed exchange, a hung daemon; `alive` names which for the counter). It is marked down only
+/// when it is provably gone ([`daemon_gone`], or `gone`: the caller's own proof); a daemon whose process is still there (loaded,
+/// stopped) is load: the slow marker, and this call counts as a late one (`LAST_SLOW`), so a guard call in a hold class of
+/// `dispatch.capacity_hold` is held, now and while the marker lasts. `client.down_requires_gone` 0 restores marking it down every
+/// time. True when it was marked down.
+fn mark_unusable(sock: &Path, why: &str, alive: &str, gone: Option<&str>) -> bool {
+    match daemon_gone(sock).or(gone) {
+        Some(gone) => mark_daemon_down(why, gone),
+        None if defaults::num("client.down_requires_gone") == 0 => mark_daemon_down(why, "unchecked"),
+        None if load_hold_expired() => mark_daemon_down(why, "hold_expired"),
+        None => {
+            LAST_SLOW.set(true);
+            mark_daemon_slow(why, alive);
+            return false;
+        }
+    }
+    true
+}
+
+fn clear_daemon_slow_marker() {
+    crate::discard::harmless(std::fs::remove_file(state_file("daemon_slow_marker"))); // keep: absent marker is the desired state
 }
 
 /// Count this slow reply into the streak file (`count first_ts_ms`); true once `client.slow_down_n` slow replies came in a
@@ -451,6 +716,8 @@ fn clear_slow_streak() {
 
 fn clear_daemon_down_marker() {
     crate::discard::harmless(std::fs::remove_file(state_file("daemon_down_marker"))); // keep: absent marker is the desired state
+    clear_daemon_slow_marker();
+    crate::discard::harmless(std::fs::remove_file(state_file("load_hold_since"))); // keep: a daemon that answers ends the hold run
 }
 
 struct SpawnLock {
@@ -549,6 +816,39 @@ pub fn ctl_json(verb: &str) -> Option<serde_json::Value> {
     ctl(verb).and_then(|s| serde_json::from_str(&s).ok())
 }
 
+/// Start the daemon for a client that found none: through the service manager when the supervised unit is installed and matches
+/// this client (the daemon is then the unit's child and its supervisor starts it again after a kill), else detached by the client.
+/// `None` = it could not be started; `Some(None)` = the service manager was asked and accepted (the daemon is on its way, not yet
+/// known to answer: the caller waits for it itself); `Some(Some(child))` = started here. `wait` is for the callers that need the
+/// daemon now (a guard event, the spool writer) and wait for it themselves; a call that never waits (a prompt, an advisory,
+/// `answer_now`) passes false, and the ask to the service manager is then held to the shorter `units.kickstart_unguarded_ms`.
+///
+/// Only a start the client makes itself is a `client_spawn_attempt` (what the crash-loop rule's spawn-rate half counts): an ask to the
+/// service manager says nothing about the binary and is logged on its own (`unit_kickstart`). `why` is the spawn attempt's detail.
+pub(crate) fn start_daemon(wait: bool, why: &str) -> Option<Option<std::process::Child>> {
+    start_daemon_with(wait, why, &Starter::real())
+}
+
+/// The two ways a client starts a daemon, replaceable in tests (the real ones ask launchd/systemd and fork the engine).
+pub(crate) struct Starter<'a> {
+    ask: &'a dyn Fn(bool) -> bool,
+    spawn: &'a dyn Fn() -> Option<std::process::Child>,
+}
+
+impl Starter<'static> {
+    fn real() -> Starter<'static> {
+        Starter { ask: &crate::setup::supervise::kickstart, spawn: &spawn_daemon }
+    }
+}
+
+fn start_daemon_with(wait: bool, why: &str, s: &Starter) -> Option<Option<std::process::Child>> {
+    if (s.ask)(wait) {
+        return Some(None);
+    }
+    health::log_event("client_spawn_attempt", "singleflight", why);
+    (s.spawn)().map(Some)
+}
+
 /// Start a detached daemon (unless the `nospawn` env var is set); `None` when it could not be started, logged with the OS
 /// error (review finding 18: a fork that failed with EAGAIN or ENOMEM was not on record).
 pub fn spawn_daemon() -> Option<std::process::Child> {
@@ -637,7 +937,9 @@ pub struct Outcome {
 
 /// Ask the engine. `None` = no daemon verdict within the deadline.
 fn engine_attempt(raw: &str, cfg: &ClientConfig) -> Option<String> {
-    if raw.len() as u64 > crate::defaults::num("daemon.max_request") || health::breaker_remaining().is_some() || health::crashloop_remaining().is_some() {
+    // the breaker, the crash loop and the markers are weighed by attempt_with, so an open breaker with the daemon there holds a
+    // risky call on this path too (#905)
+    if raw.len() as u64 > crate::defaults::num("daemon.max_request") {
         return None;
     }
     let payload = format!("V {}\n{}\n{}", crate::version(), crate::reqenv::RequestEnv::capture().to_line(), raw);
@@ -664,10 +966,47 @@ pub(crate) fn release_wait_marker() {
 
 fn attempt_with(payload: &[u8], cfg: &ClientConfig, answer_now: bool, hold_wait_on_ok: bool) -> Option<String> {
     LAST_NON_OK_REPLY.set(false);
+    LAST_BUSY_REPLY.set(false);
+    LAST_SLOW.set(false);
     LAST_UNAVAILABLE.set(false);
-    if health::breaker_remaining().is_some() || health::crashloop_remaining().is_some() || daemon_down_marked() {
+    // #905: an open breaker with a daemon process still there (loaded, stopped) is load, as the slow marker is: risky calls are
+    // held below; it passes everything only once the daemon is provably gone (a broken install must not block every push)
+    let breaker_load = health::breaker_remaining().is_some() && breaker_daemon_there();
+    // R0 (#969 hardening review): a crash-loop cooldown used to pass every call for client.crash_cooldown_s, so a latch was a silent
+    // guard outage. For its first client.crashloop_hold_max_ms it is treated as load: a guard call in a dispatch.capacity_hold
+    // class (a push, merge, delete, deploy) is held and anything else passes; past that backstop it passes everything, so a broken
+    // install never blocks every push for the whole cooldown.
+    let crashloop_hold = !breaker_load && health::crashloop_remaining().is_some_and(|left| crashloop_holds(cfg.crash_cooldown, left));
+    if crashloop_hold {
+        note_unavailable();
+        LAST_SLOW.set(true);
+        health::log_event("client_skip", "daemon", defaults::text("msg.client_skip_crashloop_hold"));
+        crate::obs::counters::handback_why(
+            crate::obs::counters::Handback::Abandoned,
+            "client:crashloop_hold",
+            defaults::text("msg.client_skip_crashloop_hold"),
+        );
+        return None;
+    }
+    if !breaker_load && (health::breaker_remaining().is_some() || health::crashloop_remaining().is_some() || daemon_down_marked()) {
         note_unavailable();
         health::log_event("client_skip", "daemon", defaults::text("msg.client_skip"));
+        return None;
+    }
+    if breaker_load {
+        note_unavailable();
+        LAST_SLOW.set(true);
+        health::log_event("client_skip", "daemon", defaults::text("msg.client_skip_breaker_load"));
+        crate::obs::counters::handback_why(crate::obs::counters::Handback::Abandoned, "client:breaker_load", defaults::text("msg.client_skip_breaker_load"));
+        return None;
+    }
+    if daemon_slow_marked() {
+        // #901: a loaded daemon, skipped for a while: this call is load, as a late reply is (LAST_SLOW), so a guard call in a hold
+        // class (dispatch.capacity_hold) is held and anything else passes; never the down marker's unconditional pass
+        note_unavailable();
+        LAST_SLOW.set(true);
+        health::log_event("client_skip", "daemon", defaults::text("msg.client_skip_slow"));
+        crate::obs::counters::handback_why(crate::obs::counters::Handback::Abandoned, "client:slow_marker", defaults::text("msg.client_skip_slow"));
         return None;
     }
     let sock = paths::socket();
@@ -683,21 +1022,23 @@ fn attempt_with(payload: &[u8], cfg: &ClientConfig, answer_now: bool, hold_wait_
             clear_slow_streak();
             Some(body)
         }
-        Exch::Reply(_, _) => {
+        Exch::Reply(kind, _) => {
             // a completed valid reply (BUSY / ERR) is not a slow one: the streak counts consecutive slow replies only
             clear_slow_streak();
-            LAST_NON_OK_REPLY.set(true);
+            note_non_ok(kind);
             None
         }
         Exch::Failed(why) => {
             wait_marker(false);
             note_unavailable();
-            mark_daemon_down(&why);
-            if !health::crashloop_tripped(cfg)
-                && let Some(_spawn_lock) = spawn_lock_if_absent(&sock)
+            // the spawn lock is taken only when no daemon holds the singleton lock: no daemon process is there, provably gone
+            let spawn = if health::crashloop_tripped(cfg) { None } else { spawn_lock_if_absent(&sock) };
+            let down = mark_unusable(&sock, &why, "failed", spawn.is_some().then_some("no_lock_holder"));
+            if let Some(_spawn_lock) = spawn
+                && start_daemon(false, &why).is_none()
+                && !down
             {
-                health::log_event("client_spawn_attempt", "singleflight", &why);
-                let _ = spawn_daemon();
+                mark_daemon_down(&why, "spawn"); // no daemon is coming: really down
             }
             health::breaker_failure(cfg, &why);
             None
@@ -708,21 +1049,31 @@ fn attempt_with(payload: &[u8], cfg: &ClientConfig, answer_now: bool, hold_wait_
             wait_marker(false);
             note_unavailable();
             health::log_event("client_slow", "daemon", &why);
-            if slow_streak_tripped() {
-                mark_daemon_down(&why); // wedged: later clients skip it
+            // #910: the same continuous-run cap as a failed exchange, on every late reply (each one holds a risky guard call, and a
+            // single session's late replies may never trip the streak): a daemon that stays slow past client.load_hold_max_ms with
+            // no OK reply is treated as down and this call passes, so it cannot hold risky calls forever
+            if load_hold_expired() {
+                clear_slow_streak();
+                mark_daemon_down(&why, "hold_expired");
+            } else {
+                LAST_SLOW.set(true);
+                if slow_streak_tripped() {
+                    mark_daemon_slow(&why, "slow_streak"); // loaded: later clients skip it, a risky guard call is held meanwhile (#901)
+                }
             }
             None
         }
         Exch::Hung(why, confirmed) => {
-            // stopped or wedged, not slow: this call fails open and the daemon is skipped until the marker expires. A first
+            // stopped or wedged, not slow: this call gets no verdict and the daemon is skipped until the marker expires (#905: the
+            // slow marker while its process is there, so risky calls are held; the down marker only once it is gone). A first
             // stale sample only raises a suspicion; the first call after the marker that finds the same heartbeat still
-            // unchanged confirms it, and the daemon is replaced (the new one clears the down marker). The marker comes first,
+            // unchanged confirms it, and the daemon is replaced (the new one clears the marker). The marker comes first,
             // so a client cut off mid-way still leaves it; the wait marker stays until the replacement is done, so the
             // wrapper's watchdog does not cut it off (single-flight: one call pays it).
             note_unavailable();
             clear_slow_streak();
             health::log_event("client_hung", "daemon", &why);
-            mark_daemon_down(&why);
+            mark_unusable(&sock, &why, "hung", None);
             if confirmed && replace_hung_daemon(cfg, &why) {
                 clear_daemon_down_marker();
             }
@@ -740,7 +1091,7 @@ fn attempt_with(payload: &[u8], cfg: &ClientConfig, answer_now: bool, hold_wait_
             if !GUARD_CALL.get() || defaults::env_var("nospawn").is_some() {
                 return absent_unguarded(&sock, payload, cfg, answer_now);
             }
-            absent_guarded(&sock, payload, cfg, hold_wait_on_ok)
+            absent_guarded(&sock, payload, cfg, hold_wait_on_ok, &Starter::real())
         }
     }
 }
@@ -755,25 +1106,29 @@ fn attempt_with(payload: &[u8], cfg: &ClientConfig, answer_now: bool, hold_wait_
 /// sent under the ack protocol: the new daemon queues the whole burst of calls that waited with it, so a request can sit
 /// unacknowledged past `wire.ack_timeout_ms`, and the ack protocol would resend it and then give up; one connection is never resent,
 /// so never judged twice.
-fn absent_guarded(sock: &Path, payload: &[u8], cfg: &ClientConfig, hold_wait_on_ok: bool) -> Option<String> {
+fn absent_guarded(sock: &Path, payload: &[u8], cfg: &ClientConfig, hold_wait_on_ok: bool, starter: &Starter) -> Option<String> {
     let start = Instant::now();
     // the spawn lock is held until this call's wait ends, so the calls arriving meanwhile wait instead of spawning again
+    let mut asked = false;
     let (spawn_guard, mut child) = match spawn_lock_if_absent(sock) {
         Some(lock) => {
-            health::log_event("client_spawn_attempt", "singleflight", "absent");
-            let Some(child) = spawn_daemon() else {
+            let Some(child) = start_daemon_with(true, "absent", starter) else {
                 wait_marker(false);
                 note_unavailable();
-                mark_daemon_down("spawn");
+                mark_daemon_down("spawn", "spawn");
                 return None;
             };
-            (Some(lock), Some(child))
+            // `Some(None)`: the service manager accepted the ask, so the supervised daemon is on its way; this call waits for it
+            // below instead of starting a second, unsupervised one
+            asked = child.is_none();
+            (Some(lock), child)
         }
         None => (None, None),
     };
     let window = wait_window(cfg.deadline);
     let cold_wait = defaults::millis("client.cold_guard_wait_ms").min(window);
     let ctl = defaults::millis("client.ctl_timeout_ms");
+    let grace = defaults::millis("units.kickstart_grace_ms").min(cold_wait);
     while start.elapsed() < cold_wait {
         if let Some(Ok(Some(st))) = child.as_mut().map(|c| c.try_wait()) {
             use std::os::unix::process::ExitStatusExt;
@@ -788,6 +1143,10 @@ fn absent_guarded(sock: &Path, payload: &[u8], cfg: &ClientConfig, hold_wait_on_
         let up = !probe.is_zero() && matches!(exchange(sock, b"CTL ping\n", probe), Exch::Reply(Kind::Ok, ref b) if b.starts_with("pong "));
         if up {
             drop(spawn_guard);
+            if asked {
+                health::log_event(defaults::text("units.kickstart_log_kind"), defaults::text("units.kickstart_ok"), "");
+                clear_supervisor_unhealthy();
+            }
             let left = window.saturating_sub(start.elapsed());
             return match exchange_for(sock, payload, cfg.deadline.min(left), left, false) {
                 Exch::Reply(Kind::Ok, body) => {
@@ -797,9 +1156,9 @@ fn absent_guarded(sock: &Path, payload: &[u8], cfg: &ClientConfig, hold_wait_on_
                     clear_daemon_down_marker();
                     Some(body)
                 }
-                Exch::Reply(_, _) => {
+                Exch::Reply(kind, _) => {
                     wait_marker(false);
-                    LAST_NON_OK_REPLY.set(true);
+                    note_non_ok(kind);
                     None
                 }
                 _ => {
@@ -810,10 +1169,32 @@ fn absent_guarded(sock: &Path, payload: &[u8], cfg: &ClientConfig, hold_wait_on_
                 }
             };
         }
+        if asked && start.elapsed() >= grace {
+            // the service manager accepted the ask and nothing answered within the grace: it is not bringing the daemon up. This
+            // call starts one itself within what is left of the window, and later calls do the same until the marker expires. The
+            // singleton lock keeps it to one daemon: whichever starts second finds the lock held, says so and exits 0 (the unit's
+            // KeepAlive leaves a clean exit alone). The miss is its own count; it is never a daemon start or a crash.
+            asked = false;
+            health::log_event(defaults::text("units.kickstart_log_kind"), defaults::text("units.kickstart_miss"), "");
+            mark_supervisor_unhealthy();
+            if child.is_none() {
+                health::log_event(defaults::text("units.kickstart_log_kind"), defaults::text("units.kickstart_fallback"), "");
+                health::log_event("client_spawn_attempt", "singleflight", "kickstart_miss");
+                child = (starter.spawn)();
+            }
+        }
         std::thread::sleep(defaults::millis("client.cold_guard_poll_ms").min(cold_wait.saturating_sub(start.elapsed())));
+    }
+    if asked {
+        // grace as long as the whole wait: no time was left to start one; same miss
+        health::log_event(defaults::text("units.kickstart_log_kind"), defaults::text("units.kickstart_miss"), "");
+        mark_supervisor_unhealthy();
     }
     wait_marker(false);
     note_unavailable();
+    // a daemon that is starting but not up within the wait is load (a loaded machine starts it slowly), not a broken install (a
+    // failed spawn returned above): a guard call in a hold class (dispatch.capacity_hold) is held, as for a late reply
+    LAST_SLOW.set(true);
     health::log_event("client_down", "daemon", "cold_start");
     None
 }
@@ -824,9 +1205,8 @@ fn absent_unguarded(sock: &Path, payload: &[u8], cfg: &ClientConfig, answer_now:
     wait_marker(false);
     note_unavailable();
     let _spawn_lock = spawn_lock_if_absent(sock)?;
-    health::log_event("client_spawn_attempt", "singleflight", "absent");
-    let Some(mut child) = spawn_daemon() else {
-        mark_daemon_down("spawn");
+    let Some(mut child) = start_daemon(false, "absent") else {
+        mark_daemon_down("spawn", "spawn");
         return None;
     };
     if answer_now {
@@ -835,7 +1215,7 @@ fn absent_unguarded(sock: &Path, payload: &[u8], cfg: &ClientConfig, answer_now:
     let start = Instant::now();
     let cold_wait = defaults::millis("client.cold_start_wait_ms");
     while start.elapsed() < cold_wait {
-        if let Ok(Some(st)) = child.try_wait() {
+        if let Some(Ok(Some(st))) = child.as_mut().map(|c| c.try_wait()) {
             use std::os::unix::process::ExitStatusExt;
             if let Some(sig) = st.signal() {
                 health::log_event("start_fail", &format!("sig{sig}"), defaults::text("msg.log_daemon_killed"));
@@ -864,10 +1244,14 @@ fn replace_hung_daemon(cfg: &ClientConfig, why: &str) -> bool {
         return false;
     }
     let Some(_spawn_lock) = spawn_lock() else { return false };
-    let stale = defaults::millis("client.heartbeat_stale_ms");
+    // R0 second path: a starved machine makes a working daemon's heartbeat old too; the kill bound stretches with the load as the
+    // watchdog's do, and the kill leaves a tombstone so the reap does not log it as a crash when the load caused it
+    let load = crate::loadscale::per_core();
+    let stale = Duration::from_millis(crate::loadscale::scale(defaults::num("client.heartbeat_stale_ms"), health::watchdog_factor(load)));
     let still_hung = |hb: &health::Heartbeat| hb.age > stale && health::hang_confirmed(hb);
     let Some(hb) = health::heartbeat_of_lock_holder().filter(|hb| still_hung(hb)) else { return false };
     let pid = hb.pid;
+    health::note_hung_kill(pid, load);
     let unchanged = || health::heartbeat_of_lock_holder().is_some_and(|now| now.ident == hb.ident && now.mtime_ns == hb.mtime_ns && still_hung(&now));
     let killed = pid != std::process::id()
         && hb.generation().is_some()
@@ -878,13 +1262,13 @@ fn replace_hung_daemon(cfg: &ClientConfig, why: &str) -> bool {
         // running, and the client must be descheduled exactly across that moment.
         && crate::procid::signal_verified(pid, libc::SIGKILL, || hb.names_running() && unchanged());
     if !killed {
+        health::clear_hung_kill(); // the daemon lives on: a later death of its own must not be read as this kill
         health::log_event("client_hung_spared", "daemon", &defaults::render("msg.log_hung_spared", &[("pid", &pid), ("why", &why)]));
         return false;
     }
     health::clear_hang_suspicion();
     health::log_event("client_hung_kill", "daemon", &defaults::render("msg.log_hung_kill", &[("pid", &pid), ("why", &why)]));
-    health::log_event("client_spawn_attempt", "singleflight", why);
-    spawn_daemon().is_some()
+    start_daemon(false, why).is_some()
 }
 
 /// Log a client-side failure; the state dir may not exist yet (no daemon ever ran here), and the event must still be on record.
@@ -1032,6 +1416,7 @@ fn run_bytes(raw: Vec<u8>, unaskable: bool, fail_closed_unavailable: bool) -> Ou
     let cfg = ClientConfig::from_env();
     // Fail fast: an engine that cannot answer is no verdict, so hook callers fail open instead of waiting.
     let event_name = event_from_lossy(&raw);
+    set_call_event(event_name.as_deref().unwrap_or_default());
     let text = std::str::from_utf8(&raw).ok();
     if !unaskable && let Some(raw) = text {
         if let Some(body) = engine_attempt(raw, &cfg)
@@ -1039,8 +1424,31 @@ fn run_bytes(raw: Vec<u8>, unaskable: bool, fail_closed_unavailable: bool) -> Ou
         {
             return o;
         }
+        // read before take_non_ok_reply, which does not clear it
+        let busy = take_busy_reply();
         let non_ok_reply = take_non_ok_reply();
         let unavailable = take_unavailable() || fail_open_unavailable();
+        // a BUSY reply (the daemon shed the request: a full queue or a rate limit) is no capacity, not a failed check: a guard event
+        // follows the capacity failure mode, as a daemon that did not answer in time does, never each check's failure policy
+        if busy
+            && let Some(ev) = event_name.as_deref().filter(|ev| guarded(ev))
+            && crate::dispatch::capacity_open()
+        {
+            if let Some(held) = serde_json::from_str::<serde_json::Value>(raw).ok().and_then(|p| crate::dispatch::capacity_held(ev, &p)) {
+                return held;
+            }
+            let why_key = crate::dispatch::capacity_why_key();
+            crate::dispatch::capacity_pass(ev, defaults::text(why_key));
+            return Outcome { out: env_advisory_output(raw, "").unwrap_or_default(), code: 0, err: unreachable_notice_why(raw, Some(ev), why_key) };
+        }
+        // a daemon that was there but late (load) passes a guard call like a BUSY one: a call in a hold class is held, never let through
+        if take_slow()
+            && let Some(ev) = event_name.as_deref().filter(|ev| guarded(ev))
+            && crate::dispatch::capacity_open()
+            && let Some(held) = serde_json::from_str::<serde_json::Value>(raw).ok().and_then(|p| crate::dispatch::capacity_held(ev, &p))
+        {
+            return held;
+        }
         if !non_ok_reply && unavailable && raw.len() as u64 <= defaults::num("daemon.max_request") {
             return Outcome { out: env_advisory_output(raw, "").unwrap_or_default(), code: 0, err: unreachable_notice(raw, event_name.as_deref()) };
         }
@@ -1089,6 +1497,8 @@ fn env_advisory_output(raw: &str, existing: &str) -> Option<String> {
 
 /// `engine hook`: read stdin, print the result and exit with its code (0 when the engine answered or could not).
 pub fn hook_main(args: &[String]) -> i32 {
+    // #969: the hook call waits on the daemon's answer; on a loaded machine it runs in the daemon's QoS class (daemon.qos)
+    crate::qos::apply_self("client");
     let res = std::panic::catch_unwind(|| {
         let max = defaults::num("client.max_stdin");
         let mut raw = Vec::new();
@@ -1139,7 +1549,7 @@ mod tests {
 
     #[test]
     fn the_wait_marker_is_one_plain_empty_file_with_no_temp_file_left() {
-        let dir = std::env::temp_dir().join(format!("ah-client-marker-{}", std::process::id()));
+        let dir = crate::testtmp::path(format!("ah-client-marker-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let marker = dir.join("wait");
         create_marker(&marker).unwrap();
@@ -1154,7 +1564,7 @@ mod tests {
     #[test]
     fn only_a_missing_socket_means_no_daemon() {
         // review finding 18: any stat error read as "no daemon" (and started a second one); only ENOENT does now
-        let dir = std::env::temp_dir().join(format!("ah-client-stat-{}", std::process::id()));
+        let dir = crate::testtmp::path(format!("ah-client-stat-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let file = dir.join("not-a-dir");
         std::fs::write(&file, "x").unwrap();
@@ -1168,7 +1578,7 @@ mod tests {
     #[test]
     fn a_reply_written_and_closed_after_the_first_read_timeout_is_still_delivered() {
         // macOS: re-arming SO_RCVTIMEO on a socket the daemon already closed is EINVAL; that must not drop the readable reply
-        let dir = std::env::temp_dir().join(format!("ah-client-late-{}", std::process::id()));
+        let dir = crate::testtmp::path(format!("ah-client-late-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let sock = dir.join("d.sock");
         let l = std::os::unix::net::UnixListener::bind(&sock).unwrap();
@@ -1179,7 +1589,9 @@ mod tests {
             std::thread::sleep(Duration::from_millis(400));
             std::io::Write::write_all(&mut c, &frame::encode(Kind::Ok, "late-ok")).unwrap();
         }); // dropping `c` closes the socket right after the write
+        GATE_OFF.set(true); // this fake daemon writes no heartbeat; the gate has its own tests
         let r = exchange_inner(&sock, b"CTL ping\n", Duration::from_millis(150), Duration::from_secs(5));
+        GATE_OFF.set(false);
         h.join().unwrap();
         crate::discard::harmless(std::fs::remove_dir_all(&dir)); // keep: cleanup that raced; an absent file is the goal state
         assert!(matches!(&r, Exch::Reply(Kind::Ok, b) if b == "late-ok"), "{r:?}");
@@ -1189,7 +1601,7 @@ mod tests {
     static ACK_TESTS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
     fn scratch(tag: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("ah-ack-{tag}-{}", std::process::id()));
+        let dir = crate::testtmp::path(format!("ah-ack-{tag}-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         dir
     }
@@ -1387,5 +1799,141 @@ mod tests {
         ] {
             assert_eq!(reply_outcome(body.clone()), None, "{body}");
         }
+    }
+
+    // ---- a kickstart that is accepted but never answered (SE-A3 miss fallback) ----
+
+    /// The tests use the crate's scratch state directory (never the real home); they count the events they add, and take turns.
+    struct KickState {
+        dir: PathBuf,
+        _turn: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl KickState {
+        fn new(tag: &str) -> KickState {
+            let turn = health::STATE_TURN.lock().unwrap_or_else(|e| e.into_inner());
+            let dir = crate::testtmp::path(format!("ah-kick-{tag}-{}", std::process::id()));
+            crate::discard::harmless(std::fs::remove_dir_all(&dir)); // keep: a leftover of an earlier run of this test
+            std::fs::create_dir_all(&dir).unwrap();
+            // SAFETY: a test-only env mutation; the tests that read AH_ENGINE_DIR in this process take `STATE_TURN` first. A state directory of its
+            // own, because a test per process (nextest) is not serialised by the turn: they would otherwise count each other's events in the shared one.
+            unsafe { std::env::set_var("AH_ENGINE_DIR", &dir) };
+            crate::limits::ensure_private_dir(&paths::dir()).unwrap();
+            clear_supervisor_unhealthy();
+            release_spawn_lock();
+            KickState { dir, _turn: turn }
+        }
+
+        fn count(&self, kind: &str, code: Option<&str>) -> usize {
+            health::flush_log();
+            health::events().iter().filter(|e| e.kind == kind && code.is_none_or(|c| e.code == c) && e.ts >= self.since()).count()
+        }
+
+        fn since(&self) -> u64 {
+            std::fs::metadata(&self.dir)
+                .and_then(|m| m.created())
+                .ok()
+                .and_then(|c| c.duration_since(std::time::UNIX_EPOCH).ok())
+                .map_or(0, |d| d.as_millis() as u64)
+        }
+    }
+
+    impl Drop for KickState {
+        fn drop(&mut self) {
+            clear_supervisor_unhealthy();
+            // SAFETY: as in `new`.
+            unsafe { std::env::remove_var("AH_ENGINE_DIR") };
+            crate::discard::harmless(std::fs::remove_dir_all(&self.dir)); // keep: cleanup that raced; an absent dir is the goal state
+        }
+    }
+
+    /// A daemon stand-in: answers `CTL ping` with a pong and anything else with `verdict`.
+    fn serve_stub(sock: &Path) {
+        let l = std::os::unix::net::UnixListener::bind(sock).unwrap();
+        std::thread::spawn(move || {
+            while let Ok((mut c, _)) = l.accept() {
+                let mut line = Vec::new();
+                let mut one = [0u8; 1];
+                while !line.ends_with(b"\n") && c.read_exact(&mut one).is_ok() {
+                    line.push(one[0]);
+                }
+                let reply = if line.starts_with(b"CTL ping") { "pong 1 1" } else { "verdict" };
+                crate::discard::harmless(std::io::Write::write_all(&mut c, &frame::encode(Kind::Ok, reply))); // keep: the client may have gone
+            }
+        });
+    }
+
+    #[test]
+    fn an_accepted_ask_with_no_answer_falls_back_to_a_spawn_that_gives_an_engine_within_the_window() {
+        let st = KickState::new("fallback");
+        let sock = st.dir.join("d.sock");
+        let sock2 = sock.clone();
+        let spawned = std::cell::Cell::new(0);
+        let ask = |_wait: bool| true; // the service manager accepts and never starts anything
+        let spawn = || {
+            spawned.set(spawned.get() + 1);
+            serve_stub(&sock2);
+            std::process::Command::new("sleep").arg("30").stdin(Stdio::null()).stdout(Stdio::null()).spawn().ok()
+        };
+        let t = Instant::now();
+        let r = absent_guarded(&sock, b"E {}\n", &ClientConfig::from_env(), false, &Starter { ask: &ask, spawn: &spawn });
+        let took = t.elapsed();
+        assert_eq!(r.as_deref(), Some("verdict"), "the fallback daemon answered the guard call");
+        assert!(took < defaults::millis("client.cold_guard_wait_ms") + defaults::millis("client.ctl_timeout_ms"), "inside the guard window: {took:?}");
+        assert_eq!(spawned.get(), 1, "one fallback spawn");
+        let kind = defaults::text("units.kickstart_log_kind");
+        assert_eq!(st.count(kind, Some(defaults::text("units.kickstart_miss"))), 1);
+        assert_eq!(st.count(kind, Some(defaults::text("units.kickstart_fallback"))), 1);
+        assert!(supervisor_unhealthy_marked(), "later calls skip the ask");
+    }
+
+    /// R0 (#969 hardening review): a crash-loop cooldown holds risky calls only for its first client.crashloop_hold_max_ms.
+    #[test]
+    fn a_crash_loop_cooldown_holds_only_for_its_backstop() {
+        let max = defaults::millis("client.crashloop_hold_max_ms");
+        let cooldown = defaults::secs("client.crash_cooldown_s");
+        assert!(!max.is_zero() && max < cooldown, "the shipped backstop is shorter than the cooldown");
+        assert!(crashloop_holds(cooldown, cooldown), "a trip this moment holds");
+        assert!(crashloop_holds(cooldown, cooldown - max + Duration::from_millis(1)), "just inside the backstop holds");
+        assert!(!crashloop_holds(cooldown, cooldown - max), "at the backstop it passes");
+        assert!(!crashloop_holds(cooldown, Duration::from_secs(1)), "late in the cooldown it passes");
+    }
+
+    #[test]
+    fn repeated_accepted_asks_are_never_spawn_attempts_so_they_never_trip_the_crash_loop_or_a_rollback() {
+        let st = KickState::new("rate");
+        let ask = |_wait: bool| true;
+        let spawn = || -> Option<std::process::Child> { panic!("an accepted ask never spawns") };
+        let s = Starter { ask: &ask, spawn: &spawn };
+        let n = defaults::num("client.spawn_n") as usize * 3;
+        for _ in 0..n {
+            health::log_event(defaults::text("units.kickstart_log_kind"), defaults::text("units.kickstart_miss"), "");
+            assert!(matches!(start_daemon_with(true, "absent", &s), Some(None)));
+        }
+        assert_eq!(st.count("client_spawn_attempt", None), 0, "an ask is not a daemon start");
+        let cfg = ClientConfig::from_env();
+        assert!(!health::crashloop_tripped(&cfg), "misses and asks are not the binary failing");
+        assert!(health::crashloop_remaining().is_none());
+        assert_eq!(st.count("rollback_request", None), 0);
+    }
+
+    #[test]
+    fn the_unhealthy_marker_holds_for_its_ttl_and_is_then_gone() {
+        let st = KickState::new("marker");
+        assert!(!supervisor_unhealthy_marked());
+        mark_supervisor_unhealthy();
+        let left = supervisor_unhealthy_remaining().expect("marked");
+        assert!(left <= defaults::millis("units.unhealthy_ttl_ms") && left > Duration::ZERO, "{left:?}");
+        assert!(supervisor_unhealthy_marked());
+        // an expired stamp reads as no marker and is removed
+        std::fs::write(state_file("supervisor_unhealthy_marker"), (health::now_ms() - 1).to_string()).unwrap();
+        assert!(supervisor_unhealthy_remaining().is_none());
+        assert!(!supervisor_unhealthy_marked());
+        assert!(!state_file("supervisor_unhealthy_marker").exists());
+        // a daemon answering after an ask clears it at once
+        mark_supervisor_unhealthy();
+        clear_supervisor_unhealthy();
+        assert!(!supervisor_unhealthy_marked());
+        drop(st);
     }
 }

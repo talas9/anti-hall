@@ -29,6 +29,38 @@ pub struct State {
     pub backoff_idx: usize,
     /// When the last error line was printed (`None`: never since the last recovery).
     pub last_error_emit_ms: Option<f64>,
+    /// When the last new-mail wake was printed whose mail the workspace has not drained yet (GH #884: wake coalescing). `None`:
+    /// no wake is outstanding, the next new mail wakes. Kept in memory only: a restarted watcher wakes on the next mail.
+    pub woke_ms: Option<f64>,
+    /// The mesh-direct total and the unread count at that wake: mail the workspace read since shows as unread below
+    /// `woke_unread` plus what arrived since, and means the wake was used.
+    pub woke_total2: f64,
+    /// See `woke_total2`.
+    pub woke_unread: f64,
+    /// A wake was held and the workspace has not drained since: it is woken again once the re-wake window has passed, even
+    /// when no further mail arrives.
+    pub held_pending: bool,
+    /// New-mail wake lines held back by the last tick (coalesced into the outstanding wake), for the caller's counter.
+    pub held: u32,
+    /// Wake lines the last tick printed for new mail (direct or inbox), for the caller's `mesh_wake_lines` counter (GH #845).
+    pub woke_mail: u32,
+    /// Wake lines the last tick printed for broadcasts, same counter.
+    pub woke_broadcast: u32,
+    /// The broadcast watermark (GH #845): the highest broadcast seq a line was printed for (or that was seeded); it never goes down,
+    /// so a drain followed by a new arrival between two polls still wakes.
+    pub last_bc_seq: f64,
+    /// No watermark was saved (a fresh watcher, or a cursor file from a build before it): the first read with the watermark field
+    /// reconciles instead of seeding silently, so pending eligible mail always wakes once.
+    pub bc_seq_missing: bool,
+    /// The eligible unread broadcast count at the last read (memory only, `None` before the first): an ack that lowers it while
+    /// some stay unread wakes again (review P1-1), so a backlog the drain held back past its caps is drained too.
+    pub last_bc_pending: Option<f64>,
+    /// The broadcast cursor at the last read (memory only): an ack that moved it while wake-eligible rows stay unread wakes again,
+    /// even when it passed only rows that do not wake (re-review N-3).
+    pub last_bc_cursor: Option<f64>,
+    /// The arm print is still owed: set when the watcher arms, cleared only by a tick that reads the broadcast watermark, so an arm
+    /// whose first read failed or lacked the field still prints (re-review N-4).
+    pub bc_arm_due: bool,
 }
 
 impl Default for State {
@@ -44,6 +76,18 @@ impl Default for State {
             consec_errors: 0.0,
             backoff_idx: 0,
             last_error_emit_ms: None,
+            woke_ms: None,
+            woke_total2: 0.0,
+            woke_unread: 0.0,
+            held_pending: false,
+            held: 0,
+            woke_mail: 0,
+            woke_broadcast: 0,
+            last_bc_seq: 0.0,
+            bc_seq_missing: false,
+            last_bc_pending: None,
+            last_bc_cursor: None,
+            bc_arm_due: false,
         }
     }
 }
@@ -68,6 +112,18 @@ pub struct Snapshot {
     pub total2: Option<Option<f64>>,
     /// Broadcast channel.
     pub total3: Option<Option<f64>>,
+    /// Broadcast watermark channel (GH #845): `None` when the summary row predates it (the legacy `total3` count applies),
+    /// `Some(None)` when nothing unread wakes the workspace, else the highest seq of the unread broadcasts that do.
+    pub bc_seq: Option<Option<f64>>,
+    /// How many unread broadcasts wake the workspace (display and the start-up reconcile only).
+    pub bc_pending: Option<f64>,
+    /// The reader's broadcast cursor (the summary's `broadcastWakeCursor`), when the row has it (re-review N-3).
+    pub bc_cursor: Option<f64>,
+    /// The workspace's direct mail it has not read yet (the summary's `directUnread`), `None` when unknown.
+    pub unread: Option<f64>,
+    /// Wake coalescing (GH #884, `devswarm.wakeWatchCoalesce`): `Some(ms)` when it applies to this watcher, the time after which a
+    /// still-undrained workspace is woken again (`devswarm.wakeWatchRewakeMs`); `None` when off.
+    pub coalesce_ms: Option<f64>,
 }
 
 fn text(key: &str) -> &'static str {
@@ -152,13 +208,50 @@ fn backoff_len() -> usize {
     defaults::raw("wake_watch.error_backoff_ms").as_array().map_or(0, <[defaults::V]>::len)
 }
 
+/// Wake coalescing (GH #884): one wake per state change, not one per message. New mesh-direct mail is held when an earlier wake is
+/// outstanding, inside `coalesce_ms`, and the workspace has read nothing since that wake (its unread count is at least the unread
+/// count of the wake plus what arrived since). A workspace that read anything used its wake, so new mail wakes it again; one that
+/// drained everything ends the outstanding wake. Unknown counts, or coalescing off: every new message wakes, as before.
+fn hold(st: &State, snap: &Snapshot) -> bool {
+    let (Some(rewake), Some(at), Some(unread), Some(Some(total2))) = (snap.coalesce_ms, st.woke_ms, snap.unread, snap.total2) else {
+        return false;
+    };
+    snap.now_ms - at < rewake && unread > 0.0 && unread >= st.woke_unread + (total2 - st.woke_total2)
+}
+
+/// A wake line was printed: it is the outstanding wake when coalescing applies and both counts are known.
+fn note_wake(st: &mut State, snap: &Snapshot) {
+    st.held_pending = false;
+    st.woke_ms = None;
+    if let (Some(_), Some(unread), Some(Some(total2))) = (snap.coalesce_ms, snap.unread, snap.total2) {
+        st.woke_ms = Some(snap.now_ms);
+        st.woke_total2 = total2;
+        st.woke_unread = unread;
+    }
+}
+
+/// Review P1-2: the tick's lines were (`printed`) or were not all written out. A broadcast line that did not reach the workspace
+/// must not move the watermark: the old one is kept and marked unknown (never saved), so the next tick prints again.
+pub fn undo_unprinted(before: &State, mut after: State, printed: bool) -> State {
+    if !printed && after.woke_broadcast > 0 {
+        after.last_bc_seq = before.last_bc_seq;
+        after.bc_seq_missing = true;
+    }
+    after
+}
+
 /// `tick(state, snapshot)` -> the new state and the lines to print.
 pub fn tick(state: &State, snap: &Snapshot) -> (State, Vec<String>) {
     let mut st = state.clone();
+    st.held = 0;
+    st.woke_mail = 0;
+    st.woke_broadcast = 0;
     let mut lines = Vec::new();
     let now = snap.now_ms;
+    let arming = !st.armed;
     if !st.armed {
         st.armed = true;
+        st.bc_arm_due = true;
         lines.push(arm_line(snap));
     }
     // SEED MISSING BASELINES: a counter with no recorded history is seeded from the first successful read, so a missing
@@ -206,18 +299,56 @@ pub fn tick(state: &State, snap: &Snapshot) -> (State, Vec<String>) {
         st.backoff_idx = 0;
         st.last_error_emit_ms = None;
     }
+    // the workspace read all its direct mail: no wake is outstanding any more
+    if snap.unread.is_some_and(|u| u <= 0.0) {
+        st.woke_ms = None;
+        st.held_pending = false;
+    }
     let has_channel2 = snap.total2.is_some();
     let total = snap.total;
     let total2 = snap.total2.flatten();
     let moved1 = total.is_some_and(|t| t > st.last_total);
     let moved2 = total2.is_some_and(|t| t > st.last_total2);
     // SINGLE-EMIT RULE: both channels advancing in one tick print exactly one line.
+    let mut mail = None;
     if let (true, true, Some(t1), Some(t2)) = (moved1, moved2, total, total2) {
-        lines.push(dual_wake_line(snap, st.last_total, t1, st.last_total2, t2));
+        mail = Some(dual_wake_line(snap, st.last_total, t1, st.last_total2, t2));
     } else if let (true, Some(t1)) = (moved1, total) {
-        lines.push(wake_line(snap, st.last_total, t1, has_channel2.then(|| text("wake_watch.label_ndjson"))));
+        mail = Some(wake_line(snap, st.last_total, t1, has_channel2.then(|| text("wake_watch.label_ndjson"))));
     } else if let (true, Some(t2)) = (moved2, total2) {
-        lines.push(wake_line(snap, st.last_total2, t2, Some(text("wake_watch.label_mesh_direct"))));
+        mail = Some(wake_line(snap, st.last_total2, t2, Some(text("wake_watch.label_mesh_direct"))));
+    }
+    let had_mail = mail.is_some();
+    if let Some(line) = mail {
+        // only mail on the mesh-direct channel alone is coalesced: the inbox channel moving, too, always wakes
+        if moved2 && !moved1 && hold(&st, snap) {
+            st.held += 1;
+            st.held_pending = true;
+        } else {
+            lines.push(line);
+            st.woke_mail += 1;
+            note_wake(&mut st, snap);
+        }
+    } else if st.held_pending
+        && let (Some(rewake), Some(at), Some(Some(t2))) = (snap.coalesce_ms, st.woke_ms, snap.total2)
+        && snap.now_ms - at >= rewake
+    {
+        // held mail still unread after the re-wake window: one wake for all of it
+        lines.push(wake_line(snap, st.woke_total2, t2, Some(text("wake_watch.label_mesh_direct"))));
+        st.woke_mail += 1;
+        note_wake(&mut st, snap);
+    }
+    // A (re)started watcher keeps no wake in memory, while the cursor a held wake moved past is saved: unread direct mail found
+    // at arm with no new mail is treated as held behind an outstanding wake, so the re-wake still comes if it stays unread.
+    if arming
+        && !had_mail
+        && let (Some(_), Some(unread), Some(Some(t2))) = (snap.coalesce_ms, snap.unread, snap.total2)
+        && unread > 0.0
+    {
+        st.woke_ms = Some(now);
+        st.woke_total2 = t2 - unread;
+        st.woke_unread = 0.0;
+        st.held_pending = true;
     }
     if moved1 && let Some(t) = total {
         st.last_total = t;
@@ -235,10 +366,47 @@ pub fn tick(state: &State, snap: &Snapshot) -> (State, Vec<String>) {
     }
     // BROADCAST CHANNEL: a third, independent observation, never merged into the dual-channel logic.
     let total3 = snap.total3.flatten();
+    if let Some(seq) = snap.bc_seq {
+        // GH #845 watermark: wake when the highest eligible unread seq passes the saved one (never on a count edge, which a drain
+        // plus a new arrival between two polls would hide). A watcher with no saved watermark wakes once for pending eligible mail.
+        let pending = snap.bc_pending.unwrap_or(0.0);
+        // the line shows how many unread broadcasts wake the workspace (`0 -> N`), in the legacy line text
+        let line = || wake_line(snap, 0.0, pending.max(1.0), Some(text("wake_watch.label_broadcast")));
+        // review P1-2: a (re)armed watcher, or one with no trusted watermark, prints once for pending eligible mail, so a line lost
+        // to a closed pipe or a restart after the watermark was saved still reaches the workspace
+        let cursor_moved = matches!((snap.bc_cursor, st.last_bc_cursor), (Some(now), Some(was)) if now > was);
+        let reacked = pending > 0.0 && (st.last_bc_pending.is_some_and(|was| pending < was) || cursor_moved);
+        if st.bc_seq_missing || st.bc_arm_due {
+            st.bc_arm_due = false;
+            if pending > 0.0 {
+                lines.push(line());
+                st.woke_broadcast += 1;
+            }
+            st.bc_seq_missing = false;
+            st.last_bc_seq = st.last_bc_seq.max(seq.unwrap_or(0.0));
+        } else if let Some(s) = seq.filter(|s| *s > st.last_bc_seq) {
+            lines.push(line());
+            st.woke_broadcast += 1;
+            st.last_bc_seq = s;
+        } else if reacked {
+            lines.push(line());
+            st.woke_broadcast += 1;
+        }
+        st.last_bc_pending = Some(pending);
+        if snap.bc_cursor.is_some() {
+            st.last_bc_cursor = snap.bc_cursor;
+        }
+        // the legacy count stays in step silently, for a build that still reads it
+        if let Some(t3) = total3 {
+            st.last_broadcast = t3;
+        }
+        return (st, lines);
+    }
     if let Some(t3) = total3
         && t3 > st.last_broadcast
     {
         lines.push(wake_line(snap, st.last_broadcast, t3, Some(text("wake_watch.label_broadcast"))));
+        st.woke_broadcast += 1;
     }
     if snap.total3.is_some()
         && let Some(t3) = total3

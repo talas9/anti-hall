@@ -827,7 +827,7 @@ fn LiveBody(mode: RwSignal<String>) -> impl IntoView {
             .iter()
             .map(|ev| {
                 let key = lc.hook_fx.get(ev).unwrap_or(&lc.hook_fx_default);
-                let colour = cfg.fx.colors.get(key).cloned().unwrap_or_default();
+                let colour = cfg.fx_css(key);
                 let (name, number, win) = (ev.clone(), number.clone(), lc.rate_window_s.max(1) as f32);
                 let n2 = name.clone();
                 let n2b = name.clone();
@@ -851,7 +851,7 @@ fn LiveBody(mode: RwSignal<String>) -> impl IntoView {
                 <div class="stat"><div class="stat-k">{tx("live_rate")}</div><div class="stat-v">{move || format!("{:.1}", counters.with(|c| c.rate_x10) as f32 / 10.0)}</div></div>
                 <div class="stat"><div class="stat-k">{tx("pill_cpu")}</div><div class="stat-v">{move || ctx.snap.with(|s| s.pulse.as_ref().and_then(|p| p.cpu_permille).map_or_else(|| "\u{2014}".to_string(), |v| format!("{:.1}%", v as f64 / 10.0)))}</div></div>
                 <div class="stat" title=move || ctx.snap.with(|s| s.pulse.as_ref().map(|p| match p.footprint_kb { Some(fp) => tx("pill_mem_tip").replace("{fp}", &format!("{} MB", fp / 1024)).replace("{rss}", &format!("{} MB", p.rss_kb / 1024)), None => tx("pill_mem_rss_only").replace("{rss}", &format!("{} MB", p.rss_kb / 1024)) }).unwrap_or_default())><div class="stat-k">{tx("pill_mem")}</div><div class="stat-v">{move || ctx.snap.with(|s| s.pulse.as_ref().map_or_else(|| "\u{2014}".to_string(), |p| format!("{} MB", p.footprint_kb.unwrap_or(p.rss_kb) / 1024)))}</div></div>
-                <div class="stat"><div class="stat-k">"Jev"</div><div class="stat-v">{move || counters.with(|c| c.jev_calls)}</div></div>
+                <div class="stat"><div class="stat-k">{tx("live_jev_stat")}</div><div class="stat-v">{move || counters.with(|c| c.jev_calls)}</div></div>
                 <div class="stat"><div class="stat-k">{tx("live_blocks")}</div><div class="stat-v live-block">{move || counters.with(|c| c.blocks)}</div></div>
                 <div class="stat live-top"><div class="stat-k">{tx("live_top")}</div>
                     <ol>{move || counters.with(|c| c.top.iter().map(|(n, v)| view! { <li><span>{n.clone()}</span><b>{*v}</b></li> }).collect_view())}</ol>

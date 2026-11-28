@@ -114,7 +114,7 @@ impl Drop for Sc {
 
 impl Sc {
     fn new() -> Sc {
-        let root = std::env::temp_dir().join(format!("ah-doctor-sc-{}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
+        let root = crate::common::testtmp::path(format!("ah-doctor-sc-{}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
         let (home, cwd) = (root.join("home"), root.join("cwd"));
         fs::create_dir_all(&home).unwrap();
         fs::create_dir_all(&cwd).unwrap();
@@ -261,18 +261,9 @@ impl Sc {
     }
 }
 
-/// The built-in doctor of the thin client (`ah-hook --plugin-root <plugin> doctor --builtin`): AH_HOOK_BIN, else the release or debug
-/// build of `ah-launcher` in this checkout.
+/// The built-in doctor of the thin client (`ah-hook --plugin-root <plugin> doctor --builtin`): the launcher of `common::launcher_bin`.
 fn builtin_doctor(plugin: &Path) -> Command {
-    let bin = std::env::var_os("AH_HOOK_BIN")
-        .map(PathBuf::from)
-        .filter(|p| p.is_file())
-        .or_else(|| {
-            let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().join("ah-launcher/target");
-            ["release", "debug"].iter().map(|b| root.join(b).join("ah-hook")).find(|p| p.is_file())
-        })
-        .expect("no ah-hook binary: build ah-launcher (cargo build in ah-launcher/) or set AH_HOOK_BIN");
-    let mut c = Command::new(bin);
+    let mut c = Command::new(crate::common::launcher_bin());
     c.arg("--plugin-root").arg(plugin).arg("doctor").arg("--builtin").env("AH_WRAPPER_TEST", "1");
     c
 }
@@ -458,11 +449,20 @@ fn bin_07_08_09_marker_digest_and_versions() {
     sc2.stub_engine("0.0.9");
     sc2.marker("0.0.9");
     let d = sc2.doctor(&[]);
-    d.has("warn", &["engine 0.0.9 is installed but the plugin pins 0.1.0", "next session start"]);
+    d.has("warn", &["engine 0.0.9 is installed but the plugin pins 0.1.0", "only when the engine.bootstrap setting is on"]);
     assert_eq!(
         d.section("Engine install").into_iter().filter(|l| !l.contains("this doctor is engine")).collect::<Vec<_>>(),
         sc2.shell().section("Engine install")
     );
+    // a NEWER engine than the pin (a local or later build) is not a problem, with or without a marker
+    let mut sc3 = Sc::new();
+    sc3.own_plugin();
+    sc3.stub_engine("0.2.0");
+    sc3.doctor(&[]).lacks("but the plugin pins");
+    sc3.marker("0.2.0");
+    let d = sc3.doctor(&[]);
+    d.lacks("but the plugin pins");
+    d.has("ok", &["runs and reports 0.2.0"]);
 }
 
 #[test]
@@ -472,7 +472,7 @@ fn bin_10_15_the_lock() {
     sc.stub_engine("0.1.0");
     sc.write_lock("0.1.0", &["riscv64-unknown-linux-gnu".to_string()]);
     let d = sc.doctor(&[]);
-    d.has("warn", &["the plugin's ah-engine.lock has no build for", "the Node hooks stay in use"]);
+    d.has("warn", &["the plugin's ah-engine.lock has no build for", "no engine can be installed here"]);
     fs::remove_file(sc.plugin.join("ah-engine.lock")).unwrap();
     let d = sc.doctor(&[]);
     d.has("warn", &["ah-engine.lock is missing or unreadable at", "No such file or directory (os error 2)"]);
@@ -620,11 +620,11 @@ fn fast_orphan_checks(sc: &Sc) {
     }
 }
 
-fn spawn_scratch_serve(sc: &Sc) -> std::process::Child {
+fn spawn_scratch_serve(sc: &Sc) -> crate::common::Daemon {
     let mut c = Command::new(BIN);
     c.arg("serve").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
     sc.env(&mut c);
-    c.spawn().unwrap()
+    crate::common::Daemon::new(c.spawn().unwrap())
 }
 
 fn wait_ping(sock: &Path) {
@@ -637,18 +637,20 @@ fn dmn_02_down_and_dmn_01_up() {
     sc.own_plugin();
     sc.doctor(&[]).has("info", &["the engine daemon is not running (it starts on the first hook call)"]);
     // a real daemon in the scratch home
-    let mut child = Command::new(BIN)
-        .arg("serve")
-        .env_clear()
-        .env("PATH", &sc.path)
-        .env("HOME", &sc.home)
-        .env("AH_ENGINE_PLUGIN_ROOT", &sc.plugin)
-        .env("TMPDIR", std::env::temp_dir())
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .unwrap();
+    let mut child = crate::common::Daemon::new(
+        Command::new(BIN)
+            .arg("serve")
+            .env_clear()
+            .env("PATH", &sc.path)
+            .env("HOME", &sc.home)
+            .env("AH_ENGINE_PLUGIN_ROOT", &sc.plugin)
+            .env("TMPDIR", std::env::temp_dir())
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .unwrap(),
+    );
     let sock = ah_engine::paths::socket_in(&sc.state());
     let t = std::time::Instant::now();
     while t.elapsed().as_secs() < 10 && ah_engine::client::ping(&sock).is_none() {
@@ -784,7 +786,7 @@ fn dmn_08_09_crash_loop_and_breaker_with_the_recorded_failure() {
     fs::remove_file(state.join("crashloop.until")).unwrap();
     fs::write(state.join("breaker.until"), (now_ms() + 60_000).to_string()).unwrap();
     let d = sc.doctor(&[]);
-    d.has("warn", &["client circuit breaker open for", "hooks use the Node fallback meanwhile"]);
+    d.has("warn", &["client circuit breaker open for", "hook calls pass through unchecked meanwhile"]);
     assert_eq!(d.code, 0);
     // an expired cooldown is not reported
     fs::write(state.join("breaker.until"), (now_ms() - 1000).to_string()).unwrap();
@@ -798,7 +800,37 @@ fn dmn_12_doctor_reports_last_crash_breadcrumb() {
     let state = sc.state();
     fs::create_dir_all(&state).unwrap();
     fs::write(state.join("last-crash.json"), r#"{"kind":"crash","code":"unknown","breadcrumb":{"request":"D","event":"Stop","check":"task-guard"}}"#).unwrap();
-    sc.doctor(&[]).has("warn", &["last crash:", "\"request\":\"D\"", "\"event\":\"Stop\"", "\"check\":\"task-guard\""]);
+    let d = sc.doctor(&[]);
+    d.has("warn", &["last crash:", "pid ?", "request D", "event Stop", "check task-guard", "last-crash.json"]);
+    d.lacks("\"request\":\"D\"");
+}
+
+/// A recorded failure whose reason is the whole breadcrumb (older records) is cut at doctor.reason_max and names the file.
+#[test]
+fn dmn_11_long_failure_reason_is_cut_and_names_the_file() {
+    let mut sc = Sc::new();
+    sc.own_plugin();
+    let state = sc.state();
+    fs::create_dir_all(&state).unwrap();
+    let reason = format!("daemon pid 1 died without a clean exit; last context {{{}}}", "x".repeat(2000));
+    fs::write(state.join("failure.json"), serde_json::json!({"class": "permanent", "reason": reason, "hint": ""}).to_string()).unwrap();
+    let d = sc.doctor(&[]);
+    d.has("warn", &["last recorded failure (permanent): daemon pid 1 died", "(cut; full text in", "failure.json"]);
+    d.lacks(&"x".repeat(400));
+}
+
+/// With no `--plugin-root` and no engine variable, the root the doctor resolves itself names the plugin version.
+#[test]
+fn the_header_shows_the_plugin_version_from_a_root_found_by_the_host_variable() {
+    let mut sc = Sc::new();
+    sc.own_plugin();
+    let mut c = Command::new(BIN);
+    c.arg("doctor").arg("--check");
+    sc.env(&mut c);
+    c.env_remove("AH_ENGINE_PLUGIN_ROOT").env("CLAUDE_PLUGIN_ROOT", &sc.plugin);
+    let d = sc.finish(c);
+    d.lacks("(unknown)");
+    d.has("ok", &["anti-hall plugin version 0."]);
 }
 
 /// A process that looks like an engine daemon to the pid check (`<name> serve` on its command line).
@@ -1270,16 +1302,19 @@ fn nd_an_engine_on_path_is_a_working_engine_when_the_home_install_is_not_executa
 
 #[test]
 fn nd_the_doctor_never_starts_node() {
-    // a node on PATH that records every start: the engine doctor (live self-tests, statusline render, the DevSwarm hook tests)
-    // must not run it at all, not even for a version probe
+    // a node on PATH that records the first argument of every start: the engine doctor's OWN use of Node (a version probe, a Node
+    // twin of a check, a hook script, the statusline render, the DevSwarm hook tests) must never happen. The one start allowed is
+    // the api-guard canary rows (`needs = "node"`), where api-guard itself runs `node -e <module probe>` to judge a fabricated
+    // API: that is the guard under test using the interpreter, not the doctor requiring Node
     let mut sc = Sc::new();
     sc.own_plugin();
     sc.stub_engine("0.1.0");
     let log = sc.root.join("node-starts.log");
-    sc.programs(&[("node", &format!("echo \"$*\" >> '{}'\necho v22.3.0", log.display()))], &[]);
+    sc.programs(&[("node", &format!("echo \"$1\" >> '{}'\necho v22.3.0", log.display()))], &[]);
     let d = sc.doctor(&[]);
     let starts = fs::read_to_string(&log).unwrap_or_default();
-    assert!(starts.trim().is_empty(), "the doctor started node: {starts:?}\n{}", d.text);
+    let own: Vec<&str> = starts.lines().filter(|a| *a != "-e").collect();
+    assert!(own.is_empty(), "the doctor itself started node (only api-guard's `node -e` module probe is allowed): {own:?}\n{}", d.text);
     d.lacks("Node v22");
 }
 
@@ -1437,6 +1472,21 @@ fn lg_logs_huge_corrupt_and_quarantined_spool() {
 }
 
 // ---- SH: the Node witness kit --------------------------------------------------------------------------------------------------
+
+#[test]
+fn sh_witness_flags_a_live_hook_running_from_another_plugin_root() {
+    let mut sc = Sc::new();
+    sc.own_plugin();
+    let mine = sc.plugin.display().to_string();
+    sc.put(
+        ".codex/hooks.json",
+        format!("{{\"hooks\":{{\"Stop\":[{{\"hooks\":[{{\"type\":\"command\",\"command\":\"sh \\\"{mine}/hooks/install.sh\\\" Stop\"}}]}}]}}}}").as_bytes(),
+    );
+    let d = sc.doctor(&[]);
+    d.lacks("runs hooks from");
+    sc.put(".codex/hooks.json", b"{\"hooks\":{\"Stop\":[{\"hooks\":[{\"type\":\"command\",\"command\":\"sh '/old plugin/dir/hooks/install.sh' Stop\"}]}]}}");
+    sc.doctor(&[]).has("warn", &["runs hooks from", "/old plugin/dir", "Fix:"]);
+}
 
 #[test]
 fn sh_witness_absent_present_and_every_way_it_goes_wrong() {
@@ -1698,4 +1748,153 @@ fn sto_01_journal_and_split_stores_are_reported_as_unsupported_legacy() {
     sc.put(".anti-hall/settings.json", br#"{"doctor":{"legacy_stores_report":0}}"#);
     let off = sc.finish(c);
     off.lacks("legacy journal backend");
+}
+
+// ---- FW-3: an upgrade from the Node era ------------------------------------------------------------------------------------------
+
+#[test]
+fn fw3_no_statusline_is_info_and_nothing_points_into_the_unpublished_node_tree() {
+    let mut sc = Sc::new();
+    sc.own_plugin();
+    // the published layout has no Node tree beside the plugin
+    fs::remove_dir_all(sc.root.join("anti-hall-node")).ok();
+    let d = sc.doctor(&[]);
+    d.lacks("dispatcher missing");
+    d.lacks("statusline-rich");
+    d.has("info", &["no anti-hall statusLine is configured"]);
+}
+
+#[test]
+fn fw3_the_retired_node_statusline_is_named_with_the_command_that_clears_it() {
+    let mut sc = Sc::new();
+    sc.own_plugin();
+    sc.put(".claude/settings.json", br#"{"statusLine":{"type":"command","command":"node \"/x/plugins/anti-hall/statusline/statusline.js\""}}"#);
+    let d = sc.doctor(&[]);
+    d.has("warn", &["retired Node form", "status line is blank", "uninstall-statusline"]);
+    d.lacks("dispatcher missing");
+}
+
+#[test]
+fn fw3_codex_hooks_that_still_run_node_era_scripts_are_named_not_called_absent() {
+    let mut sc = Sc::new();
+    sc.own_plugin();
+    let node = |p: &str| format!("node \\\"{p}\\\"");
+    let file = format!(
+        "{{\"hooks\":{{\"Stop\":[{{\"hooks\":[{{\"type\":\"command\",\"command\":\"{}\"}}]}}],\"PreToolUse\":[{{\"hooks\":[{{\"type\":\"command\",\"command\":\"{}\"}}]}}]}}}}",
+        node("/h/.claude/plugins/cache/anti-hall/anti-hall/0.203.3/hooks/stop-guard.js"),
+        node("/repo/plugins/anti-hall/hooks/git-guard.js"),
+    );
+    sc.put(".codex/hooks.json", file.as_bytes());
+    let d = sc.doctor(&[]);
+    d.has("bad", &["still runs 2 Node-era anti-hall hook(s)", "install-codex --global", "stop-guard.js"]);
+    d.lacks("no anti-hall hooks found");
+    // a hooks file with no anti-hall entries at all keeps the old finding; the thin client entry is not a Node-era entry
+    sc.put(".codex/hooks.json", br#"{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"/usr/bin/true"}]}]}}"#);
+    let d = sc.doctor(&[]);
+    d.lacks("Node-era anti-hall hook");
+    d.has("warn", &["no anti-hall hooks found"]);
+}
+
+#[test]
+fn fw3_the_codex_installer_pattern_covers_both_node_era_command_shapes() {
+    ah_engine::defaults::init().unwrap();
+    let re = regex::Regex::new(ah_engine::defaults::text("codex_install.hook_group_re")).unwrap();
+    // `install-codex.js` run from a repo clone, and from a plugin-cache version directory (the form that was not matched before)
+    assert!(re.is_match("node \"/h/.claude/plugins/marketplaces/anti-hall/plugins/anti-hall/hooks/verify-first-full.js\""));
+    assert!(re.is_match("node \"/h/.claude/plugins/cache/anti-hall/anti-hall/0.203.3/hooks/verify-first-full.js\""));
+    // the thin client and an unrelated hook
+    assert!(re.is_match("\"/h/.anti-hall/ah-engine/bin/ah-hook\" Stop --host codex"));
+    assert!(!re.is_match("node \"/h/other-tool/hooks/lint.js\""));
+}
+
+/// `--only <id>` limits a repair run to one step; an id with nothing pending names the step ids and changes nothing.
+#[test]
+fn repair_only_an_unknown_step_lists_the_ids_and_runs_no_other_repair() {
+    let mut sc = Sc::new();
+    sc.own_plugin();
+    let d = sc.doctor_raw(&["--dry-run", "--only", "nonesuch"]);
+    d.has("info", &["no pending repair step 'nonesuch'", "units-heal", "config-heal", "engine-binary-exec", "nothing was changed"]);
+    // no migration row and no sweep ran for it
+    assert!(!d.text.contains("skipped ["), "no migration rows with --only\n{}", d.text);
+    assert!(!d.text.contains("heal-registry-rows"), "{}", d.text);
+}
+
+/// Only a named step runs: on a legacy interval-only unit `--only units-heal` rewrites the unit and nothing else.
+#[cfg(target_os = "macos")]
+#[test]
+fn repair_only_units_heal_rewrites_just_the_unit() {
+    let mut sc = Sc::new();
+    sc.own_plugin();
+    sc.stub_engine("0.1.0");
+    let unit = sc.put("Library/LaunchAgents/com.anti-hall.engine.plist", b"<plist><dict><key>StartInterval</key><integer>300</integer></dict></plist>");
+    let d = sc.doctor_raw(&["--dry-run", "--only", "units-heal"]);
+    d.has("info", &["units-heal", "would have write"]);
+    assert!(!d.text.contains("skipped ["), "no migration rows with --only\n{}", d.text);
+    assert!(fs::read_to_string(&unit).unwrap().contains("StartInterval"), "a dry run leaves the unit alone");
+}
+
+/// The pristine fallback of the pinned files lags the edited copy on purpose: their extra settings are not reported as unknown, while any
+/// other file's still are.
+#[test]
+fn pinned_pristine_files_do_not_report_unknown_settings() {
+    let mut sc = Sc::new();
+    sc.own_plugin();
+    for (f, key) in [("telemetry.toml", "zz_probe_a"), ("doctor.toml", "zz_probe_b")] {
+        let p = sc.plugin.join("engine/defaults").join(f);
+        let mut t = fs::read_to_string(&p).unwrap();
+        t.push_str(&format!("\n[{key}.extra]\ndoc = \"A setting only the edited copy has.\"\nvalue = 1\n"));
+        fs::write(&p, t).unwrap();
+    }
+    let d = sc.doctor(&[]);
+    d.lacks("telemetry.toml: unknown setting");
+    d.has("info", &["doctor.toml: unknown setting(s)", "zz_probe_b.extra"]);
+}
+
+/// The doctor only advises about the AI credit line: it names the line to add when `~/.claude/settings.json` lacks it, says nothing
+/// when it is set, and never edits the file.
+#[test]
+fn attribution_advice_appears_only_when_the_setting_is_missing_and_never_edits() {
+    let mut sc = Sc::new();
+    sc.own_plugin();
+    let path = sc.put(".claude/settings.json", b"{\"theme\":\"dark\"}");
+    sc.doctor(&[]).has("info", &["AI credit line", "\"attribution\": {\"commit\": \"\", \"pr\": \"\"}", "older Claude Code", "never edits your settings"]);
+    assert_eq!(fs::read_to_string(&path).unwrap(), "{\"theme\":\"dark\"}", "the settings file is untouched");
+    // satisfied: the boolean form and the object form with both bylines empty
+    for ok in ["{\"attribution\":false}", "{\"attribution\":{\"commit\":\"\",\"pr\":\"\"}}"] {
+        fs::write(&path, ok).unwrap();
+        sc.doctor(&[]).lacks("AI credit line");
+    }
+    // still advised: only one of the two bylines is empty, or one is not empty, or the value is true
+    for bad in ["{\"attribution\":{\"commit\":\"\"}}", "{\"attribution\":{\"commit\":\"\",\"pr\":\"x\"}}", "{\"attribution\":true}"] {
+        fs::write(&path, bad).unwrap();
+        sc.doctor(&[]).has("info", &["AI credit line"]);
+    }
+}
+
+/// A foreign hook that only records events (`doctor.foreign_observers`) is information; a foreign Stop gate that can block still warns.
+#[test]
+fn foreign_observer_hooks_are_info_and_a_blocking_gate_still_warns() {
+    let mut sc = Sc::new();
+    sc.own_plugin();
+    let hooks = |script: &str| {
+        let cmd = format!("node ${{CLAUDE_PLUGIN_ROOT}}/hooks/{script}");
+        format!(
+            r#"{{"hooks":{{"PreToolUse":[{{"matcher":"*","hooks":[{{"type":"command","command":"{cmd}"}}]}}],"Stop":[{{"hooks":[{{"type":"command","command":"{cmd}"}}]}}]}}}}"#
+        )
+    };
+    let (obs, gate) = (sc.root.join("observer"), sc.root.join("gate"));
+    for (dir, script) in [(&obs, "emit-event.cjs"), (&gate, "stop-review-gate-hook.mjs")] {
+        fs::create_dir_all(dir.join("hooks")).unwrap();
+        fs::write(dir.join("hooks/hooks.json"), hooks(script)).unwrap();
+    }
+    let p = sc.plugin.clone();
+    let v = plugin_version(&sc);
+    registry(&sc, &[("anti-hall@anti-hall", &p, &v), ("claude-session-driver@m", &obs, "1.0.0"), ("codex@m", &gate, "1.0.0")]);
+    enabled(&sc, &[("anti-hall@anti-hall", true), ("claude-session-driver@m", true), ("codex@m", true)]);
+    let d = sc.doctor(&[]);
+    d.has("info", &["PreToolUse observer", "claude-session-driver", "emit-event.cjs", "never blocks"]);
+    d.has("info", &["Stop observer", "claude-session-driver", "emit-event.cjs"]);
+    d.has("warn", &["foreign Stop hook", "codex", "stop-review-gate-hook.mjs"]);
+    d.has("warn", &["foreign PreToolUse hook on Bash", "codex", "stop-review-gate-hook.mjs"]);
+    assert!(!d.text.lines().any(|l| l.starts_with("  ⚠️ ") && l.contains("emit-event.cjs")), "the observer is never a warning\n{}", d.text);
 }

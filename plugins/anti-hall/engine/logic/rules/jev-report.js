@@ -76,7 +76,7 @@ function jrParseIsoMs(s) {
   return Number.isFinite(t) ? t : null;
 }
 
-function jrPct(n) { return n === null || n === undefined ? 'n/a' : (n * 100).toFixed(1) + '%'; }
+function jrPct(n, digits) { return n === null || n === undefined ? 'n/a' : (n * 100).toFixed(digits === undefined ? 1 : digits) + '%'; }
 
 // ---- arguments ------------------------------------------------------------------------------------------------------------
 
@@ -311,6 +311,9 @@ function jrBuildTransportBreakdown(rows, triageRows, cutoff) {
 
 function jrBuildReport(rows, opts) {
   var now = opts.now;
+  // $/call fallback: jev.json "costPerCall" if set, else the shipped default (jev_report.thr_cost_per_call_default)
+  var costPerCall = Number.isFinite(opts.costPerCall) ? opts.costPerCall : (Number.isFinite(JR_C.cost_per_call_default) ? JR_C.cost_per_call_default : null);
+  var anyRealCost = false;
   var cutoff = Number.isFinite(opts.days) ? now - opts.days * JR_C.day_ms : null;
 
   var byId = new Map();
@@ -364,6 +367,7 @@ function jrBuildReport(rows, opts) {
         agreeHashesFresh: new Map(),
         realCostSum: 0, realCostKnown: false,
         timeouts: 0, fallbackCount: 0, overOneSecFresh: 0,
+        offCalls: 0, errorsByKind: {},
       });
     }
     var bucket = byId.get(row.id);
@@ -375,6 +379,8 @@ function jrBuildReport(rows, opts) {
     if (row.backend === 'cache') bucket.cacheHits++;
     if (row.backend === 'baseline-only' && jrIsHttpFailure(row.reason)) bucket.failures++;
     if (row.reason === 'timeout') bucket.timeouts++;
+    if (row.mode === 'off') bucket.offCalls++;
+    if (row.backend === 'baseline-only' && typeof row.reason === 'string' && row.reason) bucket.errorsByKind[row.reason] = (bucket.errorsByKind[row.reason] || 0) + 1;
     if (row.backend === 'baseline-only' && row.mode === 'on') bucket.fallbackCount++;
     if (row.backend !== 'cache' && Number.isFinite(row.ms) && row.ms > JR_C.over_ms) bucket.overOneSecFresh++;
     if (Number.isFinite(row.costUsd)) {
@@ -464,7 +470,7 @@ function jrBuildReport(rows, opts) {
     var budgetMs = opts.budgetMsById && opts.budgetMsById[bucket.id];
 
     var labeledSample = humanTP + humanFP + autoTP + autoFP;
-    var lowYieldNote = changedRate < JR_C.low_yield_changed_rate ? jrT('low_yield_note', { rate: jrPct(changedRate), pct: JR_C.low_yield_pct }) : null;
+    var lowYieldNote = changedRate < JR_C.low_yield_changed_rate ? jrT('low_yield_note', { rate: jrPct(changedRate, JR_C.low_yield_rate_digits), pct: JR_C.low_yield_pct }) : null;
 
     var isLabelOnly = bucket.labeled > 0 && known === 0 && labeledSample === 0;
     var labelOnlyNote = isLabelOnly
@@ -476,10 +482,18 @@ function jrBuildReport(rows, opts) {
     var keepYieldRate = isChoiceIntegration ? labelWouldChangeRate : changedRate;
 
     var suggestion;
-    if (bucket.calls < JR_C.min_calls) {
+    // every call ran with the integration switched off: Jev was never asked, so there is nothing to judge (#466)
+    var isOff = bucket.calls > 0 && bucket.offCalls === bucket.calls;
+    // no regex comparison, no outcome rows and no labels: nothing can ever say whether Jev helped (#466)
+    var noSignal = !isLabelOnly && known === 0 && labeledSample === 0 && agreeTotal === 0 && bucket.labeled === 0 && totalChangedUnique === 0;
+    if (isOff) {
+      suggestion = jrT('verdict_off', { calls: bucket.calls });
+    } else if (bucket.calls < JR_C.min_calls) {
       suggestion = jrT('verdict_not_enough', { calls: bucket.calls, min: JR_C.min_calls });
     } else if (isLabelOnly) {
       suggestion = jrT('verdict_label_only');
+    } else if (noSignal) {
+      suggestion = jrT('verdict_no_signal');
     } else if (labeledSample < JR_C.min_labeled) {
       suggestion = jrT('verdict_needs_labels', { n: labeledSample, min: JR_C.min_labeled });
     } else if (
@@ -510,6 +524,7 @@ function jrBuildReport(rows, opts) {
     }
 
     var integrationRow = {
+      errorsByKind: bucket.errorsByKind, offCalls: bucket.offCalls,
       id: bucket.id,
       calls: bucket.calls,
       freshCalls: freshCalls,
@@ -526,6 +541,7 @@ function jrBuildReport(rows, opts) {
       changed: changed,
       changedUnique: totalChangedUnique,
       changedRate: changedRate,
+      lowYieldNote: lowYieldNote,
       isLabelOnly: isLabelOnly,
       labelOnlyNote: labelOnlyNote,
       labelDistinctDecisions: bucket.labelHashesAll.size,
@@ -537,7 +553,8 @@ function jrBuildReport(rows, opts) {
       failureRate: failureRate,
       p50: p50,
       p95: p95,
-      costEstimate: Number.isFinite(opts.costPerCall) ? freshCalls * opts.costPerCall : null,
+      // real cost (sum of the rows' costUsd) when any row carries it, else the $/call estimate, else n/a
+      costEstimate: bucket.realCostKnown ? bucket.realCostSum : (costPerCall !== null ? freshCalls * costPerCall : null),
       realCostTotal: bucket.realCostKnown ? bucket.realCostSum : null,
       realCostPerCall: (bucket.realCostKnown && freshCalls > 0) ? bucket.realCostSum / freshCalls : null,
       realCostPerChangedDecision: (bucket.realCostKnown && totalChangedUnique > 0) ? bucket.realCostSum / totalChangedUnique : null,
@@ -552,6 +569,7 @@ function jrBuildReport(rows, opts) {
       suggestion: suggestion,
     };
     integrationRow.headline = jrBuildHeadline(integrationRow, opts.windowLabel || 'window');
+    if (bucket.realCostKnown) anyRealCost = true;
     integrations.push(integrationRow);
   });
 
@@ -559,7 +577,7 @@ function jrBuildReport(rows, opts) {
   var triageAnswers = jrBuildTriageAnswerReport(opts.triageRows || []);
   return {
     generatedAt: new Date(now).toISOString(),
-    costPerCallKnown: Number.isFinite(opts.costPerCall),
+    costPerCallKnown: anyRealCost || costPerCall !== null,
     integrations: integrations,
     triageAnswers: triageAnswers,
     transports: jrBuildTransportBreakdown(rows, opts.triageRows, cutoff),
@@ -654,6 +672,20 @@ function jrBuildTriggerCounts(rows) {
 }
 
 // ---- rendering ------------------------------------------------------------------------------------------------------------
+
+// Failed calls per integration, by kind (`timeout`, `no-key`, `circuit-open`, `http-<status>`, ...) (#466).
+function jrPrintErrorKinds(report) {
+  var lines = [];
+  (report.integrations || []).forEach(function (r) {
+    var kinds = Object.keys(r.errorsByKind || {});
+    if (!kinds.length) return;
+    kinds.sort();
+    lines.push(jrT('errors_by_kind_line', { id: r.id, kinds: kinds.map(function (k) { return k + '=' + r.errorsByKind[k]; }).join(' ') }));
+  });
+  if (!lines.length) return;
+  jrLog(jrT('errors_by_kind_title'));
+  lines.forEach(function (l) { jrLog(l); });
+}
 
 function jrPrintTransports(report) {
   var t = report.transports || [];
@@ -896,7 +928,7 @@ function jrBegin(input) {
   JR_C = input.cfg.thresholds;
   JR_T = input.cfg.texts;
   // decimal numbers ship as strings
-  ['remove_good_outcome_rate', 'remove_failure_rate', 'keep_changed_rate', 'keep_good_outcome_rate', 'low_yield_changed_rate', 'p50', 'p95'].forEach(function (k) { JR_C[k] = Number(JR_C[k]); });
+  ['remove_good_outcome_rate', 'remove_failure_rate', 'keep_changed_rate', 'keep_good_outcome_rate', 'low_yield_changed_rate', 'cost_per_call_default', 'p50', 'p95'].forEach(function (k) { JR_C[k] = Number(JR_C[k]); });
   JR_OUT = [];
   JR_ERR = [];
   JR_EXIT = 0;
@@ -953,6 +985,12 @@ function jevReportRun(input) {
   }
   var humanLabelByHash = jrLatestHumanLabelByHash(jrParseNdjson(input.labels));
 
+  // `--window 24h|7d` (or a number of days) narrows the whole report, not only the cost windows: it is a `--since now-N days`
+  // unless an explicit `--since` was given (#466).
+  if (opts.window && opts.since === null) {
+    var wDays = Object.prototype.hasOwnProperty.call(JR_C.windows, opts.window) && JR_C.windows[opts.window] != null ? JR_C.windows[opts.window] : Number(opts.window);
+    if (Number.isFinite(wDays) && wDays > 0) opts.since = now - wDays * JR_C.day_ms;
+  }
   var rowsBeforeWindow = rows.length;
   rows = jrFilterByTimeWindow(rows, opts);
   triageRows = jrFilterByTimeWindow(triageRows, opts);
@@ -1035,6 +1073,7 @@ function jevReportRun(input) {
     jrPrintWindow(windowInfo);
     jrPrintTable(report);
     jrPrintHeadlines(report);
+    jrPrintErrorKinds(report);
     jrPrintTransports(report);
     jrPrintTriggers(triggers, report);
     jrPrintRollupHistory(rollupHistory);

@@ -8,7 +8,7 @@
 //! | `piAppDb()` | whether the DevSwarm app's database file exists at the path the app uses (`appDbPath`) |
 //! | `piSnap(windowMs, now)` | reads the app database snapshot once for this call: `{file, readable, focused}` (the file exists, a snapshot was read, the id of the workspace selected within `windowMs`) |
 //! | `piWs(id, worktree, now)` | `workspaceFor(snap, { id, worktreePath })` with the fields the table reads: `{id, label, rank, isPinned, builderType, active, archived, finish, brief}`, or `null` |
-//! | `piRow(id, worktree, session, repoKey, now)` | the row's archive state: `{marker, app, superseded, ignored}` (`rowEligibility` without a session id, then `resolveArchiveGate` with the row's) |
+//! | `piRow(id, worktree, session, repoKey, now)` | the row's archive state: `{marker, app, superseded, ignored, closed, why}` (`rowEligibility` without a session id, then `resolveArchiveGate` with the row's) |
 //! | `piActivity(id, worktree, session, lastOutbound, now)` | `{ts, dormant, idleAlive, idleMs}`: the widest activity signal and the liveness state of `rowLivenessState` |
 //! | `piMarker(id, worktree, session)` | `isArchivedWorkspace(home, id, worktree, { sessionId })`: anti-hall's own archive marker names the row archived |
 //! | `piApp(id, worktree, repoKey, now)` | the app side of "archived" for a row (`appArchivedVerdict`, then the supervisor's active-list cache) |
@@ -16,6 +16,7 @@
 //! | `piPid(pid)` | `pidIsAlive(pid)`: `true`, `false` or `null` (no opinion) |
 //! | `piAppChildren(worktree)` | the workspaces the app database lists as open children of the project around `worktree`: `{repo, children: [{id, worktreePath, sessionId}]}` (`appHasLiveChild` before the per-row eligibility) |
 //! | `piFinish(id, worktree, now)` | `{label, key, extras}`: the step-plan label of a working row (`planLib.findPlan` then `finishLabel`), `label` null when the workspace has no plan |
+//! | `piProgress(worktree)` | `{commitMs}`: when the worktree last committed (the supervisor's cached last-commit read), `null` when git cannot say |
 //! | `piMeshId(worktree)` | `{id}`: `resolveContext(worktree, { missingPath: 'ancestor' }).meshId`, `null` outside a checkout |
 //! | `piSessionPid(session)` | `sessionPidAlive(session)`: `true`, `false` (a record names it and every pid is dead) or `null` (no record) |
 //! | `piJev()` | whether the Jev triage of arrivals may be switched on (then a broadcast feed is labelled by Jev, which the engine does not do)
@@ -37,14 +38,41 @@ use std::cell::RefCell;
 use std::collections::HashSet;
 use std::path::Path;
 
+/// One archived marker of the group index: the id its file name gives, its parsed value and the real path of the worktree it names.
+type MarkerRow = (String, OVal, String);
+
 thread_local! {
     /// The app database snapshot of this call: not read yet (`None`), read (`Some`) and the snapshot or none.
     static SNAP: RefCell<Option<Option<Snap>>> = const { RefCell::new(None) };
+    /// The archived markers that name a worktree, in file-name order, as this call first listed `archived_dir` (kept with that
+    /// directory): a row with no marker of its own looks its worktree up here instead of reading every marker again. Dropped when
+    /// the next script call starts, so nothing outlives one invocation.
+    /// The app database's builder states, read once per call for every row's verdict (`None`: not read yet; `Some(None)`: no readable
+    /// database). Dropped when the next script call starts.
+    static APP_STATES: RefCell<Option<std::rc::Rc<Option<Vec<crate::meshw::appdb::State>>>>> = const { RefCell::new(None) };
+    static MARKERS: RefCell<Option<(std::path::PathBuf, Vec<MarkerRow>)>> = const { RefCell::new(None) };
 }
 
-/// A new script call starts: no snapshot is held.
+/// A new script call starts: no snapshot and no marker index is held.
 pub(super) fn reset_call() {
     SNAP.with(|s| *s.borrow_mut() = None);
+    end_call();
+}
+
+/// A script call ended: the marker index and the app states it read are released, not held by an idle worker thread.
+pub(super) fn end_call() {
+    MARKERS.with(|m| *m.borrow_mut() = None);
+    APP_STATES.with(|s| *s.borrow_mut() = None);
+}
+
+/// The app database's builder states of this call, read on first use (a read that fails is not kept: the next row asks again).
+fn app_states(inv: &Inv) -> R<std::rc::Rc<Option<Vec<crate::meshw::appdb::State>>>> {
+    if let Some(held) = APP_STATES.with(|s| s.borrow().clone()) {
+        return Ok(held);
+    }
+    let read = std::rc::Rc::new(crate::meshw::appdb::builder_states(&inv.home, &inv.env, inv.now, false)?.map(|f| f.states));
+    APP_STATES.with(|s| *s.borrow_mut() = Some(read.clone()));
+    Ok(read)
 }
 
 fn unsure() -> String {
@@ -233,23 +261,7 @@ fn gate_superseded(w: &Windows, home: &Path, id: &str, desc_wt: Option<&str>, de
         && let Some(dwt) = desc_wt
     {
         let real = ident::realpath(dwt).unwrap_or_else(|| dwt.to_string());
-        let mut names: Vec<String> = match std::fs::read_dir(&archived_dir) {
-            Ok(rd) => rd.flatten().filter_map(|e| e.file_name().into_string().ok()).collect(),
-            Err(_) => Vec::new(),
-        };
-        names.sort();
-        let mut hits: Vec<(String, OVal)> = Vec::new();
-        for n in names {
-            let Some(cand) = n.strip_suffix(json_suffix()) else { continue };
-            if !is_safe_id(cand) {
-                continue;
-            }
-            let Some(m) = read_val(&archived_dir.join(&n)) else { continue };
-            let Some(mwt) = marker_wt(&m) else { continue };
-            if ident::realpath(&mwt).unwrap_or(mwt) == real {
-                hits.push((cand.to_string(), m));
-            }
-        }
+        let mut hits: Vec<(String, OVal)> = markers_naming(&archived_dir, &real, &marker_wt);
         if !hits.is_empty() {
             let hit = hits.iter().position(|(h, _)| h != id).unwrap_or(0);
             marker = Some(hits.swap_remove(hit).1);
@@ -290,19 +302,93 @@ fn gate_superseded(w: &Windows, home: &Path, id: &str, desc_wt: Option<&str>, de
     Ok(!(newer && live))
 }
 
+/// The archived markers (file-name order) whose worktree is `real`. The directory is listed, and every marker read and its worktree
+/// resolved, once per script call (`MARKERS`): a roster of n rows with m markers read n x m files before.
+fn markers_naming(archived_dir: &Path, real: &str, marker_wt: &dyn Fn(&OVal) -> Option<String>) -> Vec<(String, OVal)> {
+    MARKERS.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        if slot.as_ref().is_none_or(|(dir, _)| dir != archived_dir) {
+            let mut names: Vec<String> = match std::fs::read_dir(archived_dir) {
+                Ok(rd) => rd.flatten().filter_map(|e| e.file_name().into_string().ok()).collect(),
+                Err(_) => Vec::new(),
+            };
+            names.sort();
+            let mut rows: Vec<MarkerRow> = Vec::new();
+            for n in names {
+                let Some(cand) = n.strip_suffix(json_suffix()) else { continue };
+                if !is_safe_id(cand) {
+                    continue;
+                }
+                let Some(m) = read_val(&archived_dir.join(&n)) else { continue };
+                let Some(mwt) = marker_wt(&m) else { continue };
+                let resolved = ident::realpath(&mwt).unwrap_or(mwt);
+                rows.push((cand.to_string(), m, resolved));
+            }
+            *slot = Some((archived_dir.to_path_buf(), rows));
+        }
+        slot.as_ref().map_or_else(Vec::new, |(_, rows)| rows.iter().filter(|(_, _, w)| w == real).map(|(c, m, _)| (c.clone(), m.clone())).collect())
+    })
+}
+
 fn archive_ignored(home: &Path, id: &str) -> bool {
     std::fs::metadata(devswarm_root(home).join(defaults::text("devswarm_parent.archive_ignore_dir")).join(format!("{id}{}", json_suffix()))).is_ok()
 }
 
 fn row_state(inv: &Inv, id: &str, wt: Option<&str>, sid: Option<&str>, repo_key: &str) -> R<Value> {
-    let w = Windows::new(inv, repo_key);
+    let held = app_states(inv)?;
+    let w = Windows::new(inv, repo_key).with_app_states(&held);
     let wt = wt.filter(|s| !s.is_empty());
     // `elig.of({ id, worktreePath, repoKey })` carries no session id: the live descriptor names the occupant
     let marker = marker_archived(&inv.home, id, wt, None)?;
     let app = w.app_archived(id, wt)?;
     let superseded = if marker { false } else { gate_superseded(&w, &inv.home, id, wt, sid, inv.now as f64)? };
     let ignored = is_safe_id(id) && archive_ignored(&inv.home, id);
-    Ok(json!({"marker": marker, "app": app, "superseded": superseded, "ignored": ignored}))
+    let (closed, why) = archived_closed(inv, id, marker, app)?;
+    Ok(json!({"marker": marker, "app": app, "superseded": superseded, "ignored": ignored, "closed": closed, "why": why}))
+}
+
+/// GH #508 (`devswarm.skipArchivedChildren`): whether an explicitly ARCHIVED row is closed for the nudges, and why (`app`, `marker`) or why
+/// not (`descriptor_newer`, `session_unknown`; empty when the row is not archived or the switch is off). The state is read fresh from the
+/// descriptor and the marker; no worktree path is inspected anywhere. A marker alone is no proof (a re-created child with the same id has
+/// one too), so a marker closes the row only when the descriptor is absent, names the same session, or (both without a session id) has
+/// not been written since the marker.
+fn archived_closed(inv: &Inv, id: &str, marker: bool, app: bool) -> R<(bool, &'static str)> {
+    if !crate::checks::guardkit::settings::get_bool(&inv.settings(), defaults::raw("devswarm_parent.sw_skip_archived")) {
+        return Ok((false, ""));
+    }
+    if app {
+        return Ok((true, "app"));
+    }
+    if !marker || !is_safe_id(id) {
+        return Ok((false, ""));
+    }
+    let root = devswarm_root(&inv.home);
+    let name = format!("{id}{}", json_suffix());
+    let marker_path = root.join(defaults::text("mesh_write.dir_archived")).join(&name);
+    let desc_path = root.join(defaults::text("mesh_write.dir_workspaces")).join(&name);
+    let sid_field = defaults::text("mesh_write.field_session_id");
+    let marker_sid = read_val(&marker_path).and_then(|m| real_sid(m.get(sid_field)));
+    let desc = match std::fs::read(&desc_path) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok((true, "marker")),
+        Err(_) => return Ok((false, "session_unknown")),
+        Ok(bytes) => match OVal::parse(&String::from_utf8_lossy(&bytes)) {
+            Some(v) if matches!(v, OVal::Obj(_)) => v,
+            Some(_) => return Ok((true, "marker")),
+            None => return Ok((false, "session_unknown")), // unreadable or half-written: no proof it was not re-created
+        },
+    };
+    let desc_sid = real_sid(desc.get(sid_field));
+    match (marker_sid, desc_sid) {
+        (Some(m), Some(d)) if m == d => Ok((true, "marker")),
+        (None, None) => {
+            let mtime = |p: &Path| std::fs::metadata(p).ok().map(|m| liveness::mtime_ms(&m)).filter(|t| t.is_finite());
+            match (mtime(&marker_path), mtime(&desc_path)) {
+                (Some(m), Some(d)) if d <= m => Ok((true, "marker")),
+                _ => Ok((false, "descriptor_newer")),
+            }
+        }
+        _ => Ok((false, "session_unknown")),
+    }
 }
 
 /// `appHasLiveChild` up to the per-row eligibility: the open, unarchived, non-primary workspaces of the project the working directory
@@ -353,6 +439,15 @@ fn activity_of(inv: &Inv, id: &str, wt: Option<&str>, sid: Option<&str>, last_ou
     }
     let alive = if dormant_act { w.session_alive(sid)? } else { false };
     Ok(json!({"ts": ts, "dormant": dormant_act && !alive, "idleAlive": dormant_act && alive, "idleMs": w.idle_ms()}))
+}
+
+/// The last delivery progress of a worktree: the time of its newest commit. The script reads a workspace's progress as the later of
+/// that and when it first saw the workspace working, because a fresh worktree holds the commit it was cut from, which can be days old.
+fn progress_of(wt: &str) -> R<Value> {
+    if wt.is_empty() || !Path::new(wt).is_dir() {
+        return Ok(json!({"commitMs": Value::Null}));
+    }
+    Ok(json!({"commitMs": liveness::worktree_activity(&crate::dsact::runner::System::configured(), wt)}))
 }
 
 fn mesh_id_of(wt: &str) -> R<Value> {
@@ -565,7 +660,7 @@ fn drift_of(home: &Path, worktree: &str, anchor: &str, current: &str, transcript
 fn fold_of(inv: &Inv, id: &str, present: &[String], app_builder: Option<&str>, repo_key: &str) -> R<Value> {
     let w = Windows::new(inv, repo_key);
     let set: HashSet<String> = present.iter().cloned().collect();
-    let aliases = crate::meshw::common::read_aliases(&inv.home);
+    let aliases = crate::meshw::common::read_aliases(&inv.home, &inv.env);
     Ok(json!({"to": w.fold_target(id, &set, &aliases, app_builder)?}))
 }
 
@@ -633,6 +728,7 @@ pub(super) fn install<'js>(c: &Ctx<'js>, h: &Object<'js>) -> rquickjs::Result<()
         })?,
     )?;
     h.set("piMeshId", Function::new(c.clone(), |wt: String| -> rquickjs::Result<String> { with_settings(|_| answer(mesh_id_of(&wt))) })?)?;
+    h.set("piProgress", Function::new(c.clone(), |wt: String| -> rquickjs::Result<String> { with_settings(|_| answer(progress_of(&wt))) })?)?;
     h.set(
         "piSessionPid",
         Function::new(c.clone(), |sid: String| -> rquickjs::Result<String> {
@@ -665,6 +761,104 @@ pub(super) fn install<'js>(c: &Ctx<'js>, h: &Object<'js>) -> rquickjs::Result<()
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::checks::git::util::Settings;
+    use std::collections::HashMap;
+
+    fn scratch(tag: &str) -> crate::db::TempDir {
+        defaults::init().unwrap();
+        crate::db::TempDir::new(tag)
+    }
+
+    /// Every row of one call gets the verdict a fresh read of the app database gives (the database is read once, not per row), with a
+    /// database, with none, and for ids and worktrees the database does or does not name.
+    #[test]
+    fn app_verdicts_from_states_read_once_equal_a_read_per_row() {
+        let t = scratch("pi-app-states");
+        let db = t.0.join("app.db");
+        let c = rusqlite::Connection::open(&db).unwrap();
+        c.execute_batch("CREATE TABLE builders (id TEXT PRIMARY KEY, isActive INTEGER, isHidden INTEGER, worktreePath TEXT);").unwrap();
+        c.execute_batch(
+            "INSERT INTO builders VALUES ('old', 0, 1, '/gone/old'), ('live', 1, 0, '/live'), ('hidden-live', 1, 1, '/hl'), ('quiet', 0, 0, '/quiet');",
+        )
+        .unwrap();
+        drop(c);
+        let ask = [
+            ("old", Some("/x")),
+            ("live", Some("/live")),
+            ("hidden-live", None),
+            ("quiet", Some("/quiet")),
+            ("nobody", Some("/gone/old")),
+            ("nobody", Some("/nowhere")),
+            ("", Some("/live")),
+            ("nobody", None),
+        ];
+        for with_db in [true, false] {
+            let mut env = HashMap::new();
+            if with_db {
+                env.insert(defaults::text("mesh_write.env_app_db").to_string(), db.to_string_lossy().into_owned());
+            } else {
+                env.insert(defaults::text("mesh_write.env_app_db").to_string(), t.0.join("absent.db").to_string_lossy().into_owned());
+            }
+            let st = Settings { home: t.0.to_string_lossy().into_owned(), env };
+            let inv = inv_of(&st, 1_000.0);
+            reset_call();
+            let held = app_states(&inv).ok().unwrap();
+            let again = app_states(&inv).ok().unwrap();
+            assert!(std::rc::Rc::ptr_eq(&held, &again), "read once per call");
+            for (id, wt) in ask {
+                let direct = Windows::new(&inv, "k").app_archived(id, wt).ok();
+                let cached = Windows::new(&inv, "k").with_app_states(&held).app_archived(id, wt).ok();
+                assert_eq!(direct, cached, "db={with_db} id={id:?} wt={wt:?}");
+            }
+        }
+    }
+
+    /// The marker index of one call names the same markers, in the same order, as a scan of the directory for each row.
+    #[test]
+    fn the_archived_marker_index_equals_a_scan_per_row_and_is_per_call() {
+        let t = scratch("pi-marker-index");
+        let dir = devswarm_root(&t.0).join(defaults::text("mesh_write.dir_archived"));
+        std::fs::create_dir_all(&dir).unwrap();
+        let field = defaults::text("mesh_write.field_worktree_path");
+        let put = |id: &str, wt: Option<&str>| {
+            let body = match wt {
+                Some(w) => format!("{{\"{field}\":\"{w}\"}}"),
+                None => "{}".to_string(),
+            };
+            std::fs::write(dir.join(format!("{id}{}", json_suffix())), body).unwrap();
+        };
+        put("a-one", Some("/wt/a"));
+        put("b-two", Some("/wt/a"));
+        put("c-three", Some("/wt/c"));
+        put("d-none", None);
+        std::fs::write(dir.join(format!("e-broken{}", json_suffix())), "{not json").unwrap();
+        let wt_of = |m: &OVal| match m.get(field) {
+            Some(OVal::Str(s)) if !s.is_empty() => Some(s.clone()),
+            _ => None,
+        };
+        let scan = |real: &str| -> Vec<String> {
+            let mut names: Vec<String> = std::fs::read_dir(&dir).unwrap().flatten().filter_map(|e| e.file_name().into_string().ok()).collect();
+            names.sort();
+            names
+                .into_iter()
+                .filter_map(|n| {
+                    let cand = n.strip_suffix(json_suffix())?.to_string();
+                    let m = read_val(&dir.join(&n))?;
+                    let w = wt_of(&m)?;
+                    (ident::realpath(&w).unwrap_or(w) == real).then_some(cand)
+                })
+                .collect()
+        };
+        reset_call();
+        for real in ["/wt/a", "/wt/c", "/wt/none"] {
+            let indexed: Vec<String> = markers_naming(&dir, real, &wt_of).into_iter().map(|(c, _)| c).collect();
+            assert_eq!(indexed, scan(real), "{real}");
+        }
+        put("f-late", Some("/wt/a"));
+        assert_eq!(markers_naming(&dir, "/wt/a", &wt_of).len(), 2, "within a call the listing taken first stands");
+        reset_call();
+        assert_eq!(markers_naming(&dir, "/wt/a", &wt_of).len(), 3, "the next call lists again");
+    }
 
     /// `realSid(v)` is `String(v)`: an array joins with commas (null as nothing), an object reads as the shipped text, `[]` is empty.
     #[test]
@@ -679,7 +873,7 @@ mod tests {
     /// A transcript whose recorded `cwd` holds a lone-surrogate escape parses in JavaScript; the session still counts.
     #[test]
     fn a_transcript_cwd_with_a_lone_surrogate_escape_still_reads() {
-        let dir = std::env::temp_dir().join(format!("ah-pi-cwd-{}", std::process::id()));
+        let dir = crate::testtmp::path(format!("ah-pi-cwd-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let f = dir.join("t.jsonl");
         std::fs::write(&f, "{\"type\":\"user\",\"cwd\":\"/w/\\ud800x\"}\n").unwrap();
@@ -691,7 +885,7 @@ mod tests {
     /// A project whose store is journal-backed (a backend only a Node older than 22.5 writes) has nothing the engine refreshes: no text.
     #[test]
     fn a_journal_only_store_has_no_refresh_text_instead_of_a_handoff() {
-        let home = std::env::temp_dir().join(format!("ah-pi-derive-{}", std::process::id()));
+        let home = crate::testtmp::path(format!("ah-pi-derive-{}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&home)); // keep: an absent directory is the goal state
         let proj = "proj-a";
         let dir = crate::meshw::union::store_dir(&home, proj);
@@ -700,5 +894,60 @@ mod tests {
         std::fs::write(journal.join("a.ndjson"), "{}\n").unwrap();
         let inv = Inv { home: home.clone(), write_home: home, env: Default::default(), cwd: "/".into(), now: 1, stdin: None, store_override: None };
         assert_eq!(derive_text(&inv, proj).unwrap(), json!({"text": Value::Null}));
+    }
+
+    /// GH #508: the truth table of `archived_closed`. A marker closes a row only with proof it is the same incarnation; the app flag always
+    /// closes; the switch off, or no marker, never does.
+    #[test]
+    fn archived_closed_truth_table() {
+        let home = crate::testtmp::path(format!("ah-pi-closed-{}", std::process::id()));
+        crate::discard::harmless(std::fs::remove_dir_all(&home)); // keep: an absent directory is the goal state
+        let root = devswarm_root(&home);
+        let (arch, ws) = (root.join(defaults::text("mesh_write.dir_archived")), root.join(defaults::text("mesh_write.dir_workspaces")));
+        std::fs::create_dir_all(&arch).unwrap();
+        std::fs::create_dir_all(&ws).unwrap();
+        let env: std::collections::HashMap<String, String> = [("ANTIHALL_DEVSWARM_SKIP_ARCHIVED_CHILDREN".to_string(), "true".to_string())].into();
+        let on = Inv { home: home.clone(), write_home: home.clone(), env, cwd: "/".into(), now: 1, stdin: None, store_override: None };
+        let off = Inv { home: home.clone(), write_home: home.clone(), env: Default::default(), cwd: "/".into(), now: 1, stdin: None, store_override: None };
+        let set = |dir: &Path, body: &str, secs: u64| {
+            let f = dir.join("c1.json");
+            std::fs::write(&f, body).unwrap();
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(&f)
+                .unwrap()
+                .set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_secs(1_700_000_000 + secs))
+                .unwrap();
+        };
+        let closed = |inv: &Inv, marker: bool, app: bool| archived_closed(inv, "c1", marker, app).unwrap();
+        // no descriptor
+        set(&arch, "{\"sessionId\":\"a\"}", 10);
+        assert_eq!(closed(&on, true, false), (true, "marker"), "marker, no descriptor");
+        assert_eq!(closed(&on, false, true), (true, "app"), "the app flag closes");
+        assert_eq!(closed(&on, false, false), (false, ""), "not archived");
+        assert_eq!(closed(&off, true, true), (false, ""), "switch off: never closed");
+        // both sessions
+        set(&ws, "{\"sessionId\":\"a\"}", 99);
+        assert_eq!(closed(&on, true, false), (true, "marker"), "equal session ids close whatever the mtimes");
+        set(&ws, "{\"sessionId\":\"b\"}", 1);
+        assert_eq!(closed(&on, true, false), (false, "session_unknown"), "different sessions: re-created");
+        set(&ws, "{}", 1);
+        assert_eq!(closed(&on, true, false), (false, "session_unknown"), "marker has a session, descriptor none: re-created");
+        set(&arch, "{}", 10);
+        set(&ws, "{\"sessionId\":\"b\"}", 1);
+        assert_eq!(closed(&on, true, false), (false, "session_unknown"), "descriptor has a session, marker none");
+        // neither has a session: the mtimes decide
+        set(&ws, "{}", 10);
+        assert_eq!(closed(&on, true, false), (true, "marker"), "descriptor not newer");
+        set(&ws, "{}", 11);
+        assert_eq!(closed(&on, true, false), (false, "descriptor_newer"), "descriptor written after the marker");
+        // a descriptor that cannot be read proves nothing; one that is valid JSON but no object is no workspace
+        set(&ws, "{\"sessionId\":", 1);
+        assert_eq!(closed(&on, true, false), (false, "session_unknown"), "half-written descriptor");
+        set(&ws, "null", 1);
+        assert_eq!(closed(&on, true, false), (true, "marker"), "not an object");
+        // an unsafe id is never closed by a marker
+        assert_eq!(archived_closed(&on, "../x", true, false).unwrap(), (false, ""));
+        std::fs::remove_dir_all(&home).unwrap();
     }
 }

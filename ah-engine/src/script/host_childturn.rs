@@ -303,17 +303,7 @@ fn plan(inv: &Inv, asked: &str, session: &str) -> R<Planned> {
 /// `registerStoreDescriptor`'s same-worktree test for the registry's id-collision guard (`sameRegistryWorktree`): the paths are equal,
 /// resolve to the same directory, or one is the key-bearing root the other resolves to.
 fn same_registry_worktree(existing: &str, incoming: &str) -> bool {
-    if existing == incoming {
-        return true;
-    }
-    let real = |p: &str| ident::realpath(p).unwrap_or_else(|| ident::resolve_abs(p));
-    let (ra, rb) = (real(existing), real(incoming));
-    if ra == rb {
-        return true;
-    }
-    let root = |p: &str| ident::resolve_context(p, false).ok().and_then(|c| c.worktree_root);
-    let (xa, xb) = (root(existing), root(incoming));
-    xa.as_deref().is_some_and(|x| x == rb) || xb.as_deref().is_some_and(|x| x == ra) || (xa.is_some() && xa == xb)
+    ident::same_registry_worktree(existing, incoming)
 }
 
 /// Perform a planned registration (`registerChildDescriptor`, `registerStoreDescriptor`, then the retirement of the checkout's phantoms).
@@ -574,7 +564,13 @@ fn readers_declared(inv: &Inv, key: &str, id: &str) -> R<bool> {
 }
 
 fn find_plan(inv: &Inv, id: &str, root: &str) -> R<Value> {
-    Ok(match crate::meshw::plan::find_for(inv, id, Some(root).filter(|r| !r.is_empty()))? {
+    // the checkout the turn runs in first; then where `plan set <id>` wrote it (the descriptor's worktree, then the id): a child whose
+    // session cwd moved to another checkout still has its plan (#844 item 6: "no step plan yet" right after `plan set` returned ok)
+    let found = match crate::meshw::plan::find_for(inv, id, Some(root).filter(|r| !r.is_empty()))? {
+        Some(f) => Some(f),
+        None => crate::meshw::plan::find(inv, id)?,
+    };
+    Ok(match found {
         Some(f) => json!({"plan": f.plan.stringify()}),
         None => json!({"plan": null}),
     })
@@ -655,7 +651,7 @@ mod tests {
     }
 
     fn fx(tag: &str) -> Fx {
-        let base = std::env::temp_dir().join(format!("ah-ct-{tag}-{}", std::process::id()));
+        let base = crate::testtmp::path(format!("ah-ct-{tag}-{}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&base)); // keep: a stale directory of an earlier run of this test
         let (home, repo) = (base.join("home"), base.join("repo"));
         std::fs::create_dir_all(&home).unwrap();
@@ -697,6 +693,25 @@ mod tests {
         let key = ident::repo_key_for_worktree(&fx.repo).unwrap().unwrap();
         let store = MeshStore::open(&crate::meshw::union::store_dir(&fx.inv.home, &key).join(defaults::text("mesh_write.store_file"))).unwrap();
         ident::rows_of(&store.reader().roster().unwrap())
+    }
+
+    /// #844 item 6: a plan `plan set <id>` wrote under the child's registered worktree is found when the turn runs in another
+    /// checkout (the session's cwd moved); an id with neither has none.
+    #[test]
+    fn the_plan_of_the_registered_worktree_is_found_from_another_checkout() {
+        let fx = fx("plan-elsewhere");
+        let wt = format!("{}/../wt", fx.repo);
+        std::fs::create_dir_all(&wt).unwrap();
+        assert!(std::process::Command::new("git").current_dir(&wt).args(["init", "-q", "-b", "main"]).status().unwrap().success());
+        let wt = std::path::Path::new(&wt).canonicalize().unwrap().to_string_lossy().into_owned();
+        seed_descriptor(&fx, ID, &format!("{{\"id\":\"{ID}\",\"worktreePath\":{wt:?}}}"));
+        let key = crate::meshw::plan::key_for_worktree(&wt).unwrap().unwrap();
+        let plans = devswarm_root(&fx.inv.home).join(defaults::text("mesh_write.dir_plans"));
+        std::fs::create_dir_all(&plans).unwrap();
+        std::fs::write(plans.join(format!("{key}{}", json_suffix())), r#"{"steps":[{"n":1,"text":"a","status":"done"},{"n":2,"text":"b","status":"doing"}]}"#).unwrap();
+        let got = find_plan(&fx.inv, ID, &fx.repo).unwrap();
+        assert!(got["plan"].as_str().is_some_and(|p| p.contains("\"doing\"")), "{got}");
+        assert_eq!(find_plan(&fx.inv, "child-2", &fx.repo).unwrap(), json!({"plan": null}));
     }
 
     /// 2026-10-23 (a downstream project, `child-turn-defer: prepare:registry-collision`): a registry row of the id at another worktree stopped the

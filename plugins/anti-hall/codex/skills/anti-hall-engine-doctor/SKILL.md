@@ -52,5 +52,6 @@ Health check, repair, migrations and capability scans.
 - `codexNudge.enabled` = true: Where the Codex nudge switch is read from (codexNudge.enabled, default on)
 - `guards.codexQuotaDetect` = true: Where the Codex quota detection switch is read from (guards.codexQuotaDetect, default on)
 - `maintenance.unitsHeal` = "on": The switch of the units heal that update's post-pull stage and `doctor --repair` run,...
+- `maintenance.unitsSupervise` = "on": The switch of the supervised engine unit, maintenance.unitsSupervise: on (the default) writes...
 
 _Generated from the engine registry by `ah-engine docs --format skill`; do not edit by hand._

@@ -5,41 +5,78 @@ name: nightly
 # On failure ONE issue titled "Nightly test failure" is opened or commented on.
 on:
   schedule:
-    - cron: '23 3 * * *'
+    - cron: '23 5 * * *'
   workflow_dispatch:
+    inputs:
+      allocator:
+        description: 'AH_ENGINE_ALLOCATOR for the daemon (jemalloc|system); empty = engine default'
+        required: false
+        default: ''
+      malloc_conf:
+        description: 'jemalloc conf string (_RJEM_MALLOC_CONF); empty = jemalloc defaults'
+        required: false
+        default: ''
+      profile:
+        description: 'turn the daemon profiler on for the load bar; profile.jsonl, nproc and daemon.workers go in the hardening-report artifact'
+        type: boolean
+        required: false
+        default: false
+      bars:
+        description: 'soak.sh BARS filter (space-separated bar prefixes); empty = all bars'
+        required: false
+        default: ''
 
 permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}
+  group: ${{ github.workflow }}-${{ github.event_name == 'workflow_dispatch' && github.run_id || 'scheduled' }}
   cancel-in-progress: false
 
 jobs:
   hardening:
     name: engine hardening bar
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
+    runs-on: macos-latest # Apple silicon; the Linux runner is paused (owner decision 2026-11-10 / #708)
+    timeout-minutes: 90
     defaults:
       run:
         working-directory: ah-engine
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event_name == 'schedule' && 'dev' || '' }}  # a schedule runs the default branch file; build dev, not stale main (a dispatch keeps the selected ref)
       - name: Toolchain
         run: rustup show active-toolchain || rustup toolchain install --profile minimal
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           workspaces: ah-engine
+          shared-key: engine-${{ runner.os }}
+          save-if: false
       - name: hardening bar (scripts/soak.sh)
+        env:
+          AH_ENGINE_ALLOCATOR: ${{ inputs.allocator }}
+          _RJEM_MALLOC_CONF: ${{ inputs.malloc_conf }}
+          BARS: ${{ inputs.bars }}
+          AH_HARDENING_PROFILE: ${{ inputs.profile && '1' || '' }}
         run: ./scripts/soak.sh target/hardening/report.md
       - name: bar report
         if: always()
         run: cat target/hardening/report.md >> "$GITHUB_STEP_SUMMARY"
+      - name: failing bar's daemon log (tail 200)
+        if: failure()
+        run: |
+          for f in target/hardening/fragments/*-daemon.log target/hardening/fragments/*-daemon.stderr; do
+            [ -f "$f" ] && { echo "== $f"; tail -n 200 "$f"; }
+          done
+          true
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()
         with:
           name: hardening-report
-          path: ah-engine/target/hardening/report.md
+          path: |
+            ah-engine/target/hardening/report.md
+            ah-engine/target/hardening/fragments/*-daemon.log
+            ah-engine/target/hardening/**
 
   report:
     name: nightly failure issue
@@ -52,6 +89,8 @@ jobs:
       issues: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event_name == 'schedule' && 'dev' || '' }}  # a schedule runs the default branch file; build dev, not stale main (a dispatch keeps the selected ref)
       - name: open or update the nightly failure issue
         env:
           GH_TOKEN: ${{ github.token }}

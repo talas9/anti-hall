@@ -858,10 +858,12 @@ fn sigkilled_launcher_takes_its_hung_engine_and_run_dir_with_it() {
 fn a_normally_finished_call_leaves_no_watcher_kill_behind() {
     let env = Env::new("nokill");
     let e = engine(&env, "exit 0");
-    let by = std::process::Command::new("sleep")
-        .arg("30")
-        .spawn()
-        .unwrap(); // a bystander in its own group
+    let by = common::Reaped::new(
+        std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .unwrap(),
+    ); // a bystander in its own group
     let o = env.run("UserPromptSubmit", PAYLOAD, Some(&e), &[]);
     assert_eq!(o.code, 0);
     std::thread::sleep(Duration::from_millis(300));
@@ -960,6 +962,52 @@ fn engine_timed_logs_the_wall_time() {
     assert!((400..4000).contains(&wall), "{line}");
 }
 
+/// #969 review: a late wait longer than what is left of the call's outer bound (here 3 s) is shortened to that rest less both kill
+/// graces and the wall margin, so the engine is cut and the fallback runs inside the bound (before: the wait ran to the bound itself
+/// and the backstop fired first); a late wait that fits is untouched.
+#[test]
+fn a_late_wait_past_the_outer_bound_is_shortened_so_the_fallback_runs_inside_it() {
+    let wall_of = |env: &Env| -> u128 {
+        let log = env.log();
+        let line = log
+            .lines()
+            .find(|l| l.contains("engine_timed"))
+            .unwrap_or_else(|| panic!("no engine_timed line: {log}"));
+        line.split("wall_ms=")
+            .nth(1)
+            .and_then(|r| r.split_whitespace().next())
+            .and_then(|n| n.parse().ok())
+            .unwrap_or_else(|| panic!("no wall_ms in {line}"))
+    };
+    let run = |tag: &str, slow: &str| {
+        let env = Env::new(tag);
+        let e = engine(&env, ": >\"$AH_ENGINE_WAIT_FILE\"\nexec sleep 60");
+        let o = env.run(
+            "SessionStart",
+            PAYLOAD,
+            Some(&e),
+            &[
+                ("AH_HOOK_TIMEOUT_S", "3"),
+                ("AH_HOOK_TIMEOUT_MS", "400"),
+                ("AH_ENGINE_SLOW_FALLBACK_MAX_MS", slow),
+            ],
+        );
+        (env, o)
+    };
+    // 9000 ms asked in a 3000 ms bound: cut by 3000 - 400 (two graces) - 500 (the wall margin), never at the bound
+    let (env, o) = run("late-cut", "9000");
+    assert_eq!(o.code, 0, "{}", o.err);
+    assert!(!o.err.contains("time limit"), "the fallback ran, not the backstop: {}", o.err);
+    let wall = wall_of(&env);
+    // the cut (the late wait, both kill graces) is logged before the 3000 ms bound; before #969 review it came at the bound or later
+    assert!(wall < 3000, "the late wait ends with room for the fallback: wall_ms={wall}");
+    // true negative: a 1200 ms late wait fits and is kept whole
+    let (env, o) = run("late-fits", "1200");
+    assert_eq!(o.code, 0, "{}", o.err);
+    let wall = wall_of(&env);
+    assert!(wall >= 1200, "a late wait that fits is not shortened: wall_ms={wall}");
+}
+
 /// `launcher.wall_soft_ms` is a per-event table: an event with an entry is judged against it, an event without one against the
 /// `default` (0 = the fail-fast formula), and the soft_limit line carries the wall time.
 #[test]
@@ -1046,5 +1094,84 @@ fn an_unusable_home_without_tmpdir_keeps_the_slow_reply_and_done_mark() {
         (1, b"ANSWER".as_slice()),
         "{}",
         o.err
+    );
+}
+
+/// A state directory whose plain socket path is over `paths.socket_max_len` has its socket at the engine's private hashed path
+/// (`/tmp/anti-hall-<uid>/<fnv>.sock`). The cold-start wait must watch THAT path: before, it was skipped, so the first guard hook of a
+/// cold start ran the engine at once, before any daemon was up (the engine then missed the 560 ms budget and the call passed unchecked).
+#[test]
+fn the_cold_start_wait_also_runs_for_a_state_dir_with_a_long_socket_path() {
+    let env = Env::new(&format!("long{}", "x".repeat(70)));
+    std::fs::create_dir_all(&env.state).unwrap();
+    let shipped: toml::Table = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../plugins/anti-hall/engine/defaults/engine.toml"),
+    )
+    .unwrap()
+    .parse()
+    .unwrap();
+    let paths = |k: &str| shipped["paths"][k]["value"].clone();
+    let max = paths("socket_max_len").as_integer().unwrap() as usize;
+    let (prefix, ext) = (
+        paths("private_dir_prefix").as_str().unwrap().to_string(),
+        paths("short_socket_ext").as_str().unwrap().to_string(),
+    );
+    let fallback = paths("fallback_tmp").as_str().unwrap().to_string();
+    let sock_file = paths("socket_file").as_str().unwrap().to_string();
+    assert!(env.state.join(&sock_file).as_os_str().len() > max);
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in env.state.to_string_lossy().as_bytes() {
+        h = (h ^ u64::from(*b)).wrapping_mul(0x0100_0000_01b3);
+    }
+    let uid = unsafe { libc::getuid() };
+    let pdir = std::path::PathBuf::from(format!("{fallback}/{prefix}{uid}"));
+    std::fs::create_dir_all(&pdir).unwrap();
+    let sock = pdir.join(format!("{:012x}{ext}", h & 0xffff_ffff_ffff));
+    let _ = std::fs::remove_file(&sock);
+    let kicks = env.path("kicks");
+    let seen = env.path("seen");
+    let e = env.script(
+        "long.sh",
+        &format!(
+            "cat >/dev/null\ncase \"$*\" in *ColdStartKick*) echo kick >>{k}; exit 0;; esac\nif [ -S {s} ]; then echo up >>{o}; else echo down >>{o}; fi\nexit 0",
+            k = kicks.display(),
+            s = sock.display(),
+            o = seen.display()
+        ),
+    );
+    let sock2 = sock.clone();
+    let kicks2 = kicks.clone();
+    let daemon = std::thread::spawn(move || {
+        assert!(wait_until(Duration::from_secs(5), || kicks2.exists()));
+        std::thread::sleep(Duration::from_millis(400));
+        let l = UnixListener::bind(&sock2).unwrap();
+        std::thread::sleep(Duration::from_secs(2));
+        drop(l);
+        let _ = std::fs::remove_file(&sock2);
+    });
+    let mut c = std::process::Command::new(env!("CARGO_BIN_EXE_ah-hook"));
+    c.env_clear()
+        .env("PATH", "/usr/bin:/bin")
+        .env("HOME", &env.home)
+        .env("AH_WRAPPER_TEST", "1")
+        .env("AH_ENGINE_BIN", &e)
+        .arg("PreToolUse")
+        .arg("--plugin-root")
+        .arg(&env.root)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped());
+    let mut ch = c.spawn().unwrap();
+    let mut si = ch.stdin.take().unwrap();
+    let _ = si.write_all(b"{\"session_id\":\"long1\"}");
+    drop(si);
+    let code = ch.wait_with_output().unwrap().status.code();
+    daemon.join().unwrap();
+    assert_eq!(code, Some(0));
+    assert_eq!(
+        env.read("seen").trim(),
+        "up",
+        "the engine ran only once the daemon's hashed socket was up (the cold wait ran)"
     );
 }

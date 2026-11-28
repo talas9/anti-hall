@@ -8,7 +8,7 @@
 
 [lane_waste.wrappers]
 doc = "Commands that only run the next command: per wrapper, the flags that take the next word as their value. Skipped to find the command that really runs (nice -n 10 cargo ..., lockf <file> cargo ...)."
-value = { sudo = ["-u", "-g", "-h", "-p", "-C", "-D", "-R", "-T", "-U"], env = ["-u", "-C", "-S"], nohup = [], command = [], builtin = [], exec = ["-a"], time = ["-f", "-o"], nice = ["-n"], ionice = ["-c", "-n", "-p"], timeout = ["-s", "-k"], stdbuf = ["-i", "-o", "-e"], setsid = [], caffeinate = ["-t", "-w"], lockf = ["-t", "-s", "-k"], flock = ["-w", "-E", "-c"], taskpolicy = ["-c", "-b", "-d", "-g", "-p"] }
+value = { sudo = ["-u", "-g", "-h", "-p", "-C", "-D", "-R", "-T", "-U"], env = ["-u", "-C", "-S"], nohup = [], command = [], builtin = [], exec = ["-a"], time = ["-f", "-o"], nice = ["-n"], ionice = ["-c", "-n", "-p"], timeout = ["-s", "-k", "--signal", "--kill-after"], stdbuf = ["-i", "-o", "-e"], setsid = [], coproc = [], caffeinate = ["-t", "-w"], lockf = ["-t", "-s", "-k"], flock = ["-w", "-E", "-c"], taskpolicy = ["-c", "-b", "-d", "-g", "-p"] }
 
 [lane_waste.wrapper_positional]
 doc = "Per wrapper, how many plain words follow its flags before the command (timeout takes a duration, lockf and flock a lock file)."
@@ -19,8 +19,8 @@ doc = "Shell keywords and punctuation that can stand before a command in the sam
 value = ["{", "!", "if", "then", "else", "elif", "do", "while", "until", "time"]
 
 [lane_waste.shells]
-doc = "Shell interpreters whose -c argument is itself a script, so a command inside it still counts."
-value = ["sh", "bash", "zsh", "dash", "ksh"]
+doc = "Shell interpreters (and su) whose -c argument is itself a script, so a command inside it still counts."
+value = ["sh", "bash", "zsh", "dash", "ksh", "su"]
 
 [lane_waste.script_flag_re]
 doc = "The flag word that tells a shell its next word is a script (sh -c '...'). Regular expression (Rust syntax)."
@@ -30,9 +30,29 @@ value = '^-[A-Za-z]*c[A-Za-z]*$'
 doc = "Shell words that open a loop; a command inside one runs repeatedly."
 value = ["while", "until", "for"]
 
+[lane_waste.poll_openers]
+doc = "Loop openers whose loop runs until a condition holds, so its length is unknown (a poll). A sleep inside one is judged by the loop's bound (a timeout wrapper or the Bash tool timeout); a sleep inside any other loop (a for over a list) is judged by its own length."
+value = ["while", "until"]
+
 [lane_waste.loop_closer]
 doc = "The shell word that closes a loop."
 value = "done"
+
+[lane_waste.group_opener]
+doc = "The shell word that opens a brace group; read only so that `coproc NAME { ...; }` finds the command after the coprocess name."
+value = "{"
+
+[lane_waste.coproc_words]
+doc = "Words that start a coprocess (`coproc NAME { ...; }`): the name after the word is not the command. The coprocess itself is a detach word (lane_waste.detach_words)."
+value = ["coproc"]
+
+[lane_waste.detach_words]
+doc = "Words that detach a command when they are the command word or a wrapper word in front of it (never as a substring of a path or argument): nohup, setsid, coproc, disown. Besides these, a lone `&` ending the list element (not `&&`, `&>`, `>&`, `|&`, `2>&1`) and a process substitution `<(` `>(` detach. Only the timeout-wrapped segment is judged (and, inside it, the script of a shell -c or eval); a detached command may outlive its `timeout`, so no timeout counts as a bound (fail closed). Quoted text outside such a script (URLs, grep patterns) is inert."
+value = ["nohup", "setsid", "coproc", "disown"]
+
+[lane_waste.eval_words]
+doc = "Words whose arguments are themselves a script (`eval 'cmd'`): read like `sh -c`, so a command inside still counts."
+value = ["eval"]
 
 [lane_waste.max_depth]
 doc = "How deep the guards follow nested sh -c scripts before they stop looking."
@@ -49,19 +69,19 @@ max = 1000
 # ---- lane-test-guard (suite-scale tests) -------------------------------------------------------------------
 
 [lane_test.sw]
-doc = "Switch guards.laneTestGuard (default on): off lets a subagent run suite-scale test commands."
+doc = "Default on; off lets a subagent run suite-scale test commands."
 value = { section = "guards", key = "laneTestGuard", type = "boolean", env = "ANTIHALL_LANE_TEST_GUARD", option = "", default = true }
 
 [lane_test.sw_allow_suites]
-doc = "Switch guards.allowTestSuites (default off): on lets a subagent run suite-scale test commands (the lane-test-guard stands aside)."
+doc = "Lets a subagent run test suites. Switch guards.allowTestSuites (default off): on lets a subagent run suite-scale test commands (the lane-test-guard stands aside)."
 value = { section = "guards", key = "allowTestSuites", type = "boolean", env = "ANTIHALL_ALLOW_TEST_SUITES", option = "", default = false }
 
 [lane_test.sw_policy]
-doc = "Setting guards.testPolicy (none, targeted or suites; default targeted): none blocks EVERY test-runner command from a subagent, targeted blocks only suite-scale runs (the original behaviour), suites lets every test run."
+doc = "Test policy for subagents. Setting guards.testPolicy (none, targeted or suites; default targeted): none blocks EVERY test-runner command from a subagent, targeted blocks only suite-scale runs (the original behaviour), suites lets every test run."
 value = { section = "guards", key = "testPolicy", env = "ANTIHALL_TEST_POLICY", aliases = [], option = "", default = "targeted", values = ["none", "targeted", "suites"] }
 
 [lane_test.sw_policy_main]
-doc = "Switch guards.testPolicyMainThread (default off): on makes testPolicy none apply to the main session as well, not only to subagents."
+doc = "On makes testPolicy none apply to the main session too (default off)."
 value = { section = "guards", key = "testPolicyMainThread", type = "boolean", env = "ANTIHALL_TEST_POLICY_MAIN", option = "", default = false }
 
 [lane_test.policy_none]
@@ -115,7 +135,7 @@ value = "lane-test-guard"
 
 [lane_test.summary]
 doc = "One-line description of the lane-test-guard check in the generated reference."
-value = "PreToolUse on Bash, subagents only: blocks suite-scale test commands (cargo test or nextest without a narrowing filter, --workspace, node --test without a file, test.sh, replay and soak runners) unless guards.allowTestSuites is on; cargo check and a filtered single-module test stay allowed. With guards.testPolicy = none it blocks EVERY test-runner command from a subagent (and the main session when guards.testPolicyMainThread is on)."
+value = "Keep subagent tests within their lane. PreToolUse on Bash, subagents only: blocks suite-scale test commands (cargo test or nextest without a narrowing filter, --workspace, node --test without a file, test.sh, replay and soak runners) unless guards.allowTestSuites is on; cargo check and a filtered single-module test stay allowed. With guards.testPolicy = none it blocks EVERY test-runner command from a subagent (and the main session when guards.testPolicyMainThread is on)."
 
 [lane_test.cargo_commands]
 doc = "Command names whose first plain word is a cargo subcommand (cargo test, cargo +nightly nextest run)."
@@ -154,16 +174,40 @@ doc = "Flags that make cargo test only build the test binaries and run nothing: 
 value = ["--no-run", "--list", "--help", "-h"]
 
 [lane_test.rules]
-doc = "Non-cargo suite-scale test commands, one row per runner: `re` is a regular expression (Rust syntax) matched against the command words joined by a space (wrapper words already removed); `unless_re` is an optional second expression: when it also matches, the command is narrowed to one file or module and stays allowed; `label` names the runner in the block message."
+doc = "Non-cargo suite-scale test commands, one row per runner: `re` is a regular expression (Rust syntax) matched against the command words joined by a space (wrapper words already removed); `unless_re` is an optional second expression: when it also matches, the command is narrowed to one file or module and stays allowed; `label` names the runner in the block message; `shared_lock` (default true when absent) says whether the runner queues behind the shared build lock: a row with `shared_lock = false` (node --test, npm/pnpm/yarn/bun test, pytest, flutter test) holds no shared lock, so it is not blocked while lane_test.sw_lock_bound_only is on (#621)."
 value = [
-  { id = "node-test", label = "node --test", re = '^(?:node|nodejs)\s(?:\S+\s)*--test(?:\s|$)', unless_re = '\.(?:[cm]?js|ts|mts|cts)(?:\s|$)' },
-  { id = "npm-test", label = "npm test", re = '^(?:npm|pnpm|yarn|bun)\s(?:run\s)?(?:test|test:\S+)(?:\s|$)' },
+  { id = "node-test", label = "node --test", shared_lock = false, re = '^(?:node|nodejs)\s(?:\S+\s)*--test(?:\s|$)', unless_re = '\.(?:[cm]?js|ts|mts|cts)(?:\s|$)' },
+  { id = "npm-test", label = "npm test", shared_lock = false, re = '^(?:npm|pnpm|yarn|bun)\s(?:run\s)?(?:test|test:\S+)(?:\s|$)' },
   { id = "test-sh", label = "test.sh", re = '^(?:\S*/)?test\.sh(?:\s|$)' },
   { id = "make-test", label = "make test", re = '^make\s(?:\S+\s)*?(?:test|tests|check|gate|replay|soak)(?:\s|$)' },
-  { id = "pytest", label = "pytest", re = '^(?:python3?\s-m\s)?pytest(?:\s|$)', unless_re = '(?:\.py|::)\S*(?:\s|$)' },
-  { id = "flutter-test", label = "flutter test", re = '^flutter\stest(?:\s|$)', unless_re = '\.dart(?:\s|$)' },
+  { id = "pytest", label = "pytest", shared_lock = false, re = '^(?:python3?\s-m\s)?pytest(?:\s|$)', unless_re = '(?:\.py|::)\S*(?:\s|$)' },
+  { id = "flutter-test", label = "flutter test", shared_lock = false, re = '^flutter\stest(?:\s|$)', unless_re = '\.dart(?:\s|$)' },
   { id = "replay-soak", label = "replay or soak runner", re = '^(?:\S*/)?(?:[\w.-]*[-_.])?(?:replay|soak)(?:[-_.][\w.-]*)?(?:\s|$)' },
 ]
+
+[lane_test.sw_lock_bound_only]
+doc = "Default on: only a suite runner that queues behind a shared build lock (cargo test or nextest, make test, test.sh, replay and soak runners) is blocked for a subagent; a lock-free runner (a lane_test.rules row with shared_lock = false: node --test, npm/pnpm/yarn/bun test, pytest, flutter test) is allowed. Off blocks every suite-scale runner as before."
+value = { section = "guards", key = "laneTestLockBoundOnly", type = "boolean", env = "ANTIHALL_LANE_TEST_LOCK_BOUND_ONLY", option = "", default = true }
+
+[lane_test.shared_lock_key]
+doc = "The lane_test.rules field that says whether a runner queues behind the shared build lock."
+value = "shared_lock"
+
+[lane_test.label_shared_lock_yes]
+doc = "Counter label `shared_lock` of a lane-test block on a runner that queues behind the shared build lock."
+value = "true"
+
+[lane_test.label_shared_lock_no]
+doc = "Counter label `shared_lock` of a lane-test block on a lock-free runner (only when lane_test.sw_lock_bound_only is off)."
+value = "false"
+
+[metric.lane_test_block]
+doc = "Suite-scale test runs blocked for a subagent by lane-test-guard, by runner label and whether the runner queues behind the shared build lock (#621)."
+value = { kind = "counter", unit = "blocks", labels = ["label", "shared_lock"] }
+
+[metric.lane_test_lockfree_allowed]
+doc = "Suite-scale runs of a lock-free runner allowed because lane_test.sw_lock_bound_only is on, by runner label (#621)."
+value = { kind = "counter", unit = "calls", labels = ["label"] }
 
 [lane_test.msg_what]
 doc = "Heading of the block. Placeholders: {cmd} the command as it was written, {label} the kind of test run."
@@ -175,7 +219,7 @@ value = "Full suites can queue behind a shared build lock and waste the work bud
 
 [lane_test.msg_instead]
 doc = "What to do instead."
-value = "Run a build check or one allowed module test, then report the result."
+value = "Run a build check or one allowed module test, then report the result. The full suite: integration gate only."
 
 [lane_test.msg_override]
 doc = "How the user can lift the block (shown on the last line)."
@@ -184,7 +228,7 @@ value = "tell the agent \"skip lane-test-guard\""
 # ---- queued-wait-guard (background builds and sleep loops) -------------------------------------------------
 
 [queued_wait.sw]
-doc = "Switch guards.queuedWaitGuard (default on): off lets a subagent run heavy commands in the background and poll with sleep loops."
+doc = "Off lets a subagent poll background work with sleep loops."
 value = { section = "guards", key = "queuedWaitGuard", type = "boolean", env = "ANTIHALL_QUEUED_WAIT_GUARD", option = "", default = true }
 
 [queued_wait.guard_name]
@@ -193,7 +237,7 @@ value = "queued-wait-guard"
 
 [queued_wait.summary]
 doc = "One-line description of the queued-wait-guard check in the generated reference."
-value = "PreToolUse on Bash, subagents only: blocks a build or test command started with run_in_background (run it in the foreground under the lock, where waiting costs nothing) and a sleep or until/while sleep poll loop above the configured seconds."
+value = "Block background builds and busy polling. PreToolUse on Bash, subagents only: blocks a build or test command started with run_in_background (run it in the foreground under the lock, where waiting costs nothing) and a sleep or until/while sleep poll loop above the configured seconds."
 
 [queued_wait.heavy_res]
 doc = "Heavy commands: regular expressions (Rust syntax) matched against the command words joined by a space (wrapper words already removed). One of them matching a command started with run_in_background blocks it."
@@ -229,6 +273,51 @@ max = 3600
 doc = "Seconds per duration suffix of sleep (s, m, h, d); a bare number is seconds."
 value = { s = 1, m = 60, h = 3600, d = 86400 }
 
+[queued_wait.duration_infinity_words]
+doc = "Words `sleep` reads as an endless wait (GNU: inf, infinity; case ignored). They parse as an unbounded duration and are blocked."
+value = ["inf", "infinity"]
+
+[queued_wait.unbounded_label]
+doc = "What the block message shows as the duration when a sleep's duration is unbounded or cannot be read (a variable, a typo, infinity). An unreadable duration is judged as an unbounded wait."
+value = "unbounded"
+
+[queued_wait.bounded_max_s]
+doc = "The longest bounded foreground wait or watch a subagent may run (a wait or watch under an explicit `timeout N`, N at most this). 540 s is under the Bash tool's 600 s timeout ceiling, with a minute of margin for the command's own start and exit; an idle subagent is not woken by a completion notification, so a wait it can finish in the foreground is the only one that keeps its path to the result."
+value = 540
+unit = "s"
+min = 1
+max = 600
+
+[queued_wait.timeout_commands]
+doc = "Wrapper commands that bound the wait of the command after them (`timeout 170 gh pr checks --watch`); their duration word is read as the bound. Flags that take a value are read from lane_waste.wrappers."
+value = ["timeout"]
+
+[queued_wait.timeout_signal_flags]
+doc = "The `timeout` flags that choose the signal it sends at the limit (-s, --signal)."
+value = ["-s", "--signal"]
+
+[queued_wait.timeout_kill_flags]
+doc = "The `timeout` flags that add a follow-up kill after the limit (-k, --kill-after); with one, even a non-terminating first signal still ends the command, so the timeout bounds it."
+value = ["-k", "--kill-after"]
+
+[queued_wait.kill_after_grace_s]
+doc = "Seconds of `timeout --kill-after` that are margin, not added to the bound of a `timeout` that sends a non-terminating signal (`-s 0 -k 5 540` counts as 540). A larger kill-after counts only its excess: the command lives for the duration plus the kill-after. A kill-after of 0 or one that does not parse adds no escalation, so such a timeout bounds nothing."
+value = 10
+unit = "s"
+min = 0
+max = 60
+
+[queued_wait.timeout_silent_signals]
+doc = "Signals (names without SIG, or numbers) that do not terminate the command: `timeout -s 0` sends nothing, CONT/STOP/TSTP/CHLD/WINCH/URG only resume, suspend or notify. A `timeout` that sends one of them bounds nothing unless it also has --kill-after. Numbers cover Linux and macOS."
+value = ["0", "CONT", "STOP", "TSTP", "TTIN", "TTOU", "CHLD", "CLD", "WINCH", "URG", "16", "17", "18", "19", "20", "21", "22", "23", "28"]
+
+[queued_wait.watch_res]
+doc = "Watch commands that wait for a result: regular expressions (Rust syntax) matched against the command words joined by a space. One of them under a `timeout` above queued_wait.bounded_max_s is blocked; within the limit or without a timeout it is allowed (it ends when the result is in)."
+value = [
+  '^gh\s+pr\s+checks\b.*--watch',
+  '^gh\s+run\s+watch(?:\s|$)',
+]
+
 [queued_wait.bg_field]
 doc = "The Bash tool input field that starts the command in the background."
 value = "run_in_background"
@@ -241,9 +330,21 @@ value = "a helper cannot start this build or test in the background: {cmd}"
 doc = "Heading of the block on a long sleep. Placeholders: {cmd} the command as it was written, {secs} its total seconds, {max} the limit."
 value = "this wait is too long ({secs}s; limit {max}s): {cmd}"
 
+[queued_wait.msg_what_detach]
+doc = "Heading of the block on a wait that detaches inside a timeout (the timeout does not bound a detached command). Placeholder: {cmd} the command as it was written."
+value = "this wait detaches work, so the timeout around it bounds nothing: {cmd}"
+
 [queued_wait.msg_what_loop]
 doc = "Heading of the block on a sleep inside a poll loop. Placeholders: {cmd} the command as it was written, {secs} its seconds per round, {max} the limit."
 value = "this poll loop waits too long ({secs}s per round; limit {max}s): {cmd}"
+
+[queued_wait.msg_what_over]
+doc = "Heading of the block on a bounded wait or watch above the limit. Placeholders: {cmd} the command as it was written, {secs} its timeout in seconds, {max} the limit."
+value = "this bounded wait is over the limit ({secs}s; limit {max}s): {cmd}"
+
+[queued_wait.msg_instead_over]
+doc = "What to do instead of a bounded wait above the limit. Placeholders: {max} the part length (cache_wait.split_s)."
+value = "Use {max}s or less, or SendMessage lead \"waiting on <X>; wake me when done\", then end turn."
 
 [queued_wait.msg_why]
 doc = "Why background heavy commands and poll loops are blocked."
@@ -253,9 +354,13 @@ value = "Repeated checks while waiting use the work budget without making progre
 doc = "What to do instead of a background heavy command."
 value = "Run the command in the foreground under the shared lock."
 
+[queued_wait.msg_instead_detach]
+doc = "What to do instead of a wait that detaches inside a timeout. Placeholders: {max} the part length (cache_wait.split_s). Kept under 115 characters so it stays inline."
+value = "Run the wait attached: `timeout {max} gh pr checks --watch`, or SendMessage lead \"waiting on <X>; wake me when done\"."
+
 [queued_wait.msg_instead_sleep]
-doc = "What to do instead of a long sleep or poll loop."
-value = "End the turn and wait for the completion notification."
+doc = "What to do instead of a long sleep or poll loop. Placeholders: {max} the part length (cache_wait.split_s). Kept under 115 characters so it stays inline (longer text is moved to a details file). It never says to simply end the turn: an idle subagent is not woken by a notification."
+value = "Run `timeout {max} gh pr checks --watch`, or SendMessage lead \"waiting on <X>; wake me when done\", then end turn."
 
 [queued_wait.msg_override]
 doc = "How the user can lift the block (shown on the last line)."
@@ -266,7 +371,7 @@ value = "tell the agent \"skip queued-wait-guard\""
 # thread as well as subagents: a find or rg rooted at / or ~ wakes Spotlight and the network volumes and pushed the load to 170 once.
 
 [wide_search.sw_allow]
-doc = "Switch guards.allowWideSearch (default off): on lets every agent run whole-disk searches (the wide-search-guard stands aside)."
+doc = "On lets every agent run whole-disk searches (default off)."
 value = { section = "guards", key = "allowWideSearch", type = "boolean", env = "ANTIHALL_ALLOW_WIDE_SEARCH", option = "", default = false }
 
 [wide_search.guard_name]
@@ -275,7 +380,7 @@ value = "wide-search-guard"
 
 [wide_search.summary]
 doc = "One-line description of the wide-search-guard check in the generated reference."
-value = "PreToolUse on Bash, every agent (subagents and the main thread): blocks a whole-disk search (find, bfs, fd, rg, ag, ack, grep -r, mdfind without -onlyin) rooted at a forbidden root (/, ~, $HOME, /Users, /Volumes, /home), named or implied by a cd or the working directory, unless guards.allowWideSearch is on or the root is in the allow list; a search under a project directory stays allowed."
+value = "Keep searches scoped to a project. PreToolUse on Bash, every agent (subagents and the main thread): blocks a whole-disk search (find, bfs, fd, rg, ag, ack, grep -r, mdfind without -onlyin) rooted at a forbidden root (/, ~, $HOME, /Users, /Volumes, /home), named or implied by a cd or the working directory, unless guards.allowWideSearch is on or the root is in the allow list; a search under a project directory stays allowed."
 
 [wide_search.forbidden_roots]
 doc = "Search roots that are blocked when a search starts exactly there (a subdirectory of one is fine). `~`, `$HOME` and `${HOME}` stand for the home directory."
@@ -306,8 +411,30 @@ doc = "A path word the guard cannot resolve (a glob or a variable): it is not ju
 value = '[*?\[\]{}$`]'
 
 [wide_search.commands]
-doc = "The search commands, per command name: `style` is paths-first (find, bfs: paths come first, then the expression; `skip_flags` are leading flags without a value), pattern-first (rg, fd, grep: flags, a pattern, then paths; `value_flags` take the next word, `pattern_flags` supply the pattern so every plain word is a path, `no_pattern_flags` mean there is no pattern; `needs_recursive` with `recursive_re` judges the command only when a recursive flag is present, as for grep) or spotlight (mdfind: `scope_flag` names the directory searched, none means the whole disk)."
-value = { find = { style = "paths-first", skip_flags = ["-H", "-L", "-P"] }, bfs = { style = "paths-first", skip_flags = ["-H", "-L", "-P", "-E", "-X", "-s", "-S"] }, rg = { style = "pattern-first", value_flags = ["-g", "--glob", "--iglob", "-t", "-T", "--type", "--type-not", "-m", "--max-count", "-A", "-B", "-C", "--after-context", "--before-context", "--context", "-j", "--threads", "-M", "--max-columns", "--max-depth", "-d", "--max-filesize", "--ignore-file", "--sort", "--sortr", "-r", "--replace", "--colors", "--color", "--engine", "--path-separator", "--pre", "--pre-glob", "-E", "--encoding", "--type-add", "--type-clear"], pattern_flags = ["-e", "--regexp", "-f", "--file"], no_pattern_flags = ["--files", "--type-list"] }, fd = { style = "pattern-first", value_flags = ["-e", "--extension", "-E", "--exclude", "-t", "--type", "-d", "--max-depth", "--min-depth", "--exact-depth", "-x", "--exec", "-X", "--exec-batch", "-S", "--size", "-c", "--color", "-j", "--threads", "--changed-within", "--changed-before", "-o", "--owner", "--search-path", "--base-directory", "--ignore-file", "--format", "--max-results", "--and"], no_pattern_flags = [] }, fdfind = { style = "pattern-first", value_flags = ["-e", "--extension", "-E", "--exclude", "-t", "--type", "-d", "--max-depth", "-x", "--exec", "-X", "--exec-batch", "-S", "--size", "-c", "--color", "-j", "--threads"], no_pattern_flags = [] }, ag = { style = "pattern-first", value_flags = ["-G", "--file-search-regex", "-g", "-A", "-B", "-C", "--ignore", "-m", "--max-count", "--depth", "--workers", "-p", "--path-to-ignore", "--color-match", "--color-line-number", "--color-path"], pattern_flags = [], no_pattern_flags = [] }, ack = { style = "pattern-first", value_flags = ["-A", "-B", "-C", "-m", "--max-count", "--type", "--ignore-dir", "--ignore-file", "--pager", "--color-match"], pattern_flags = [], no_pattern_flags = [] }, grep = { style = "pattern-first", needs_recursive = true, recursive_re = '^(?:-[A-Za-z]*[rR][A-Za-z]*|--recursive|--dereference-recursive)$', value_flags = ["-m", "--max-count", "-A", "-B", "-C", "--after-context", "--before-context", "--context", "-d", "--directories", "-D", "--devices", "--include", "--exclude", "--exclude-dir", "--include-dir", "--exclude-from", "--label", "--color", "--colour", "-T"], pattern_flags = ["-e", "--regexp", "-f", "--file"], no_pattern_flags = [] }, egrep = { style = "pattern-first", needs_recursive = true, recursive_re = '^(?:-[A-Za-z]*[rR][A-Za-z]*|--recursive|--dereference-recursive)$', value_flags = ["-m", "-A", "-B", "-C", "--include", "--exclude", "--exclude-dir"], pattern_flags = ["-e", "-f"], no_pattern_flags = [] }, fgrep = { style = "pattern-first", needs_recursive = true, recursive_re = '^(?:-[A-Za-z]*[rR][A-Za-z]*|--recursive|--dereference-recursive)$', value_flags = ["-m", "-A", "-B", "-C", "--include", "--exclude", "--exclude-dir"], pattern_flags = ["-e", "-f"], no_pattern_flags = [] }, ugrep = { style = "pattern-first", needs_recursive = true, recursive_re = '^(?:-[A-Za-z]*[rR][A-Za-z]*|--recursive|--dereference-recursive)$', value_flags = ["-m", "-A", "-B", "-C", "--include", "--exclude", "--exclude-dir", "-g", "-O", "-t"], pattern_flags = ["-e", "-f"], no_pattern_flags = [] }, ug = { style = "pattern-first", needs_recursive = true, recursive_re = '^(?:-[A-Za-z]*[rR][A-Za-z]*|--recursive|--dereference-recursive)$', value_flags = ["-m", "-A", "-B", "-C", "--include", "--exclude", "--exclude-dir", "-g", "-O", "-t"], pattern_flags = ["-e", "-f"], no_pattern_flags = [] }, mdfind = { style = "spotlight", scope_flag = "-onlyin" } }
+doc = "The search commands, per command name: `style` is paths-first (find, bfs: paths come first, then the expression; `skip_flags` are leading flags without a value), pattern-first (rg, fd, grep: flags, a pattern, then paths; `value_flags` take the next word, `pattern_flags` supply the pattern so every plain word is a path, `no_pattern_flags` mean there is no pattern; `needs_recursive` with `recursive_re` judges the command only when a recursive flag is present, as for grep; `depth_flags` name the flags whose value is a depth limit, see wide_search.depth_allow_max; the last depth flag wins; `safe_flags` (find, bfs, rg, fd, fdfind) is the ALLOWLIST the depth bound rests on: the bound applies only when every flag word of the command is the depth flag or one listed here, each with how it takes its value (`0` = none, else `sep`, `att`, `eq` joined by `+`: a separate word, attached as in `-td`, or after `=`); any other flag, an unknown cluster letter, an unlisted `=` form, `--`, or a stray word after the expression voids the bound, so the search is judged as if it had no depth flag; `root_flags` name flags (fd --search-path, --base-directory) whose value is a search root judged like a path) or spotlight (mdfind: `scope_flag` names the directory searched, none means the whole disk)."
+value = { find = { style = "paths-first", depth_flags = ["-maxdepth"], skip_flags = ["-H", "-L", "-P"], safe_flags = { "-H" = "0", "-L" = "0", "-P" = "0", "-print" = "0", "-name" = "sep", "-iname" = "sep", "-path" = "sep", "-type" = "sep", "-mindepth" = "sep" } }, bfs = { style = "paths-first", depth_flags = ["-maxdepth"], skip_flags = ["-H", "-L", "-P", "-E", "-X", "-s", "-S"], safe_flags = { "-H" = "0", "-L" = "0", "-P" = "0", "-print" = "0", "-name" = "sep", "-iname" = "sep", "-path" = "sep", "-type" = "sep", "-mindepth" = "sep" } }, rg = { style = "pattern-first", depth_flags = ["--max-depth", "-d"], safe_flags = { "-n" = "0", "-i" = "0", "-l" = "0", "-c" = "0", "-w" = "0", "-F" = "0", "--hidden" = "0", "-g" = "sep+att", "-t" = "sep+att", "-e" = "sep+att", "-A" = "sep+att", "-B" = "sep+att", "-C" = "sep+att", "-m" = "sep+att" }, value_flags = ["-g", "--glob", "--iglob", "-t", "-T", "--type", "--type-not", "-m", "--max-count", "-A", "-B", "-C", "--after-context", "--before-context", "--context", "-j", "--threads", "-M", "--max-columns", "--max-depth", "-d", "--max-filesize", "--ignore-file", "--sort", "--sortr", "-r", "--replace", "--colors", "--color", "--engine", "--path-separator", "--pre", "--pre-glob", "-E", "--encoding", "--type-add", "--type-clear", "--context-separator", "--field-match-separator", "--field-context-separator", "--hostname-bin", "--hyperlink-format", "--dfa-size-limit", "--regex-size-limit"], pattern_flags = ["-e", "--regexp", "-f", "--file"], no_pattern_flags = ["--files", "--type-list"] }, fd = { style = "pattern-first", depth_flags = ["--max-depth", "-d"], safe_flags = { "-H" = "0", "-I" = "0", "-a" = "0", "-l" = "0", "-g" = "0", "--hidden" = "0", "-t" = "sep+att", "-e" = "sep+att" }, root_flags = ["--base-directory", "--search-path"], value_flags = ["-e", "--extension", "-E", "--exclude", "-t", "--type", "-d", "--max-depth", "--min-depth", "--exact-depth", "-x", "--exec", "-X", "--exec-batch", "-S", "--size", "-c", "--color", "-j", "--threads", "--changed-within", "--changed-before", "-o", "--owner", "--search-path", "--base-directory", "--ignore-file", "--format", "--max-results", "--and"], no_pattern_flags = [] }, fdfind = { style = "pattern-first", depth_flags = ["--max-depth", "-d"], safe_flags = { "-H" = "0", "-I" = "0", "-a" = "0", "-l" = "0", "-g" = "0", "--hidden" = "0", "-t" = "sep+att", "-e" = "sep+att" }, root_flags = ["--base-directory", "--search-path"], value_flags = ["-e", "--extension", "-E", "--exclude", "-t", "--type", "-d", "--max-depth", "--min-depth", "--exact-depth", "-x", "--exec", "-X", "--exec-batch", "-S", "--size", "-c", "--color", "-j", "--threads", "--changed-within", "--changed-before", "-o", "--owner", "--search-path", "--base-directory", "--ignore-file", "--format", "--max-results", "--and"], no_pattern_flags = [] }, ag = { style = "pattern-first", value_flags = ["-G", "--file-search-regex", "-g", "-A", "-B", "-C", "--ignore", "-m", "--max-count", "--depth", "--workers", "-p", "--path-to-ignore", "--color-match", "--color-line-number", "--color-path"], pattern_flags = [], no_pattern_flags = [] }, ack = { style = "pattern-first", value_flags = ["-A", "-B", "-C", "-m", "--max-count", "--type", "--ignore-dir", "--ignore-file", "--pager", "--color-match"], pattern_flags = [], no_pattern_flags = [] }, grep = { style = "pattern-first", needs_recursive = true, recursive_re = '^(?:-[A-Za-z]*[rR][A-Za-z]*|--recursive|--dereference-recursive)$', value_flags = ["-m", "--max-count", "-A", "-B", "-C", "--after-context", "--before-context", "--context", "-d", "--directories", "-D", "--devices", "--include", "--exclude", "--exclude-dir", "--include-dir", "--exclude-from", "--label", "--color", "--colour", "-T"], pattern_flags = ["-e", "--regexp", "-f", "--file"], no_pattern_flags = [] }, egrep = { style = "pattern-first", needs_recursive = true, recursive_re = '^(?:-[A-Za-z]*[rR][A-Za-z]*|--recursive|--dereference-recursive)$', value_flags = ["-m", "-A", "-B", "-C", "--include", "--exclude", "--exclude-dir"], pattern_flags = ["-e", "-f"], no_pattern_flags = [] }, fgrep = { style = "pattern-first", needs_recursive = true, recursive_re = '^(?:-[A-Za-z]*[rR][A-Za-z]*|--recursive|--dereference-recursive)$', value_flags = ["-m", "-A", "-B", "-C", "--include", "--exclude", "--exclude-dir"], pattern_flags = ["-e", "-f"], no_pattern_flags = [] }, ugrep = { style = "pattern-first", needs_recursive = true, recursive_re = '^(?:-[A-Za-z]*[rR][A-Za-z]*|--recursive|--dereference-recursive)$', value_flags = ["-m", "-A", "-B", "-C", "--include", "--exclude", "--exclude-dir", "-g", "-O", "-t"], pattern_flags = ["-e", "-f"], no_pattern_flags = [] }, ug = { style = "pattern-first", needs_recursive = true, recursive_re = '^(?:-[A-Za-z]*[rR][A-Za-z]*|--recursive|--dereference-recursive)$', value_flags = ["-m", "-A", "-B", "-C", "--include", "--exclude", "--exclude-dir", "-g", "-O", "-t"], pattern_flags = ["-e", "-f"], no_pattern_flags = [] }, mdfind = { style = "spotlight", scope_flag = "-onlyin" } }
+
+[wide_search.depth_allow_max]
+doc = "A search under a forbidden root that carries a depth limit (a `commands.<name>.depth_flags` flag such as find -maxdepth, fd or rg --max-depth) of at most this many levels is allowed, since it cannot walk the whole disk (#623). `-prune` and `-path` limits do not count. Do not confuse with lane_waste.max_depth (nested sh -c scripts)."
+value = 4
+min = 0
+max = 64
+
+[wide_search.depth_allow_max_by_root]
+doc = "A lower depth limit than wide_search.depth_allow_max for a search rooted exactly at one of these paths: a search from `/`, `/Volumes`, `/System/Volumes/Data` (the macOS data volume, the same tree as `/`) or `/private` fans out to every volume, so a few levels already walk far more than under the home directory. Path = largest allowed depth."
+value = { "/" = 1, "/Volumes" = 1, "/System/Volumes/Data" = 1, "/private" = 1 }
+
+[wide_search.depth_value_re]
+doc = "A depth-limit word that counts as a number (digits only). Regular expression (Rust syntax)."
+value = '^[0-9]{1,4}$'
+
+[wide_search.sw_depth_bound]
+doc = "Default on: a search with a depth limit within wide_search.depth_allow_max is allowed under a forbidden root; off blocks it as before."
+value = { section = "guards", key = "wideSearchDepthBound", type = "boolean", env = "ANTIHALL_WIDE_SEARCH_DEPTH_BOUND", option = "", default = true }
+
+[metric.wide_search_depth_bounded]
+doc = "Searches under a forbidden root allowed because a depth limit within wide_search.depth_allow_max bounds them (#623), by command."
+value = { kind = "counter", unit = "calls", labels = ["cmd"] }
 
 [wide_search.msg_what]
 doc = "Heading of the block. Placeholders: {cmd} the command as it was written, {root} the forbidden root it searches."
@@ -328,3 +455,115 @@ value = "give the search one project folder."
 [wide_search.msg_override]
 doc = "How the user can lift the block (shown on the last line)."
 value = "tell the agent \"skip wide-search-guard\" (or set guards.allowWideSearch)."
+
+# ---- cache-ttl-wait-guard (one call that waits past the prompt-cache window; GH #884) --------------------------------------------
+# The prompt cache expires a few minutes after the last request. A single tool call that waits longer than that (a sleep, an until
+# loop under a long timeout, a watch, a Monitor or TaskOutput deadline) makes the next turn rebuild the whole context at full price.
+# The guard answers with an ORDER to split the wait; it never blocks. Repeats climb the nudge ladder (nudges.toml kind cache_wait).
+
+[cache_wait.sw]
+doc = "Order a long single wait to be split. Where the guard's on/off switch is read from (guards.cacheWaitGuard, default on): off, no wait is judged."
+value = { section = "guards", key = "cacheWaitGuard", type = "boolean", env = "ANTIHALL_CACHE_WAIT_GUARD", option = "", default = true }
+
+[cache_wait.guard_name]
+doc = "The guard id the cache-wait guard answers to in skip.json, its messages and the nudge ladder."
+value = "cache-ttl-wait-guard"
+
+[cache_wait.summary]
+doc = "One-line description of the cache-ttl-wait-guard check in the generated reference."
+value = "Order long single waits to be split. PreToolUse on Bash (Claude and Codex, every agent), Monitor and TaskOutput (Claude): a sleep, a poll loop or watch under a timeout, or a tool deadline above the prompt-cache limit gets an order to split it into shorter waits. The engine's own wake-watch Monitor (cache_wait.watcher_argv) is exempt. Advisory only: it never blocks."
+
+[cache_wait.limit_s]
+doc = "A single wait above this many seconds is ordered split: it outlives the prompt cache (the TTL is 300 s; this leaves a margin for the turn itself)."
+value = 270
+unit = "s"
+min = 1
+max = 3600
+
+[cache_wait.split_s]
+doc = "The wait length the order asks for: each part at most this many seconds (kept under limit_s, so a part never trips the guard). Also the {max} of the subagent WORKER line and of the queued-wait-guard remedies."
+value = 240
+unit = "s"
+min = 1
+max = 3600
+
+[cache_wait.tool_timeouts]
+doc = "Tools other than Bash whose input holds a wait deadline: tool name to the input field, in milliseconds."
+value = { Monitor = "timeout_ms", TaskOutput = "timeout" }
+
+[cache_wait.event]
+doc = "The hook event name the order is delivered under when the payload does not name one."
+value = "PreToolUse"
+
+[cache_wait.persistent_field]
+doc = "The tool input field that makes a Monitor persistent (it runs for the session and wakes the agent by event, so it is no single wait)."
+value = "persistent"
+
+[cache_wait.watcher_tools]
+doc = "Tools whose call may run the engine's own wake watcher (cache_wait.watcher_argv): such a call is exempt from the order (GH #965)."
+value = ["Monitor"]
+
+[cache_wait.watcher_prefixes]
+doc = "The only words that may stand before the watcher program in an exempt Monitor command, at most one of them (GH #965): the `exec` of agent_tracker.wake_command, which replaces the shell and bounds nothing. Any other wrapper or an assignment means no exemption."
+value = ["exec"]
+
+[cache_wait.watcher_redirects]
+doc = "The only redirections an exempt watcher Monitor command may carry (GH #965): the stderr-to-stdout merge of agent_tracker.wake_command_agents. Any other redirection means no exemption."
+value = ["2>&1"]
+
+[cache_wait.watcher_command_keys]
+doc = "The config keys of the engine's own wake-watch re-arm commands (GH #965). An exempt Monitor must run the very program path one of them names (its first word after at most one cache_wait.watcher_prefixes word, home forms expanded), not any file whose name is ah-engine."
+value = ["agent_tracker.wake_command_agents", "agent_tracker.wake_command"]
+
+[cache_wait.home_forms]
+doc = "Spellings of the home directory expanded before two watcher program paths are compared (GH #965), as the shell expands them: a form starting with ~ only unquoted at the start of a word, a form starting with $ unquoted or inside double quotes, never inside single quotes (a quoted '~/x' or '$HOME/x' is a literal path and gets no exemption)."
+value = ["~/", "$HOME/", "${HOME}/"]
+
+[cache_wait.watcher_unsafe]
+doc = "Text that, anywhere in a Monitor command, means it is not plainly the engine's watcher (GH #965): a backtick (command substitution), a backslash (an escape the comparison would read differently from the shell) and $' (ANSI-C quoting)."
+value = ["`", "\\", "$'"]
+
+[cache_wait.watcher_path_re]
+doc = "The characters an exempt watcher program path may hold once the home directory is expanded (GH #965): a plain path only. Any other character means no exemption."
+value = '^[A-Za-z0-9_./+:@%,=-]+$'
+
+[cache_wait.watcher_argv]
+doc = "The engine's own wake watcher, as program base name then verb words (GH #965). A Monitor whose whole command is plainly one of these (one simple command; only cache_wait.watcher_prefixes before it and cache_wait.watcher_redirects in it, no assignment, other wrapper, substitution, chain or pipe; any further words must be options) is the long, event-driven wake path the re-arm lines ask for with agent_tracker.wake_timeout_ms (agent_tracker.wake_command, agent_tracker.wake_command_agents, devswarm_cli.sp_wake_watcher): it idles by event, so it is no single wait and is not ordered split. Every other Monitor, and a compound command that only mentions the watcher, is judged as before."
+value = [["ah-engine", "agents", "wake-watch"], ["ah-engine", "devswarm", "wake-watch"]]
+
+[cache_wait.bash_timeout_field]
+doc = "The Bash tool input field that holds the call's timeout, in milliseconds. It bounds a poll loop or a watch that has no timeout of its own."
+value = "timeout"
+
+[cache_wait.ms_per_s]
+doc = "Milliseconds per second (tool deadlines are in milliseconds, sleep and timeout in seconds)."
+value = 1000
+min = 1
+
+[cache_wait.bg_field]
+doc = "The Bash tool input field that starts the command in the background (a background command is not a wait in this call)."
+value = "run_in_background"
+
+[cache_wait.metric_kinds]
+doc = "The kind label of cache_wait_orders_total per way a wait was found: sleep (a sleep over the limit), loop (a poll loop or watch bounded above the limit), tool (a Monitor or TaskOutput deadline over the limit)."
+value = { sleep = "sleep", loop = "loop", tool = "tool" }
+
+[cache_wait.msg_what_bash]
+doc = "What the order says about a Bash wait. Placeholders: {secs} the wait (cache_wait.msg_secs, or cache_wait.msg_unbounded), {limit} the limit, {cmd} the command as written."
+value = "this call waits {secs}, past the {limit}s cache limit: {cmd}."
+
+[cache_wait.msg_what_tool]
+doc = "What the order says about a tool deadline. Placeholders: {tool}, {secs} the deadline (cache_wait.msg_secs), {limit} the limit."
+value = "{tool} waits {secs} in one call, past the {limit}s cache limit."
+
+[cache_wait.msg_secs]
+doc = "How a known wait reads in the order. Placeholder: {n} seconds."
+value = "up to {n}s"
+
+[cache_wait.msg_unbounded]
+doc = "The wait shown when a sleep's length cannot be read or is endless (a variable, a typo, infinity). An unreadable length is judged as an endless wait."
+value = "an unbounded time"
+
+[cache_wait.msg_instead]
+doc = "The action of the order. Placeholders: {max} the part length (cache_wait.split_s). Kept under 115 characters so it stays inline."
+value = "Split it into waits of {max}s or less and re-issue until done."

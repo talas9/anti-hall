@@ -332,8 +332,9 @@ fn nothing(id: String) -> HookResult {
 }
 
 /// How a finished hook counts in telemetry: a timeout is a timeout, a hook that could not run or died is an error, one that
-/// blocked (exit 2 or a JSON block) is a block, another non-zero exit is an error, output is an advisory, silence an allow.
-fn telemetry_outcome(f: &Finished) -> Outcome {
+/// blocked (exit 2 or a JSON block) is a block, another non-zero exit is an error, output that says something is an advisory, silence
+/// (no output, or a JSON reply with an empty context: GH #894) an allow.
+fn telemetry_outcome(f: &Finished, event: &str) -> Outcome {
     match f.fate {
         Fate::Timeout => Outcome::Timeout,
         Fate::Spawn | Fate::Died | Fate::Incomplete => Outcome::Error,
@@ -342,6 +343,7 @@ fn telemetry_outcome(f: &Finished) -> Outcome {
             Some(c) if c != 0 => Outcome::Error,
             _ if f.result.out.is_empty() => Outcome::Allow,
             _ if combine::json_blocks(&f.result.out) => Outcome::Block,
+            _ if !combine::says_something(event, &f.result) => Outcome::Allow,
             _ => Outcome::Advise,
         },
     }
@@ -354,7 +356,7 @@ fn conclude(r: Running, w: Waited) -> Finished {
     crate::telemetry::emit::queue(crate::telemetry::emit::node_run(&crate::telemetry::emit::NodeRun {
         id: &f.result.id,
         event: &event,
-        outcome: telemetry_outcome(&f),
+        outcome: telemetry_outcome(&f, &event),
         micros: started.elapsed().as_micros() as u64,
         out_bytes: f.result.out.len() as u64,
         err_bytes: f.result.err.len() as u64,
@@ -410,7 +412,7 @@ mod tests {
 
     #[test]
     fn hooks_run_at_once_with_the_payload_and_report_in_order() {
-        let dir = std::env::temp_dir().join(format!("ah-engine-node-overlap-{}-{}", std::process::id(), crate::health::now_ms()));
+        let dir = crate::testtmp::path(format!("ah-engine-node-overlap-{}-{}", std::process::id(), crate::health::now_ms()));
         std::fs::create_dir_all(&dir).unwrap();
         let starts: Vec<String> = ["a", "b", "c"].iter().map(|id| dir.join(format!("start-{id}")).display().to_string()).collect();
         let checked: Vec<String> = ["a", "b", "c"].iter().map(|id| dir.join(format!("checked-{id}")).display().to_string()).collect();
@@ -451,16 +453,18 @@ mod tests {
             ("fails", "exit 3".to_string(), 5),
             ("slow", "sleep 30".to_string(), 1),
             ("died", "kill -9 $$".to_string(), 5),
+            // GH #894: a JSON reply with an empty context says nothing: an allow, not an advisory
+            ("silent", r#"echo '{"hookSpecificOutput":{"hookEventName":"PreToolUse","additionalContext":""}}'"#.to_string(), 5),
         ];
         let rs = finish(es.iter().map(|(id, c, t)| start(&entry(id, c, *t), b"").for_event("PreToolUse")).collect());
-        assert_eq!(rs.len(), 7);
+        assert_eq!(rs.len(), 8);
         let evs = emit::take_queued();
-        assert_eq!(evs.len(), 7);
+        assert_eq!(evs.len(), 8);
         let by = |id: &str| evs.iter().find(|e| e.h.as_str() == id).unwrap_or_else(|| panic!("no event for {id}"));
         let o = |id: &str| by(id).o;
         assert_eq!(
-            [o("quiet"), o("advises"), o("blocks"), o("json-blocks"), o("fails"), o("slow"), o("died")],
-            [Outcome::Allow, Outcome::Advise, Outcome::Block, Outcome::Block, Outcome::Error, Outcome::Timeout, Outcome::Error]
+            [o("quiet"), o("advises"), o("blocks"), o("json-blocks"), o("fails"), o("slow"), o("died"), o("silent")],
+            [Outcome::Allow, Outcome::Advise, Outcome::Block, Outcome::Block, Outcome::Error, Outcome::Timeout, Outcome::Error, Outcome::Allow]
         );
         assert!(evs.iter().all(|e| e.kind == crate::telemetry::event::Kind::Node && e.e.as_str() == "PreToolUse"));
         assert_eq!(by("advises").ib, "secret advice text".len() as u64, "stdout bytes");
@@ -567,7 +571,7 @@ mod tests {
 
     #[test]
     fn file_feeder_treats_a_closed_child_stdin_as_success() {
-        let path = std::env::temp_dir().join(format!("ah-engine-feed-{}-{}.tmp", std::process::id(), crate::health::now_ms()));
+        let path = crate::testtmp::path(format!("ah-engine-feed-{}-{}.tmp", std::process::id(), crate::health::now_ms()));
         std::fs::write(&path, b"payload").unwrap();
         let file = File::open(&path).unwrap();
         let mut writer = BrokenPipeWriter;

@@ -1,0 +1,1412 @@
+//! GH #404 phase 1: advisor mode. Three rules (review in model-routing, plan and retry in advisor-guard), each silent unless the
+//! session shows an advisor tool, each blocking once per trigger, capped, never on a Stop continuation. Tests run under a scratch HOME.
+#![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report, and E2 exempts tests
+
+use serde_json::{Value, json};
+use std::io::Write;
+use std::path::PathBuf;
+use std::process::{Command, Stdio};
+
+fn plugin() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall")
+}
+
+fn dir() -> PathBuf {
+    let d = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("advisor-{}", std::process::id()));
+    std::fs::create_dir_all(d.join("home")).unwrap();
+    d
+}
+
+fn run(check: &str, extra: &[(&str, &str)], p: &Value) -> i32 {
+    let d = dir();
+    let mut c = Command::new(env!("CARGO_BIN_EXE_ah-engine"));
+    c.args(["check", check])
+        .env_clear()
+        .env("PATH", std::env::var("PATH").unwrap_or_default())
+        .env("HOME", d.join("home"))
+        .env("AH_ENGINE_DIR", d.join("state"))
+        .env("AH_ENGINE_NOSPAWN", "1")
+        .env("AH_ENGINE_PLUGIN_ROOT", plugin())
+        .current_dir(&d)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    c.envs(extra.iter().copied());
+    let mut ch = c.spawn().unwrap();
+    ch.stdin.take().unwrap().write_all(p.to_string().as_bytes()).unwrap();
+    ch.wait_with_output().unwrap().status.code().unwrap_or(-1)
+}
+
+const USER: &str = r#"{"type":"user","message":{"role":"user","content":"please do it"}}"#;
+const ADVISOR: &str =
+    r#"{"type":"assistant","message":{"role":"assistant","model":"claude-sonnet-5-5","content":[{"type":"server_tool_use","name":"advisor","input":{}}]}}"#;
+const WORK: &str = r#"{"type":"assistant","message":{"role":"assistant","model":"claude-sonnet-5-5","content":[{"type":"text","text":"working"}]}}"#;
+
+/// A transcript of `lines` under a name of its own; returns the path.
+fn transcript(name: &str, lines: &[&str]) -> String {
+    let p = dir().join(format!("{name}.jsonl"));
+    std::fs::write(&p, lines.join("\n") + "\n").unwrap();
+    p.to_string_lossy().to_string()
+}
+
+fn append(path: &str, line: &str) {
+    let mut f = std::fs::OpenOptions::new().append(true).open(path).unwrap();
+    writeln!(f, "{line}").unwrap();
+}
+
+fn spawn(session: &str, tp: &str, desc: &str, model: Option<&str>, extra: Value) -> Value {
+    let mut input = json!({"description": desc, "prompt": "go", "subagent_type": "general-purpose"});
+    if let Some(m) = model {
+        input["model"] = json!(m);
+    }
+    let mut p =
+        json!({"session_id": session, "cwd": "/tmp", "hook_event_name": "PreToolUse", "tool_name": "Agent", "tool_input": input, "transcript_path": tp});
+    for (k, v) in extra.as_object().unwrap() {
+        p[k] = v.clone();
+    }
+    p
+}
+
+fn tool(session: &str, tp: &str, event: &str, name: &str, input: Value) -> Value {
+    json!({"session_id": session, "cwd": "/tmp", "hook_event_name": event, "tool_name": name, "tool_input": input, "transcript_path": tp})
+}
+
+#[test]
+fn review_blocked_once_on_non_flagship_when_advisor_present() {
+    let tp = transcript("rev1", &[USER, ADVISOR, WORK]);
+    let p = spawn("rev1", &tp, "Review the diff", Some("sonnet"), json!({}));
+    assert_eq!(run("model-routing", &[], &p), 2, "first review spawn on sonnet is blocked");
+    assert_eq!(run("model-routing", &[], &p), 0, "the same spawn retried is allowed (once per trigger)");
+    assert_eq!(run("model-routing", &[], &spawn("rev1", &tp, "Critique the config", Some("haiku"), json!({}))), 2, "another trigger blocks again");
+    assert_eq!(run("model-routing", &[], &spawn("rev1", &tp, "Audit the config", Some("haiku"), json!({}))), 0, "audits and scans may run on a cheap model");
+}
+
+#[test]
+fn review_allowed_on_flagship_non_review_or_off() {
+    let tp = transcript("rev2", &[USER, ADVISOR, WORK]);
+    assert_eq!(run("model-routing", &[], &spawn("rev2", &tp, "Review the diff", Some("opus"), json!({}))), 0, "flagship");
+    assert_eq!(run("model-routing", &[], &spawn("rev2", &tp, "Write the parser", Some("sonnet"), json!({}))), 0, "not review-shaped");
+    assert_eq!(run("model-routing", &[("ANTIHALL_ADVISOR_REVIEW", "0")], &spawn("rev2", &tp, "Review the diff x", Some("sonnet"), json!({}))), 0, "switch off");
+    assert_eq!(run("model-routing", &[], &spawn("rev2", &tp, "Review the diff y", Some("sonnet"), json!({"stop_hook_active": true}))), 0, "stop_hook_active");
+}
+
+#[test]
+fn review_silent_without_advisor_tool() {
+    let tp = transcript("rev3", &[USER, WORK]);
+    assert_eq!(run("model-routing", &[], &spawn("rev3", &tp, "Review the diff", Some("sonnet"), json!({}))), 0);
+    let listed = spawn("rev3", &tp, "Review the diff z", Some("sonnet"), json!({"tools": ["Bash", "advisor"]}));
+    assert_eq!(run("model-routing", &[], &listed), 2, "the payload's tool list also shows the advisor");
+}
+
+#[test]
+fn review_cap_is_respected() {
+    let tp = transcript("rev4", &[USER, ADVISOR]);
+    let blocks = (0..6).filter(|i| run("model-routing", &[], &spawn("rev4", &tp, &format!("Review part {i}"), Some("sonnet"), json!({}))) == 2).count();
+    assert_eq!(blocks, 3, "advisory.cap_hard_by_kind.advisor_review");
+}
+
+#[test]
+fn plan_blocked_once_without_advisor_this_task() {
+    let tp = transcript("plan1", &[USER, WORK]);
+    let exit = tool("plan1", &tp, "PreToolUse", "ExitPlanMode", json!({"plan": "x"}));
+    assert_eq!(run("advisor-guard", &[], &exit), 0, "silent without an advisor tool in the session");
+    let tp = transcript("plan2", &[ADVISOR, USER, WORK]);
+    let exit = tool("plan2", &tp, "PreToolUse", "ExitPlanMode", json!({"plan": "x"}));
+    assert_eq!(run("advisor-guard", &[], &exit), 2, "advisor used before the last user message does not count");
+    assert_eq!(run("advisor-guard", &[], &exit), 0, "once per trigger");
+    let file = tool("plan2", &tp, "PreToolUse", "Write", json!({"file_path": "/r/PLAN.md", "content": "x"}));
+    assert_eq!(run("advisor-guard", &[], &file), 2, "PLAN.md is a plan file");
+    let other = tool("plan2", &tp, "PreToolUse", "Write", json!({"file_path": "/r/src/a.rs", "content": "x"}));
+    assert_eq!(run("advisor-guard", &[], &other), 0, "an ordinary file is not a plan");
+}
+
+#[test]
+fn plan_allowed_after_advisor_off_and_stop() {
+    let tp = transcript("plan3", &[USER, ADVISOR, WORK]);
+    assert_eq!(run("advisor-guard", &[], &tool("plan3", &tp, "PreToolUse", "ExitPlanMode", json!({}))), 0, "advisor called since the task began");
+    let tp = transcript("plan4", &[ADVISOR, USER]);
+    let exit = tool("plan4", &tp, "PreToolUse", "ExitPlanMode", json!({}));
+    assert_eq!(run("advisor-guard", &[("ANTIHALL_ADVISOR_PLAN", "0")], &exit), 0, "switch off");
+    let mut stop = exit.clone();
+    stop["stop_hook_active"] = json!(true);
+    assert_eq!(run("advisor-guard", &[], &stop), 0, "stop_hook_active");
+}
+
+#[test]
+fn plan_cap_is_respected() {
+    let tp = transcript("plan5", &[ADVISOR, USER]);
+    let blocks = (0..6)
+        .filter(|i| run("advisor-guard", &[], &tool("plan5", &tp, "PreToolUse", "Write", json!({"file_path": format!("/r/plans/p{i}.md")}))) == 2)
+        .count();
+    assert_eq!(blocks, 3, "advisory.cap_hard_by_kind.advisor_plan");
+}
+
+fn fail(session: &str, tp: &str, cmd: &str) -> i32 {
+    run("advisor-guard", &[], &tool(session, tp, "PostToolUseFailure", "Bash", json!({"command": cmd})))
+}
+
+fn edit(session: &str, tp: &str, file: &str, extra: &[(&str, &str)]) -> i32 {
+    run("advisor-guard", extra, &tool(session, tp, "PreToolUse", "Edit", json!({"file_path": file})))
+}
+
+#[test]
+fn retry_blocked_once_on_second_edit_after_failure() {
+    let tp = transcript("ret1", &[USER, ADVISOR, WORK]);
+    assert_eq!(edit("ret1", &tp, "/r/a.rs", &[]), 0, "first edit");
+    assert_eq!(fail("ret1", &tp, "cargo test -p x"), 0, "a failure never blocks itself");
+    assert_eq!(edit("ret1", &tp, "/r/b.rs", &[]), 0, "another file is a first edit");
+    assert_eq!(edit("ret1", &tp, "/r/a.rs", &[]), 2, "second edit of a.rs after the failure");
+    assert_eq!(edit("ret1", &tp, "/r/a.rs", &[]), 0, "blocked once, then the failure is disarmed");
+}
+
+#[test]
+fn retry_allowed_when_advisor_called_in_between() {
+    let tp = transcript("ret2", &[USER, ADVISOR, WORK]);
+    assert_eq!(edit("ret2", &tp, "/r/a.rs", &[]), 0);
+    assert_eq!(fail("ret2", &tp, "npm test"), 0);
+    append(&tp, ADVISOR);
+    assert_eq!(edit("ret2", &tp, "/r/a.rs", &[]), 0, "advisor consulted after the failure");
+}
+
+#[test]
+fn retry_silent_without_advisor_or_off_or_stopping_or_unrelated_failure() {
+    let tp = transcript("ret3", &[USER, WORK]);
+    assert_eq!(edit("ret3", &tp, "/r/a.rs", &[]), 0);
+    assert_eq!(fail("ret3", &tp, "cargo test"), 0);
+    assert_eq!(edit("ret3", &tp, "/r/a.rs", &[]), 0, "no advisor tool in the session");
+    let tp = transcript("ret4", &[USER, ADVISOR]);
+    assert_eq!(edit("ret4", &tp, "/r/a.rs", &[]), 0);
+    assert_eq!(fail("ret4", &tp, "ls /nope"), 0);
+    assert_eq!(edit("ret4", &tp, "/r/a.rs", &[]), 0, "ls is not a test or build command");
+    assert_eq!(fail("ret4", &tp, "cargo build"), 0);
+    assert_eq!(edit("ret4", &tp, "/r/a.rs", &[("ANTIHALL_ADVISOR_RETRY", "0")]), 0, "switch off");
+    let mut stop = tool("ret4", &tp, "PreToolUse", "Edit", json!({"file_path": "/r/a.rs"}));
+    stop["stop_hook_active"] = json!(true);
+    assert_eq!(run("advisor-guard", &[], &stop), 0, "stop_hook_active");
+}
+
+#[test]
+fn retry_cap_is_respected() {
+    let tp = transcript("ret5", &[USER, ADVISOR]);
+    let mut blocks = 0;
+    for i in 0..6 {
+        let f = format!("/r/f{i}.rs");
+        edit("ret5", &tp, &f, &[]);
+        fail("ret5", &tp, "cargo test");
+        if edit("ret5", &tp, &f, &[]) == 2 {
+            blocks += 1;
+        }
+    }
+    assert_eq!(blocks, 3, "advisory.cap_hard_by_kind.advisor_retry");
+}
+
+const OPUS_WORK: &str = r#"{"type":"assistant","message":{"role":"assistant","model":"claude-opus-4-8","content":[{"type":"text","text":"working"}]}}"#;
+const TEXT_ONLY: &str = r#"{"type":"assistant","message":{"role":"assistant","model":"claude-sonnet-5-5","content":[{"type":"text","text":"I could call the advisor tool here"}]}}"#;
+
+#[test]
+fn review_omitted_model_follows_the_resolved_session_tier() {
+    let tp = transcript("rev5", &[USER, ADVISOR, OPUS_WORK]);
+    assert_eq!(run("model-routing", &[], &spawn("rev5", &tp, "Review the diff", None, json!({}))), 0, "omitted model on an Opus main inherits a flagship");
+    let tp = transcript("rev6", &[USER, ADVISOR, WORK]);
+    assert_eq!(run("model-routing", &[], &spawn("rev6", &tp, "Review the diff", None, json!({}))), 2, "omitted model on a Sonnet main inherits a non-flagship");
+}
+
+#[test]
+fn review_named_agent_with_own_model_is_allowed() {
+    let tp = transcript("rev7", &[USER, ADVISOR, WORK]);
+    let mut p = spawn("rev7", &tp, "Review the diff", None, json!({}));
+    p["tool_input"]["subagent_type"] = json!("code-reviewer");
+    assert_eq!(run("model-routing", &[], &p), 0, "a custom agent without a model argument runs on its own definition model (fail-open)");
+    let mut q = spawn("rev7", &tp, "Review the diff again", Some("sonnet"), json!({}));
+    q["tool_input"]["subagent_type"] = json!("code-reviewer");
+    assert_eq!(run("model-routing", &[], &q), 2, "an explicit non-flagship model is still blocked");
+}
+
+#[test]
+fn advisor_word_in_a_text_block_is_not_detected() {
+    let tp = transcript("txt1", &[USER, TEXT_ONLY]);
+    assert_eq!(run("model-routing", &[], &spawn("txt1", &tp, "Review the diff", Some("sonnet"), json!({}))), 0, "review rule silent");
+    assert_eq!(run("advisor-guard", &[], &tool("txt1", &tp, "PreToolUse", "ExitPlanMode", json!({}))), 0, "plan rule silent");
+}
+
+fn pass(session: &str, tp: &str, cmd: &str) -> i32 {
+    run("advisor-guard", &[], &tool(session, tp, "PostToolUse", "Bash", json!({"command": cmd})))
+}
+
+#[test]
+fn retry_state_is_per_agent() {
+    let tp = transcript("ag1", &[USER, ADVISOR, WORK]);
+    sub_transcript("ag1", "sub-1", &[USER, ADVISOR, WORK]); // phase 3: a subagent is judged by its own transcript
+    let sub = |event: &str, name: &str, input: Value| {
+        let mut p = tool("ag1", &tp, event, name, input);
+        p["agent_id"] = json!("sub-1");
+        run("advisor-guard", &[], &p)
+    };
+    assert_eq!(edit("ag1", &tp, "/r/a.rs", &[]), 0, "main edits a.rs");
+    assert_eq!(fail("ag1", &tp, "cargo test"), 0, "main thread test fails");
+    assert_eq!(sub("PreToolUse", "Edit", json!({"file_path": "/r/a.rs"})), 0, "a subagent's first edit is not the main thread's retry");
+    assert_eq!(edit("ag1", &tp, "/r/a.rs", &[]), 2, "the main thread keeps its own armed state");
+    assert_eq!(sub("PostToolUseFailure", "Bash", json!({"command": "cargo test"})), 0);
+    assert_eq!(sub("PreToolUse", "Edit", json!({"file_path": "/r/a.rs"})), 2, "the subagent's own retry is blocked on its own state");
+}
+
+#[test]
+fn retry_ignores_unrelated_and_settled_failures() {
+    let tp = transcript("ret6", &[USER, ADVISOR]);
+    assert_eq!(fail("ret6", &tp, "cargo test"), 0, "failure before any edit");
+    assert_eq!(edit("ret6", &tp, "/r/a.rs", &[]), 0);
+    assert_eq!(edit("ret6", &tp, "/r/a.rs", &[]), 0, "the failure came before the first edit: unrelated, not armed for a.rs");
+    let tp = transcript("ret7", &[USER, ADVISOR]);
+    assert_eq!(edit("ret7", &tp, "/r/a.rs", &[]), 0);
+    assert_eq!(fail("ret7", &tp, "cargo test"), 0);
+    assert_eq!(pass("ret7", &tp, "cargo test"), 0);
+    assert_eq!(edit("ret7", &tp, "/r/a.rs", &[]), 0, "a passing run cleared the failure");
+    let tp = transcript("ret8", &[USER, ADVISOR]);
+    assert_eq!(edit("ret8", &tp, "/r/tests/a_test.rs", &[]), 0, "red step: write the test");
+    assert_eq!(fail("ret8", &tp, "cargo test"), 0, "expected failure");
+    assert_eq!(edit("ret8", &tp, "/r/tests/a_test.rs", &[]), 0, "first re-edit of the test is not blocked");
+}
+
+/// The per-session adherence tally kept in the retry state file of `session` (phase 2 monitoring).
+fn stats(session: &str) -> Value {
+    fn find(d: &std::path::Path, name: &str) -> Option<PathBuf> {
+        for e in std::fs::read_dir(d).ok()?.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                if let Some(f) = find(&p, name) {
+                    return Some(f);
+                }
+            } else if p.file_name().is_some_and(|n| n.to_string_lossy() == name) {
+                return Some(p);
+            }
+        }
+        None
+    }
+    let f = find(&dir(), &format!("advisor-retry-{session}.json")).expect("retry state file");
+    let v: Value = serde_json::from_str(&std::fs::read_to_string(f).unwrap()).unwrap();
+    v["stats"].clone()
+}
+
+#[test]
+fn monitoring_counts_armed_blocked_acted_on_and_consults() {
+    let tp = transcript("mon1", &[USER, ADVISOR, WORK]);
+    assert_eq!(edit("mon1", &tp, "/r/a.rs", &[]), 0);
+    assert_eq!(fail("mon1", &tp, "cargo test -p x"), 0);
+    assert_eq!(edit("mon1", &tp, "/r/a.rs", &[]), 2, "block fired");
+    append(&tp, ADVISOR);
+    assert_eq!(edit("mon1", &tp, "/r/c.rs", &[]), 0, "advisor consulted after the block");
+    let s = stats("mon1");
+    assert_eq!(s["armed"], 1, "{s}");
+    assert_eq!(s["acted_on"], 1, "block followed by a consult: {s}");
+    assert_eq!(s["consults"], 2, "both advisor calls counted once each: {s}");
+    assert!(s["consulted"].is_null(), "no consult before the block: {s}");
+}
+
+#[test]
+fn monitoring_counts_consult_after_failure() {
+    let tp = transcript("mon2", &[USER, ADVISOR, WORK]);
+    assert_eq!(edit("mon2", &tp, "/r/a.rs", &[]), 0);
+    assert_eq!(fail("mon2", &tp, "npm test"), 0);
+    append(&tp, ADVISOR);
+    assert_eq!(edit("mon2", &tp, "/r/a.rs", &[]), 0);
+    assert_eq!(edit("mon2", &tp, "/r/a.rs", &[]), 0, "no double count");
+    let s = stats("mon2");
+    assert_eq!((s["armed"].as_u64(), s["consulted"].as_u64(), s["consults"].as_u64()), (Some(1), Some(1), Some(2)), "{s}");
+}
+
+// ---- Phase 3 (GH #404): enforcement when the main model is not a flagship ----
+
+const OWNER: &str = r#"{"type":"user","timestamp":"2026-10-30T10:00:00.000Z","message":{"role":"user","content":"please fix the crash"}}"#;
+const OWNER2: &str = r#"{"type":"user","timestamp":"2026-10-30T11:00:00.000Z","message":{"role":"user","content":[{"type":"text","text":"next task"}]}}"#;
+const NOTIFY: &str = r#"{"type":"user","origin":{"kind":"task-notification"},"message":{"role":"user","content":"<task-notification> agent done"}}"#;
+const META: &str = r#"{"type":"user","isMeta":true,"message":{"role":"user","content":"Stop hook feedback: x"}}"#;
+const SONNET: &str = r#"{"type":"assistant","message":{"role":"assistant","model":"claude-sonnet-5-5","content":[{"type":"text","text":"dispatching"}]}}"#;
+const OPUS: &str = r#"{"type":"assistant","message":{"role":"assistant","model":"claude-opus-5-5","content":[{"type":"text","text":"dispatching"}]}}"#;
+const SYNTH: &str = r#"{"type":"assistant","message":{"role":"assistant","model":"<synthetic>","content":[{"type":"text","text":"x"}]}}"#;
+const ADV_CALL: &str = r#"{"type":"assistant","timestamp":"2026-10-30T10:00:20.000Z","message":{"role":"assistant","model":"claude-sonnet-5-5","content":[{"type":"server_tool_use","id":"srvtoolu_1","name":"advisor","input":{}}]}}"#;
+const ADV_RESULT: &str = r#"{"type":"assistant","message":{"role":"assistant","model":"claude-sonnet-5-5","content":[{"type":"advisor_tool_result","tool_use_id":"srvtoolu_1","content":{"type":"advisor_result","text":"ok"}}]}}"#;
+const SAY: &str = r#"{"type":"assistant","message":{"role":"assistant","model":"claude-sonnet-5-5","content":[{"type":"text","text":"Plan set. Let me consult the advisor before dispatching."}]}}"#;
+
+/// `run` that also returns stdout (a nudge exits 0 with an additionalContext payload).
+fn run_out(check: &str, extra: &[(&str, &str)], p: &Value) -> (i32, String) {
+    let d = dir();
+    let mut c = Command::new(env!("CARGO_BIN_EXE_ah-engine"));
+    c.args(["check", check])
+        .env_clear()
+        .env("PATH", std::env::var("PATH").unwrap_or_default())
+        .env("HOME", d.join("home"))
+        .env("AH_ENGINE_DIR", d.join("state"))
+        .env("AH_ENGINE_NOSPAWN", "1")
+        .env("AH_ENGINE_PLUGIN_ROOT", plugin())
+        .current_dir(&d)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    c.envs(extra.iter().copied());
+    let mut ch = c.spawn().unwrap();
+    ch.stdin.take().unwrap().write_all(p.to_string().as_bytes()).unwrap();
+    let o = ch.wait_with_output().unwrap();
+    (o.status.code().unwrap_or(-1), String::from_utf8_lossy(&o.stdout).to_string())
+}
+
+/// A subagent's own transcript where Claude Code keeps it: `<dir>/<session file stem>/subagents/agent-<id>.jsonl`.
+fn sub_transcript(stem: &str, agent: &str, lines: &[&str]) {
+    let d = dir().join(stem).join("subagents");
+    std::fs::create_dir_all(&d).unwrap();
+    std::fs::write(d.join(format!("agent-{agent}.jsonl")), lines.join("\n") + "\n").unwrap();
+}
+
+fn dispatch(session: &str, tp: &str, desc: &str, extra: &[(&str, &str)]) -> (i32, String) {
+    let input = json!({"description": desc, "prompt": "do the work", "subagent_type": "general-purpose"});
+    let p = json!({"session_id": session, "cwd": "/tmp", "hook_event_name": "PreToolUse", "tool_name": "Agent", "tool_input": input, "transcript_path": tp});
+    run_out("advisor-guard", extra, &p)
+}
+
+fn stop(session: &str, tp: &str, extra: &[(&str, &str)], active: bool) -> i32 {
+    let p = json!({"session_id": session, "cwd": "/tmp", "hook_event_name": "Stop", "stop_hook_active": active, "transcript_path": tp});
+    run("advisor-guard", extra, &p)
+}
+
+const NUDGE: &str = "Call the advisor tool now, then dispatch";
+
+#[test]
+fn thinking_nudge_then_one_capped_block_per_task() {
+    let tp = transcript("th1", &[ADVISOR, OWNER, SONNET]);
+    let (c, out) = dispatch("th1", &tp, "Fix the parser bug", &[]);
+    assert_eq!(c, 0, "first thinking dispatch: a nudge, not a block");
+    assert!(out.contains(NUDGE) && out.contains("additionalContext"), "nudge names the exact action: {out}");
+    assert_eq!(dispatch("th1", &tp, "Investigate the crash", &[]).0, 2, "second dispatch of the same task: one block");
+    let (c, out) = dispatch("th1", &tp, "Design the cache", &[]);
+    assert_eq!((c, out.is_empty()), (0, true), "the task's one block is spent: passes silently, never a loop");
+    append(&tp, OWNER2);
+    assert!(dispatch("th1", &tp, "Root-cause the leak", &[]).1.contains(NUDGE), "a new owner message is a new task");
+    let s = stats("th1");
+    assert_eq!((s["dispatch"].as_u64(), s["nudge"].as_u64(), s["blocked"].as_u64(), s["block_capped"].as_u64()), (Some(4), Some(2), Some(1), Some(1)), "{s}");
+}
+
+#[test]
+fn thinking_silent_for_flagship_unknown_model_routine_work_or_switch_off() {
+    let tp = transcript("th2", &[ADVISOR, OWNER, OPUS]);
+    assert_eq!(dispatch("th2", &tp, "Fix the parser bug", &[]), (0, String::new()), "flagship main");
+    assert_eq!(dispatch("th2", &tp, "Fix the parser bug", &[]), (0, String::new()), "flagship main, again");
+    let adv_synth = ADVISOR.replace("claude-sonnet-5-5", "<synthetic>");
+    let tp = transcript("th3", &[&adv_synth, OWNER, SYNTH]);
+    assert_eq!(dispatch("th3", &tp, "Fix the parser bug", &[]), (0, String::new()), "no known model: silent");
+    let tp = transcript("th4", &[ADVISOR, OWNER, SONNET]);
+    assert_eq!(dispatch("th4", &tp, "Write the release notes", &[]), (0, String::new()), "routine work");
+    assert_eq!(dispatch("th4", &tp, "Fix the parser bug", &[("ANTIHALL_ADVISOR_THINKING", "0")]), (0, String::new()), "switch off");
+    let tp = transcript("th5", &[OWNER, SONNET]);
+    assert_eq!(dispatch("th5", &tp, "Fix the parser bug", &[]), (0, String::new()), "no advisor tool in the session");
+}
+
+#[test]
+fn thinking_silent_after_a_consult_since_the_owner_message() {
+    let tp = transcript("th6", &[OWNER, SONNET, ADV_CALL, ADV_RESULT, NOTIFY, META]);
+    assert_eq!(dispatch("th6", &tp, "Fix the parser bug", &[]), (0, String::new()), "consulted; notifications and harness text are not the owner");
+    let tp = transcript("th7", &[OWNER, SONNET, ADV_RESULT]);
+    assert_eq!(dispatch("th7", &tp, "Fix the parser bug", &[]), (0, String::new()), "an advisor result block alone is a consult");
+    assert_eq!(stats("th6")["consulted_before"], 1);
+}
+
+#[test]
+fn thinking_consult_older_than_the_owner_message_still_requires_one() {
+    let tp = transcript("th8", &[ADV_CALL, ADV_RESULT, OWNER, SONNET]);
+    assert!(dispatch("th8", &tp, "Investigate the flaky test", &[]).1.contains(NUDGE), "the consult predates the owner's message");
+}
+
+#[test]
+fn subagent_does_not_inherit_the_main_transcript_consult() {
+    let tp = transcript("sa1", &[ADVISOR, OWNER, SONNET, ADV_CALL]);
+    sub_transcript("sa1", "a7", &[ADVISOR, OWNER, SONNET]);
+    let sub = |agent: &str| {
+        let input = json!({"description": "Fix the parser bug", "prompt": "x", "subagent_type": "general-purpose"});
+        let p =
+            json!({"session_id": "sa1", "agent_id": agent, "hook_event_name": "PreToolUse", "tool_name": "Agent", "tool_input": input, "transcript_path": tp});
+        run_out("advisor-guard", &[], &p)
+    };
+    assert_eq!(dispatch("sa1", &tp, "Fix the parser bug", &[]), (0, String::new()), "the main thread consulted");
+    assert!(sub("a7").1.contains(NUDGE), "the subagent's own transcript has no consult: nudged");
+    assert_eq!(sub("a-none"), (0, String::new()), "a subagent with no own transcript stays silent (never judged by the main one)");
+}
+
+#[test]
+fn advisor_seen_survives_ten_megabytes_without_a_call() {
+    let tp = transcript("big1", &[ADVISOR, OWNER, SONNET]);
+    assert!(dispatch("big1", &tp, "Fix the parser bug", &[]).1.contains(NUDGE), "advisor seen in the window");
+    let filler = format!(
+        r#"{{"type":"assistant","message":{{"role":"assistant","model":"claude-sonnet-5-5","content":[{{"type":"text","text":"{}"}}]}}}}"#,
+        "x".repeat(1000)
+    );
+    let block = vec![filler.as_str(); 2 * 1024].join("\n");
+    for _ in 0..5 {
+        append(&tp, &block); // read by a Stop after each 2 MB: under the window, so nothing is jumped
+        assert_eq!(stop("big1", &tp, &[], false), 0);
+    }
+    append(&tp, OWNER2);
+    append(&tp, SONNET);
+    assert!(std::fs::metadata(&tp).unwrap().len() > 10 * 1024 * 1024);
+    assert!(dispatch("big1", &tp, "Investigate the crash", &[]).1.contains(NUDGE), "the advisor call is 10 MB back, out of the window: still known from state");
+}
+
+#[test]
+fn hook_errors_allow() {
+    let d = dir();
+    let garbage = d.join("garbage.jsonl");
+    std::fs::write(&garbage, "{not json\n\u{0}\u{1}\n").unwrap();
+    for tp in
+        [garbage.to_string_lossy().to_string(), d.join("missing.jsonl").to_string_lossy().to_string(), "relative.jsonl".into(), d.to_string_lossy().to_string()]
+    {
+        assert_eq!(dispatch("err1", &tp, "Fix the parser bug", &[]).0, 0, "unreadable transcript {tp}: allow");
+        assert_eq!(stop("err1", &tp, &[], false), 0, "unreadable transcript {tp} at Stop: allow");
+    }
+    assert_eq!(run("advisor-guard", &[], &json!(["not", "an", "object"])), 0, "malformed payload: allow");
+}
+
+#[test]
+fn say_do_blocks_one_stop_per_turn() {
+    let tp = transcript("sd1", &[ADVISOR, OWNER, SONNET, SAY]);
+    assert_eq!(stop("sd1", &tp, &[], true), 0, "a Stop continuation is never blocked");
+    assert_eq!(stop("sd1", &tp, &[], false), 2, "announced an advisor call that did not follow");
+    assert_eq!(stop("sd1", &tp, &[], false), 0, "one block per turn");
+    append(&tp, OWNER2);
+    append(&tp, SAY);
+    append(&tp, ADV_CALL);
+    assert_eq!(stop("sd1", &tp, &[], false), 0, "said and did");
+    append(&tp, OWNER);
+    append(&tp, SAY);
+    assert_eq!(stop("sd1", &tp, &[("ANTIHALL_ADVISOR_SAY_DO", "0")], false), 0, "switch off");
+    let say_opus = SAY.replace("claude-sonnet-5-5", "claude-opus-5-5");
+    let tp2 = transcript("sd2", &[ADVISOR, OWNER, OPUS, &say_opus]);
+    assert_eq!(stop("sd2", &tp2, &[], false), 0, "flagship main");
+    let s = stats("sd1");
+    assert_eq!((s["say_do_miss"].as_u64(), s["say_do_blocked"].as_u64()), (Some(2), Some(1)), "{s}");
+    assert_eq!(s["nudged"], 1, "the consult after the block counts as nudged: {s}");
+}
+
+#[test]
+fn second_fix_attempt_for_one_issue_needs_a_consult() {
+    let off = [("ANTIHALL_ADVISOR_THINKING", "0")];
+    let tp = transcript("fx1", &[ADVISOR, OWNER, SONNET]);
+    assert_eq!(dispatch("fx1", &tp, "Fix #404 crash", &off).0, 0, "first attempt");
+    assert_eq!(dispatch("fx1", &tp, "Fix #404 again", &off).0, 2, "second attempt, no consult in between");
+    assert_eq!(dispatch("fx1", &tp, "Fix #404 third", &off).0, 0, "blocked once per issue");
+    assert_eq!(dispatch("fx1", &tp, "Fix #500 crash", &off).0, 0);
+    append(&tp, ADV_CALL);
+    assert_eq!(dispatch("fx1", &tp, "Fix #500 retry", &off).0, 0, "consulted between the attempts");
+    assert_eq!(dispatch("fx1", &tp, "Fix #600 x", &[("ANTIHALL_ADVISOR_THINKING", "0"), ("ANTIHALL_ADVISOR_RETRY", "0")]).0, 0);
+    assert_eq!(dispatch("fx1", &tp, "Fix #600 y", &[("ANTIHALL_ADVISOR_THINKING", "0"), ("ANTIHALL_ADVISOR_RETRY", "0")]).0, 0, "switch off");
+    assert_eq!(stats("fx1")["second_gated"], 1);
+}
+
+// GH #668: a submodule pin (gitlink) bump merge helper is integration work, not a second fix dispatch for the issue it lands
+#[test]
+fn a_pin_bump_merge_helper_is_not_a_second_fix_dispatch() {
+    let off = [("ANTIHALL_ADVISOR_THINKING", "0")];
+    let tp = transcript("fx2", &[ADVISOR, OWNER, SONNET]);
+    assert_eq!(dispatch("fx2", &tp, "Fix #404 crash", &off).0, 0, "first attempt");
+    assert_eq!(dispatch("fx2", &tp, "Fix #404 again", &off).0, 2, "a real second fix attempt is held");
+    // every pin/gitlink bump helper phrasing is exempt (each in its own session)
+    let helpers = [
+        "Merge fix/404 and bump the submodule pin for #404",
+        "Advance the gitlink for #404 fix",
+        "Bump submodule pointer to fix/404",
+        "Update the submodule pin for #404",
+        "Bump the gitlink to the #404 fix commit",
+        "Update submodules to latest for #404",
+        "Advance gitlink of anti-hall for #404",
+        "bump submodule pointers in parent repo #404",
+        "Bump the submodule to the #404 fix commit",
+        "Pin bump for #404 fix",
+        "Update the anti-hall submodule pin for #404",
+        "Bump anti-hall gitlink to #404 fix",
+    ];
+    for (i, ok) in helpers.iter().enumerate() {
+        let sid = format!("fx2e{i}");
+        let tp = transcript(&sid, &[ADVISOR, OWNER, SONNET]);
+        assert_eq!(dispatch(&sid, &tp, "Fix #404 crash", &off).0, 0, "first attempt");
+        assert_eq!(dispatch(&sid, &tp, ok, &off).0, 0, "{ok} is a bump helper, exempt");
+    }
+    // the exemption must not swallow a real second fix whose text merely mentions a pin, a gitlink, a watcher or a monitor
+    let fixes = [
+        "Fix #404 again and update the pin",
+        "Fix gitlink parser crash #404",
+        "Update the cert pin validation to fix #404 failing",
+        "Fix #404 again",
+        "Fix submodule pin parsing #404",
+        "Fix the submodule pointer resolution crash #404",
+        "Update the submodule pointer logic to fix #404",
+        "Fix the watcher crash #404",
+        "Fix #404: update gitlink handling",
+        "Retry fix #404 and bump the submodule pin",
+        "Update gitlinks to handle #404 bug fix",
+        "Bump the timeout to fix #404",
+        "Fix merge helper bug #404",
+        "Fix monitor leak #404",
+        "Update the submodule parser to fix #404",
+        "Update submodule offsets to fix #404",
+        "Update submodule format parser for the #404 bug",
+        "Update submodule index handling to fix #404",
+        "Update gitlink inference bug #404",
+        "Update submodule init order to fix #404",
+        "Fix information display bug in submodule bump #404",
+        "Update submodules inside the resolver bug #404",
+    ];
+    for (i, held) in fixes.iter().enumerate() {
+        let sid = format!("fx2h{i}");
+        let tp = transcript(&sid, &[ADVISOR, OWNER, SONNET]);
+        assert_eq!(dispatch(&sid, &tp, "Fix #404 crash", &off).0, 0, "first attempt");
+        assert_eq!(dispatch(&sid, &tp, held, &off).0, 2, "{held} is a real second fix attempt, still held");
+    }
+}
+
+#[test]
+fn nudge_then_routine_work_counts_a_false_nag() {
+    let tp = transcript("fn1", &[ADVISOR, OWNER, SONNET]);
+    assert!(dispatch("fn1", &tp, "Fix the parser bug", &[]).1.contains(NUDGE));
+    assert_eq!(dispatch("fn1", &tp, "Rename the module", &[]), (0, String::new()), "routine work passes");
+    assert_eq!(stats("fn1")["false_nag"], 1);
+}
+
+#[test]
+fn two_sessions_keep_their_own_state() {
+    let a = transcript("ss-a", &[ADVISOR, OWNER, SONNET]);
+    let b = transcript("ss-b", &[ADVISOR, OWNER, SONNET]);
+    assert!(dispatch("ss-a", &a, "Fix the parser bug", &[]).1.contains(NUDGE));
+    assert_eq!(dispatch("ss-a", &a, "Fix the parser bug", &[]).0, 2);
+    assert!(dispatch("ss-b", &b, "Fix the parser bug", &[]).1.contains(NUDGE), "session b starts at its own first nudge");
+}
+
+#[test]
+fn phase3_rows_are_wired_never_shed_and_fail_open() {
+    let read = |f: &str| std::fs::read_to_string(plugin().join("engine/defaults").join(f)).unwrap();
+    let dispatch = read("dispatch.toml");
+    assert!(dispatch.contains(r#"{ id = "advisor-guard:dispatch", matcher = "Agent|Task", timeout = 10, check = "advisor-guard" }"#));
+    assert!(dispatch.contains(r#"{ id = "advisor-guard:stop", matcher = "", timeout = 10, check = "advisor-guard" }"#));
+    let diag = read("diagnostics.toml");
+    let shed = diag.split("[diagnostics.shed_never]").nth(1).unwrap().split("\n[").next().unwrap();
+    assert!(shed.contains(r#""advisor-guard" = "#), "advisor-guard is never shed");
+    assert!(read("script.toml").contains(r#"advisor-guard = "open""#), "advisor-guard fails open");
+    for f in ["advisor.toml", "advisory.toml", "dispatch.toml", "diagnostics.toml"] {
+        let pristine = std::fs::read_to_string(plugin().join("engine/defaults.pristine").join(f)).unwrap();
+        assert_eq!(read(f), pristine, "{f}: defaults and defaults.pristine are byte-identical");
+    }
+}
+
+#[test]
+fn default_switches_give_one_block_per_task_across_both_dispatch_rules() {
+    let tp = transcript("one1", &[ADVISOR, OWNER, SONNET]);
+    assert!(dispatch("one1", &tp, "Fix #404 crash", &[]).1.contains(NUDGE), "first: nudge");
+    assert_eq!(dispatch("one1", &tp, "Fix #404 again", &[]).0, 2, "second: the one block (second attempt)");
+    assert_eq!(dispatch("one1", &tp, "Fix #404 third", &[]), (0, String::new()), "third: passes, the task's block is spent");
+}
+
+#[test]
+fn say_do_fires_in_a_session_that_never_called_the_advisor() {
+    let tp = transcript("sd3", &[ATTACH, OWNER, SONNET, SAY]);
+    assert_eq!(stop("sd3", &tp, &[], false), 2, "the advisor is in the prompt (attachment), never called, announced and not called");
+    assert_eq!(stop("sd3", &tp, &[], false), 0, "one block per turn");
+}
+
+// ---- GH #404 gaps G1-G4 and the unwritable-state fail-open ----
+
+/// The entry Claude Code writes when it puts the advisor tool into an agent's prompt (shape copied from a real transcript).
+const ATTACH: &str = r#"{"type":"attachment","attachment":{"type":"advisor_tool","available":true,"model":"claude-opus-5-5","toolChange":"add"},"timestamp":"2026-10-30T09:59:00.000Z"}"#;
+const ATTACH_OFF: &str = r#"{"type":"attachment","attachment":{"type":"advisor_tool","available":false,"model":"claude-opus-5-5","toolChange":"remove"}}"#;
+
+fn filler(n: usize) -> String {
+    let line = format!(
+        r#"{{"type":"assistant","message":{{"role":"assistant","model":"claude-sonnet-5-5","content":[{{"type":"text","text":"{}"}}]}}}}"#,
+        "x".repeat(1000)
+    );
+    vec![line.as_str(); n].join("\n")
+}
+
+/// The folded transcript state (`tx`) of `session`'s state file.
+fn tx(session: &str) -> Value {
+    let f = |d: &std::path::Path| -> Option<PathBuf> {
+        let mut stack = vec![d.to_path_buf()];
+        while let Some(d) = stack.pop() {
+            for e in std::fs::read_dir(&d).ok()?.flatten() {
+                let p = e.path();
+                if p.is_dir() {
+                    stack.push(p);
+                } else if p.file_name().is_some_and(|n| n.to_string_lossy() == format!("advisor-retry-{session}.json")) {
+                    return Some(p);
+                }
+            }
+        }
+        None
+    };
+    let p = f(&dir()).expect("state file");
+    serde_json::from_str::<Value>(&std::fs::read_to_string(p).unwrap()).unwrap()["tx"].clone()
+}
+
+#[test]
+fn g1_attachment_alone_enforces_with_zero_prior_advisor_use() {
+    let tp = transcript("g1a", &[ATTACH, OWNER, SONNET]);
+    let (c, out) = dispatch("g1a", &tp, "Fix the parser bug", &[]);
+    assert!(c == 0 && out.contains(NUDGE), "advisor available per the harness attachment, never used: nudge ({c} {out})");
+    assert_eq!(dispatch("g1a", &tp, "Investigate the crash", &[]).0, 2, "then the one block");
+    assert_eq!(dispatch("g1a", &tp, "Design the cache", &[]), (0, String::new()), "then capped");
+    let tp = transcript("g1b", &[ATTACH, OWNER, SONNET, SAY]);
+    assert_eq!(stop("g1b", &tp, &[], false), 2, "say-do also fires on the attachment signal");
+}
+
+#[test]
+fn g1_attachment_off_or_absent_on_a_fully_read_transcript_is_silent_even_with_settings() {
+    let cwd = dir().join("g1c-cwd");
+    std::fs::create_dir_all(cwd.join(".claude")).unwrap();
+    std::fs::write(cwd.join(".claude/settings.json"), r#"{"advisorModel":"opus"}"#).unwrap();
+    let at = |tp: &str, s: &str| {
+        let input = json!({"description": "Fix the parser bug", "prompt": "x", "subagent_type": "general-purpose"});
+        let p = json!({"session_id": s, "cwd": cwd, "hook_event_name": "PreToolUse", "tool_name": "Agent", "tool_input": input, "transcript_path": tp});
+        run_out("advisor-guard", &[], &p)
+    };
+    let tp = transcript("g1c", &[OWNER, SONNET]);
+    assert_eq!(at(&tp, "g1c"), (0, String::new()), "whole transcript read, no attachment: the settings prove nothing, fail open");
+    let tp = transcript("g1d", &[ATTACH, ATTACH_OFF, OWNER, SONNET]);
+    assert_eq!(at(&tp, "g1d"), (0, String::new()), "the newest attachment took the advisor out");
+}
+
+#[test]
+fn g1_settings_fallback_when_the_head_was_never_read() {
+    let cwd = dir().join("g1e-cwd");
+    std::fs::create_dir_all(cwd.join(".claude")).unwrap();
+    std::fs::write(cwd.join(".claude/settings.local.json"), r#"{"advisorModel":"opus"}"#).unwrap();
+    let tp = transcript("g1e", &[&filler(6 * 1024), OWNER, SONNET]); // over the 4 MB window: first contact reads the tail only
+    let at = |cwd: &std::path::Path| {
+        let input = json!({"description": "Fix the parser bug", "prompt": "x", "subagent_type": "general-purpose"});
+        let p = json!({"session_id": "g1e", "cwd": cwd, "hook_event_name": "PreToolUse", "tool_name": "Agent", "tool_input": input, "transcript_path": tp});
+        run_out("advisor-guard", &[], &p)
+    };
+    assert!(at(&cwd).1.contains(NUDGE), "advisor configured in the project settings, head unread: enforced");
+    let tp2 = transcript("g1f", &[&filler(6 * 1024), OWNER, SONNET]);
+    let input = json!({"description": "Fix the parser bug", "prompt": "x", "subagent_type": "general-purpose"});
+    let p = json!({"session_id": "g1f", "cwd": dir().join("g1f-none"), "hook_event_name": "PreToolUse", "tool_name": "Agent", "tool_input": input, "transcript_path": tp2});
+    assert_eq!(run_out("advisor-guard", &[], &p), (0, String::new()), "no settings either: unknown, fail open");
+}
+
+#[test]
+fn g2_review_rule_remembers_the_advisor_past_the_window() {
+    let tp = transcript("g2a", &[USER, ADVISOR, WORK]);
+    assert_eq!(run("model-routing", &[], &spawn("g2a", &tp, "Review the diff", Some("sonnet"), json!({}))), 2);
+    for _ in 0..5 {
+        append(&tp, &filler(2 * 1024)); // 2 MB at a time, each read by a Stop on the same agent state: no gap is jumped
+        assert_eq!(stop("g2a", &tp, &[], false), 0);
+    }
+    assert!(std::fs::metadata(&tp).unwrap().len() > 10 * 1024 * 1024);
+    assert_eq!(run("model-routing", &[], &spawn("g2a", &tp, "Critique the config", Some("sonnet"), json!({}))), 2, "advisor 10 MB back: still known");
+}
+
+#[test]
+fn g3_incremental_read_is_bounded_per_call_and_per_line() {
+    let tp = transcript("g3a", &[ATTACH, OWNER, SONNET]);
+    assert!(dispatch("g3a", &tp, "Fix the parser bug", &[]).1.contains(NUDGE));
+    append(&tp, &filler(48 * 1024)); // ~48 MB appended: one read takes the last window only
+    let huge = format!(r#"{{"type":"assistant","message":{{"role":"assistant","content":[{{"type":"text","text":"{}"}}]}}}}"#, "y".repeat(5 << 20));
+    append(&tp, &huge); // a 5 MB line, over advisor.line_max_bytes: never buffered
+    append(&tp, SONNET);
+    let size = std::fs::metadata(&tp).unwrap().len();
+    let t0 = std::time::Instant::now();
+    assert_eq!(dispatch("g3a", &tp, "Investigate the crash", &[]), (0, String::new()), "a jump past unread bytes: availability unknown, fail open");
+    let first = t0.elapsed();
+    let s = tx("g3a");
+    assert_eq!(s["pos"].as_u64(), Some(size), "read to the end: {s}");
+    assert!(s["read"].as_u64().unwrap() <= 4 * 1024 * 1024, "one call reads at most the window: {s}");
+    assert!(s["peak"].as_u64().unwrap() <= 4 * 1024 * 1024, "the 5 MB line was never buffered whole: {s}");
+    append(&tp, ATTACH); // the window shows the advisor again
+    append(&tp, OWNER2);
+    append(&tp, SONNET);
+    let t1 = std::time::Instant::now();
+    assert!(dispatch("g3a", &tp, "Root-cause the leak", &[]).1.contains(NUDGE));
+    let tail = t1.elapsed();
+    let s = tx("g3a");
+    assert!(s["read"].as_u64().unwrap() < 4096, "only the new tail is read: {s}");
+    eprintln!("g3 latency: after a 53 MB jump {first:?}, incremental tail {tail:?}");
+    assert!(tail < std::time::Duration::from_secs(5), "generous CI bound: {tail:?}");
+    std::fs::write(&tp, [OWNER, SONNET, ATTACH].join("\n") + "\n").unwrap(); // rewritten shorter: start afresh
+    assert!(dispatch("g3a", &tp, "Fix the parser bug", &[]).1.contains(NUDGE), "a shrunk file is read from the start");
+}
+
+#[test]
+fn g4_subagent_reads_only_its_own_transcript() {
+    let tp = transcript("g4a", &[ATTACH, OWNER, SONNET, ADV_CALL]);
+    let own = dir().join("g4a").join("subagents");
+    std::fs::create_dir_all(&own).unwrap();
+    let head = |id: &str| format!(r#"{{"type":"user","agentId":"{id}","isSidechain":true,"message":{{"role":"user","content":"fix it"}}}}"#);
+    std::fs::write(own.join("agent-b1.jsonl"), [head("b1").as_str(), ATTACH, SONNET].join("\n") + "\n").unwrap();
+    std::fs::write(own.join("agent-b2.jsonl"), [head("zz").as_str(), ATTACH, SONNET].join("\n") + "\n").unwrap();
+    let sub = |agent: &str, path: &str| {
+        let input = json!({"description": "Fix the parser bug", "prompt": "x", "subagent_type": "general-purpose"});
+        let p = json!({"session_id": "g4a", "agent_id": agent, "hook_event_name": "PreToolUse", "tool_name": "Agent", "tool_input": input, "transcript_path": path});
+        run_out("advisor-guard", &[], &p)
+    };
+    assert!(sub("b1", &tp).1.contains(NUDGE), "main transcript_path: the subagent's own file found by the layout");
+    assert_eq!(sub("b1", &tp).0, 2, "its own state: the second hit is the block");
+    let wf = own.join("workflows").join("wf_run1");
+    std::fs::create_dir_all(&wf).unwrap();
+    std::fs::write(wf.join("agent-w1.jsonl"), [head("w1").as_str(), ATTACH, SONNET].join("\n") + "\n").unwrap();
+    assert!(sub("w1", &tp).1.contains(NUDGE), "a workflow agent's file one level down (subagents/workflows/<run>/) is found");
+    assert_eq!(sub("b2", &tp), (0, String::new()), "its first line names another agent: silent");
+    assert_eq!(sub("b3", &tp), (0, String::new()), "no own transcript: silent, the main one's consult is never credited");
+}
+
+#[test]
+fn unwritable_state_never_blocks() {
+    let tp = transcript("uw0", &[ATTACH, OWNER, SONNET]);
+    assert!(dispatch("uw0", &tp, "Fix the parser bug", &[]).1.contains(NUDGE));
+    let mut stack = vec![dir()];
+    let mut found = None;
+    while let Some(d) = stack.pop() {
+        for e in std::fs::read_dir(&d).unwrap().flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                stack.push(p);
+            } else if p.file_name().is_some_and(|n| n.to_string_lossy() == "advisor-retry-uw0.json") {
+                found = Some(p);
+            }
+        }
+    }
+    let at = found.expect("state file").with_file_name("advisor-retry-uw1.json");
+    std::fs::create_dir_all(&at).unwrap(); // a directory where the state file goes: every save fails (works as root too)
+    let tp = transcript("uw1", &[ATTACH, OWNER, SONNET, SAY]);
+    for i in 0..4 {
+        assert_eq!(dispatch("uw1", &tp, "Fix the parser bug", &[]), (0, String::new()), "dispatch {i}: unpersisted cap, allow");
+        assert_eq!(stop("uw1", &tp, &[], false), 0, "stop {i}: allow");
+    }
+}
+
+#[test]
+fn rewritten_longer_transcript_at_the_same_path_is_read_afresh() {
+    let tp = transcript("rot1", &[ATTACH, OWNER, SONNET]);
+    assert!(dispatch("rot1", &tp, "Fix the parser bug", &[]).1.contains(NUDGE));
+    let longer = [ATTACH_OFF, OWNER2, SONNET, &filler(8)].join("\n") + "\n"; // longer, and its head says the advisor is off
+    std::fs::write(&tp, &longer).unwrap();
+    assert_eq!(dispatch("rot1", &tp, "Investigate the crash", &[]), (0, String::new()), "the rewrite was detected: its head (advisor off) was read");
+    assert_eq!(tx("rot1")["pos"].as_u64(), Some(longer.len() as u64));
+}
+
+/// `run_out` with its own engine state dir (counters journal), so the counts belong to this test alone.
+fn run_in(state: &std::path::Path, check: &str, p: &Value) -> (i32, String) {
+    run_out(check, &[("AH_ENGINE_DIR", state.to_str().unwrap())], p)
+}
+
+#[test]
+fn counters_after_a_nudge_and_a_block_show_in_status_and_telemetry_summary() {
+    let state = dir().join("tel-state");
+    std::fs::create_dir_all(&state).unwrap();
+    let tp = transcript("tel1", &[ATTACH, OWNER, SONNET]);
+    let p = |d: &str| json!({"session_id": "tel1", "cwd": "/tmp", "hook_event_name": "PreToolUse", "tool_name": "Agent", "tool_input": {"description": d, "prompt": "x"}, "transcript_path": tp});
+    assert!(run_in(&state, "advisor-guard", &p("Fix the parser bug")).1.contains(NUDGE));
+    assert_eq!(run_in(&state, "advisor-guard", &p("Investigate the crash")).0, 2);
+    let none = transcript("tel2", &[OWNER, SONNET]);
+    let q = json!({"session_id": "tel2", "cwd": "/tmp", "hook_event_name": "PreToolUse", "tool_name": "Agent", "tool_input": {"description": "Fix it", "prompt": "x"}, "transcript_path": none});
+    assert_eq!(run_in(&state, "advisor-guard", &q), (0, String::new()), "no advisor signal: silent, counted");
+    let report = |args: &[&str]| -> Value {
+        let d = dir();
+        let o = Command::new(env!("CARGO_BIN_EXE_ah-engine"))
+            .args(args)
+            .env_clear()
+            .env("PATH", std::env::var("PATH").unwrap_or_default())
+            .env("HOME", d.join("home"))
+            .env("AH_ENGINE_DIR", &state)
+            .env("AH_ENGINE_NOSPAWN", "1")
+            .env("AH_ENGINE_PLUGIN_ROOT", plugin())
+            .output()
+            .unwrap();
+        serde_json::from_slice(&o.stdout).unwrap_or_else(|e| panic!("{e}: {}", String::from_utf8_lossy(&o.stdout)))
+    };
+    for (name, v) in
+        [("status", report(&["status", "--json"])["advisory"].clone()), ("telemetry summary", report(&["telemetry", "summary", "--json"])["advisory"].clone())]
+    {
+        let t = &v["advisor_thinking"];
+        assert_eq!(
+            (t["dispatch"].as_u64(), t["nudge"].as_u64(), t["blocked"].as_u64(), t["dispatch_fix"].as_u64()),
+            (Some(2), Some(1), Some(1), Some(1)),
+            "{name}: {v}"
+        );
+        assert_eq!(v["advisor_availability"]["silent_unknown"].as_u64(), Some(1), "{name}: {v}");
+    }
+}
+
+#[test]
+fn concurrent_rules_on_one_agent_state_give_exactly_one_nudge_and_one_block() {
+    let tp = transcript("cc1", &[ATTACH, OWNER, SONNET]);
+    let hs: Vec<_> = (0..8)
+        .map(|i| {
+            let tp = tp.clone();
+            std::thread::spawn(move || {
+                if i % 2 == 0 {
+                    dispatch("cc1", &tp, &format!("Fix the parser bug {i}"), &[])
+                } else {
+                    run_out("model-routing", &[], &spawn("cc1", &tp, &format!("Write module {i}"), Some("sonnet"), json!({})))
+                }
+            })
+        })
+        .collect();
+    let outs: Vec<(i32, String)> = hs.into_iter().map(|h| h.join().unwrap()).collect();
+    let guard: Vec<&(i32, String)> = outs.iter().step_by(2).collect();
+    assert_eq!(guard.iter().filter(|o| o.0 == 0 && o.1.contains(NUDGE)).count(), 1, "one nudge: {outs:?}");
+    assert_eq!(guard.iter().filter(|o| o.0 == 2).count(), 1, "one block, never turned back into a nudge: {outs:?}");
+    let s = stats("cc1");
+    assert_eq!((s["dispatch"].as_u64(), s["nudge"].as_u64(), s["blocked"].as_u64(), s["block_capped"].as_u64()), (Some(4), Some(1), Some(1), Some(2)), "{s}");
+}
+
+// ---- Codex re-review P2s ----
+
+const QUOTED: &str = r#"{"type":"assistant","message":{"role":"assistant","model":"claude-sonnet-5-5","content":[{"type":"text","text":"The README says: \"I will ask the advisor before each fix.\""}]}}"#;
+
+#[test]
+fn p2_an_announcement_alone_is_not_availability() {
+    let tp = transcript("p21", &[OWNER, SONNET, QUOTED]);
+    assert_eq!(dispatch("p21", &tp, "Fix the parser bug", &[]), (0, String::new()), "quoted prose, no attachment: silent");
+    assert_eq!(stop("p21", &tp, &[], false), 0, "say-do silent too");
+}
+
+#[test]
+fn p2_longer_rewrite_keeping_the_head_is_read_afresh() {
+    let head = format!(r#"{{"type":"user","message":{{"role":"user","content":"{}"}}}}"#, "h".repeat(400)); // same first 256 bytes
+    let tp = transcript("p22", &[&head, ATTACH, OWNER, SONNET]);
+    assert!(dispatch("p22", &tp, "Fix the parser bug", &[]).1.contains(NUDGE));
+    let f = filler(5);
+    std::fs::write(&tp, [head.as_str(), ATTACH_OFF, OWNER, SONNET, &f].join("\n") + "\n").unwrap();
+    assert_eq!(dispatch("p22", &tp, "Investigate the crash", &[]), (0, String::new()), "the off attachment before the old offset was read");
+}
+
+#[test]
+fn p2_a_jumped_gap_drops_cached_availability() {
+    let tp = transcript("p23", &[ATTACH, OWNER, SONNET]);
+    assert!(dispatch("p23", &tp, "Fix the parser bug", &[]).1.contains(NUDGE));
+    append(&tp, ATTACH_OFF);
+    append(&tp, &filler(5 * 1024)); // 5 MB: past the 4 MB window, the off attachment is jumped
+    append(&tp, SONNET);
+    assert_eq!(dispatch("p23", &tp, "Investigate the crash", &[]), (0, String::new()), "unknown after the gap: silent");
+}
+
+#[test]
+fn p2_the_task_block_cap_spans_issue_keys() {
+    let tp = transcript("p24", &[ATTACH, OWNER, SONNET]);
+    let got: Vec<i32> = ["Fix #1 a", "Fix #1 b", "Fix #2 a", "Fix #2 b"].iter().map(|d| dispatch("p24", &tp, d, &[]).0).collect();
+    assert_eq!(got, vec![0, 2, 0, 0], "nudge, the one block, then passes for every key");
+    assert_eq!(stats("p24")["block_capped"], 2);
+}
+
+// GH #500: the plan rule and the retry re-edit rule, main session only, are skipped while the main model ranks equal or higher than the
+// advisor model. Every test below turns the switch on (ON) unless it says it tests the switch off.
+const ON: (&str, &str) = ("ANTIHALL_ADVISOR_RANK", "1");
+
+const RANK_ATTACH: &str = r#"{"type":"attachment","attachment":{"type":"advisor_tool","available":true,"model":"claude-opus-5-5","toolChange":"add"}}"#;
+
+fn main_model(m: &str) -> String {
+    format!(r#"{{"type":"assistant","message":{{"role":"assistant","model":"{m}","content":[{{"type":"text","text":"working"}}]}}}}"#)
+}
+
+fn plan_write(session: &str, main: &str, extra: &[(&str, &str)]) -> (i32, String) {
+    let tp = transcript(session, &[RANK_ATTACH, USER, &main_model(main)]);
+    let env: Vec<(&str, &str)> = std::iter::once(ON).chain(extra.iter().copied()).collect();
+    run_out("advisor-guard", &env, &tool(session, &tp, "PreToolUse", "Write", json!({"file_path": "/r/PLAN.md", "content": "x"})))
+}
+
+#[test]
+fn rank_lower_main_is_blocked_with_the_fact_and_the_clear_step() {
+    for (s, m) in [("rk1", "claude-sonnet-5-5"), ("rk2", "claude-haiku-5")] {
+        let (code, out) = plan_write(s, m, &[]);
+        assert_eq!(code, 2, "{m}: {out}");
+        assert!(out.contains(&format!("Plan written with no advisor call: main {m} is below advisor claude-opus-5-5.")), "{out}");
+        assert!(out.contains("Call the advisor on this plan first, then write it."), "{out}");
+    }
+}
+
+#[test]
+fn rank_equal_or_higher_main_is_allowed_whatever_the_version() {
+    for (s, m) in [("rk3", "claude-opus-5-5"), ("rk4", "claude-opus-9-9"), ("rk5", "claude-fable-1")] {
+        assert_eq!(plan_write(s, m, &[]), (0, String::new()), "{m}");
+    }
+}
+
+#[test]
+fn rank_unknown_main_or_advisor_keeps_the_guard_on() {
+    let (code, out) = plan_write("rk6", "gpt-5.5", &[]);
+    assert_eq!(code, 2, "{out}");
+    assert!(out.contains("Plan written with no advisor call: main gpt-5.5 or advisor claude-opus-5-5 unranked."), "{out}");
+    // no model on the attachment and no settings file: the advisor model is unknown
+    let bare = r#"{"type":"attachment","attachment":{"type":"advisor_tool","available":true,"toolChange":"add"}}"#;
+    let tp = transcript("rk7", &[bare, USER, &main_model("claude-opus-5-5")]);
+    let (code, out) = run_out("advisor-guard", &[ON], &tool("rk7", &tp, "PreToolUse", "Write", json!({"file_path": "/r/PLAN.md"})));
+    assert_eq!(code, 2, "{out}");
+}
+
+#[test]
+fn switch_off_equal_main_blocked_as_today() {
+    let tp = transcript("rk8", &[RANK_ATTACH, USER, &main_model("claude-opus-5-5")]);
+    // default (off): an Opus main with an Opus advisor is blocked with the plain text, no rank wording
+    let (code, out) = run_out("advisor-guard", &[], &tool("rk8", &tp, "PreToolUse", "Write", json!({"file_path": "/r/PLAN.md"})));
+    assert_eq!(code, 2, "{out}");
+    assert!(!out.contains("is below advisor") && !out.contains("unranked"), "{out}");
+    assert!(out.contains("Do instead: Call the advisor on this plan first, then write it."), "the switch-off clearing step is the base text: {out}");
+    // the env override set to false is the same as the default
+    let (code, _) =
+        run_out("advisor-guard", &[("ANTIHALL_ADVISOR_RANK", "false")], &tool("rk8b", &tp, "PreToolUse", "Write", json!({"file_path": "/r/PLAN.md"})));
+    assert_eq!(code, 2);
+}
+
+#[test]
+fn rank_counters_reach_the_telemetry_summary() {
+    let state = dir().join("rank-tel-state");
+    std::fs::create_dir_all(&state).unwrap();
+    for (s, m) in [("rk9", "claude-opus-5-5"), ("rk10", "claude-sonnet-5-5"), ("rk11", "gpt-5.5")] {
+        let tp = transcript(s, &[RANK_ATTACH, USER, &main_model(m)]);
+        run_out("advisor-guard", &[ON, ("AH_ENGINE_DIR", state.to_str().unwrap())], &tool(s, &tp, "PreToolUse", "Write", json!({"file_path": "/r/PLAN.md"})));
+    }
+    let d = dir();
+    let o = Command::new(env!("CARGO_BIN_EXE_ah-engine"))
+        .args(["telemetry", "summary", "--json"])
+        .env_clear()
+        .env("PATH", std::env::var("PATH").unwrap_or_default())
+        .env("HOME", d.join("home"))
+        .env("AH_ENGINE_DIR", &state)
+        .env("AH_ENGINE_NOSPAWN", "1")
+        .env("AH_ENGINE_PLUGIN_ROOT", plugin())
+        .output()
+        .unwrap();
+    let v: Value = serde_json::from_slice(&o.stdout).unwrap();
+    let g = &v["advisory"]["advisor_guard"];
+    assert_eq!(
+        (g["skipped_equal_or_higher"].as_u64(), g["applied_lower_model"].as_u64(), g["applied_unknown_model"].as_u64()),
+        (Some(1), Some(1), Some(1)),
+        "{g}"
+    );
+}
+
+// GH #500 review: the rank rule reads the LATEST assistant entry's model and the NEWEST attachment's advisor model; nothing carries
+// over from an earlier entry or attachment (an unknown latest/newest keeps the guard on).
+fn attach_with(model: Option<&str>) -> String {
+    match model {
+        Some(m) => format!(r#"{{"type":"attachment","attachment":{{"type":"advisor_tool","available":true,"model":{m},"toolChange":"add"}}}}"#),
+        None => r#"{"type":"attachment","attachment":{"type":"advisor_tool","available":true,"toolChange":"add"}}"#.to_string(),
+    }
+}
+
+fn model_raw(raw: &str) -> String {
+    format!(r#"{{"type":"assistant","message":{{"role":"assistant","model":{raw},"content":[{{"type":"text","text":"working"}}]}}}}"#)
+}
+
+/// A Write of a plan through the real hook; `settings` is an `advisorModel` for a cwd of its own (None = no settings file).
+fn rank_plan(session: &str, lines: &[&str], settings: Option<&str>) -> (i32, String) {
+    let tp = transcript(session, lines);
+    let cwd = dir().join(format!("{session}-cwd"));
+    std::fs::create_dir_all(cwd.join(".claude")).unwrap();
+    if let Some(s) = settings {
+        std::fs::write(cwd.join(".claude/settings.json"), format!(r#"{{"advisorModel":"{s}"}}"#)).unwrap();
+    }
+    let p = json!({"session_id": session, "cwd": cwd, "hook_event_name": "PreToolUse", "tool_name": "Write", "tool_input": {"file_path": "/r/PLAN.md", "content": "x"}, "transcript_path": tp});
+    run_out("advisor-guard", &[ON], &p)
+}
+
+const OPUS_ATT: &str = r#""claude-opus-5-5""#;
+const HAIKU_ATT: &str = r#""claude-haiku-5""#;
+
+#[test]
+fn rank_unknown_latest_main_never_inherits_an_earlier_opus() {
+    let opus = main_model("claude-opus-5-5");
+    let att = attach_with(Some(OPUS_ATT));
+    assert_eq!(rank_plan("rkc0", &[&att, USER, &opus], None), (0, String::new()), "control: an Opus main is skipped");
+    let cases: [(&str, String); 7] = [
+        ("rkc1", model_raw(r#""custom""#)),
+        ("rkc2", model_raw("null")),
+        ("rkc3", model_raw(r#""""#)),
+        ("rkc4", model_raw("5")),
+        ("rkc5", model_raw(r#""<synthetic>""#)),
+        ("rkc6", r#"{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"no model field"}]}}"#.to_string()),
+        ("rkc7", r#"{"type":"assistant","content":"no message object"}"#.to_string()),
+    ];
+    for (s, latest) in &cases {
+        let (code, out) = rank_plan(s, &[&att, USER, &opus, USER, latest], None);
+        assert_eq!(code, 2, "{s} {latest}: {out}");
+        assert!(out.contains("or advisor claude-opus-5-5 unranked."), "{s}: {out}");
+    }
+}
+
+#[test]
+fn rank_unknown_latest_main_across_incremental_reads_of_one_session() {
+    let att = attach_with(Some(OPUS_ATT));
+    let tp = transcript("rkd", &[&att, USER, &main_model("claude-opus-5-5")]);
+    let cwd = dir().join("rkd-cwd");
+    let at = || {
+        let p = json!({"session_id": "rkd", "cwd": cwd, "hook_event_name": "PreToolUse", "tool_name": "Write", "tool_input": {"file_path": "/r/PLAN.md"}, "transcript_path": tp});
+        run_out("advisor-guard", &[ON], &p)
+    };
+    assert_eq!(at(), (0, String::new()), "the Opus main is skipped on the first read");
+    append(&tp, USER);
+    append(&tp, &model_raw(r#""custom""#));
+    let (code, out) = at();
+    assert_eq!(code, 2, "the state kept the Opus rank from the first read, the new latest entry must replace it: {out}");
+}
+
+#[test]
+fn rank_advisor_model_comes_from_the_newest_attachment_only() {
+    let sonnet = main_model("claude-sonnet-5-5");
+    let haiku = attach_with(Some(HAIKU_ATT));
+    let opus = attach_with(Some(OPUS_ATT));
+    // newest attachment last (the transcript is append-only): haiku then opus -> sonnet is below opus
+    let (code, out) = rank_plan("rke1", &[&haiku, &opus, USER, &sonnet], None);
+    assert_eq!(code, 2, "{out}");
+    assert!(out.contains("main claude-sonnet-5-5 is below advisor claude-opus-5-5."), "{out}");
+    // opus then haiku: the newest (haiku) decides -> a sonnet main ranks above it and is skipped
+    assert_eq!(rank_plan("rke2", &[&opus, &haiku, USER, &sonnet], None), (0, String::new()));
+    // a newest attachment with no / null / empty model drops the older haiku; no settings -> unknown -> guard on
+    for (s, newest) in
+        [("rke3", attach_with(None)), ("rke4", attach_with(Some("null"))), ("rke5", attach_with(Some(r#""""#))), ("rke6", attach_with(Some("7")))]
+    {
+        let (code, out) = rank_plan(s, &[&haiku, &newest, USER, &sonnet], None);
+        assert_eq!(code, 2, "{s}: a stale haiku must not make the sonnet main look equal: {out}");
+        assert!(out.contains("main claude-sonnet-5-5 or advisor unknown unranked."), "{s}: {out}");
+        // the settings advisorModel never stands in for that newest attachment (no settings fallback): still unknown, guard on
+        let (code, out) = rank_plan(&format!("{s}s"), &[&haiku, &newest, USER, &sonnet], Some("opus"));
+        assert_eq!(code, 2, "{s}s: {out}");
+        assert!(out.contains("main claude-sonnet-5-5 or advisor unknown unranked."), "{s}s: {out}");
+    }
+}
+
+#[test]
+fn rank_attachment_without_model_clears_the_advisor_model_across_incremental_reads() {
+    let tp = transcript("rkf", &[&attach_with(Some(HAIKU_ATT)), USER, &main_model("claude-sonnet-5-5")]);
+    let cwd = dir().join("rkf-cwd");
+    let at = || {
+        let p = json!({"session_id": "rkf", "cwd": cwd, "hook_event_name": "PreToolUse", "tool_name": "Write", "tool_input": {"file_path": "/r/PLAN.md"}, "transcript_path": tp});
+        run_out("advisor-guard", &[ON], &p)
+    };
+    assert_eq!(at(), (0, String::new()), "sonnet main vs a haiku advisor: skipped");
+    append(&tp, &attach_with(None));
+    let (code, out) = at();
+    assert_eq!(code, 2, "the newer model-less attachment replaces the haiku kept in the state: {out}");
+    assert!(out.contains("or advisor unknown unranked."), "{out}");
+}
+
+// GH #500 third review: the main and advisor model of a decision come ONLY from entries positively read in the current window; any
+// discarded input (a gap, an oversized or unparsable line, a truncated tail) makes both unknown (guard on) until a fresh entry is read.
+// The limits are lowered through their config keys (env override), never by building multi-MB payloads.
+// via the state directory's config.toml (the engine's own settings file), never env or a hardcoded payload size.
+const WINDOW: (&str, u64) = ("window_bytes", 4096);
+const LINE_MAX: (&str, u64) = ("line_max_bytes", 1024);
+
+/// A plan Write through the real hook for `session` (its own cwd, with an `advisorModel` settings file when `settings`). Every call
+/// writes a plan file of its own: the block gate holds back an unchanged trigger (same tool and file).
+fn plan_at(session: &str, tp: &str, settings: Option<&str>, cfg: &[(&str, u64)]) -> (i32, String) {
+    let state = dir().join(format!("{session}-state"));
+    std::fs::create_dir_all(&state).unwrap();
+    let toml: String = cfg.iter().map(|(k, v)| format!("{k} = {v}\n")).collect();
+    std::fs::write(state.join("config.toml"), if toml.is_empty() { String::new() } else { format!("[advisor]\n{toml}") }).unwrap();
+    let cwd = dir().join(format!("{session}-cwd"));
+    std::fs::create_dir_all(cwd.join(".claude")).unwrap();
+    if let Some(s) = settings {
+        std::fs::write(cwd.join(".claude/settings.json"), format!(r#"{{"advisorModel":"{s}"}}"#)).unwrap();
+    }
+    static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let file = format!("/r/plans/p{}.md", N.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
+    let p = json!({"session_id": session, "cwd": cwd, "hook_event_name": "PreToolUse", "tool_name": "Write", "tool_input": {"file_path": file, "content": "x"}, "transcript_path": tp});
+    run_out("advisor-guard", &[ON, ("AH_ENGINE_DIR", state.to_str().unwrap())], &p)
+}
+
+fn tool_result(n: usize) -> String {
+    format!(r#"{{"type":"user","message":{{"role":"user","content":[{{"type":"tool_result","tool_use_id":"t","content":"{}"}}]}}}}"#, "z".repeat(n))
+}
+
+fn big_assistant(model: &str, n: usize) -> String {
+    format!(r#"{{"type":"assistant","message":{{"role":"assistant","model":"{model}","content":[{{"type":"text","text":"{}"}}]}}}}"#, "w".repeat(n))
+}
+
+#[test]
+fn rank_gap_resets_the_main_model_with_the_advisor_model() {
+    let att = attach_with(Some(OPUS_ATT));
+    let tp = transcript("rkg", &[&att, USER, &main_model("claude-opus-5-5")]);
+    assert_eq!(plan_at("rkg", &tp, Some("opus"), &[WINDOW]), (0, String::new()), "control: Opus main, Opus advisor, no discard");
+    append(&tp, USER);
+    append(&tp, &main_model("claude-haiku-5"));
+    for _ in 0..8 {
+        append(&tp, &tool_result(1000)); // pushes the haiku entry out of the 4 KB window: a gap
+    }
+    let (code, out) = plan_at("rkg", &tp, Some("opus"), &[WINDOW]);
+    assert_eq!(code, 2, "the unread gap holds the real latest model: unknown keeps the guard on: {out}");
+    assert!(out.contains("unranked"), "{out}");
+    // fresh usable entries after the gap (the attachment too: the advisor model is read from it only) restore the rule
+    append(&tp, USER);
+    append(&tp, &attach_with(Some(OPUS_ATT)));
+    append(&tp, &main_model("claude-opus-5-5"));
+    assert_eq!(plan_at("rkg", &tp, Some("opus"), &[WINDOW]), (0, String::new()), "read again: Opus main vs the Opus attachment");
+}
+
+/// One discard case, one session (the advisory layer caps the blocks of a kind per session): Opus main + Opus advisor allowed; then
+/// `discard` is appended after a new owner message -> the guard is on with the models unknown; then a fresh Opus entry -> allowed.
+fn discard_case(session: &str, cfg: &[(&str, u64)], discard: &dyn Fn(&str)) {
+    let tp = transcript(session, &[&attach_with(Some(OPUS_ATT)), USER, &main_model("claude-opus-5-5")]);
+    // the settings advisorModel (opus) never stands in after a discard: the attachment's own model is dropped with the rest
+    let at = || plan_at(session, &tp, Some("opus"), cfg);
+    assert_eq!(at(), (0, String::new()), "{session} control: Opus main, Opus advisor, no discard");
+    append(&tp, USER);
+    discard(&tp);
+    let (code, out) = at();
+    assert_eq!(code, 2, "{session}: the earlier Opus must not stay after a discard: {out}");
+    assert!(out.contains("unranked"), "{session}: {out}");
+    append(&tp, USER);
+    append(&tp, &attach_with(Some(OPUS_ATT)));
+    append(&tp, &main_model("claude-opus-5-5"));
+    assert_eq!(at(), (0, String::new()), "{session}: fresh usable entries restore the rule");
+}
+
+#[test]
+fn rank_an_oversized_line_resets_the_models() {
+    // a sonnet entry over advisor.line_max_bytes is skipped unread
+    discard_case("rkh1", &[LINE_MAX], &|tp| append(tp, &big_assistant("claude-sonnet-5-5", 2000)));
+}
+
+#[test]
+fn rank_an_unparsable_line_resets_the_models() {
+    discard_case("rkh2", &[], &|tp| append(tp, r#"{"type":"assistant","message":{"model":"claude-sonnet-5-5","content":[ broken"#));
+}
+
+#[test]
+fn rank_a_truncated_tail_resets_the_models_until_it_completes() {
+    let tp = transcript("rkh3", &[&attach_with(Some(OPUS_ATT)), USER, &main_model("claude-opus-5-5")]);
+    let at = || plan_at("rkh3", &tp, Some("opus"), &[]);
+    assert_eq!(at(), (0, String::new()), "control");
+    append(&tp, USER);
+    let mut f = std::fs::OpenOptions::new().append(true).open(&tp).unwrap();
+    write!(f, "{}", main_model("claude-sonnet-5-5")).unwrap(); // no newline yet
+    let (code, out) = at();
+    assert_eq!(code, 2, "{out}");
+    assert!(out.contains("unranked"), "{out}");
+    writeln!(f).unwrap();
+    append(&tp, USER);
+    append(&tp, &attach_with(Some(OPUS_ATT)));
+    let (code, out) = at();
+    assert_eq!(code, 2, "{out}");
+    assert!(out.contains("main claude-sonnet-5-5 is below advisor claude-opus-5-5."), "the completed line and the attachment are read: {out}");
+}
+
+#[test]
+fn rank_name_matching_two_families_is_unknown_for_main_advisor_and_settings() {
+    let (code, out) = rank_plan("rki1", &[&attach_with(Some(r#""claude-haiku-5""#)), USER, &main_model("claude-opus-sonnet-5")], None);
+    assert_eq!(code, 2, "an ambiguous main is unknown (first-match would rank it sonnet >= haiku and skip): {out}");
+    assert!(out.contains("claude-opus-sonnet-5") && out.contains("unranked"), "{out}");
+    let (code, out) = rank_plan("rki2", &[&attach_with(Some(r#""claude-sonnet-opus""#)), USER, &main_model("claude-opus-5-5")], None);
+    assert_eq!(code, 2, "an ambiguous attachment advisor model is unknown: {out}");
+    let (code, out) = rank_plan("rki3", &[&attach_with(None), USER, &main_model("claude-fable-1")], Some("sonnet-opus"));
+    assert_eq!(code, 2, "a settings advisorModel never stands in: {out}");
+    assert_eq!(rank_plan("rki4", &[&attach_with(Some(OPUS_ATT)), USER, &main_model("claude-opus-5-5")], None), (0, String::new()), "control");
+}
+
+#[test]
+fn rank_sidechain_entries_never_set_the_main_model() {
+    let att = attach_with(Some(OPUS_ATT));
+    let side = r#"{"type":"assistant","isSidechain":true,"message":{"role":"assistant","model":"claude-opus-5-5","content":[{"type":"text","text":"sub"}]}}"#;
+    let (code, out) = rank_plan("rkj1", &[&att, USER, &main_model("claude-sonnet-5-5"), side], None);
+    assert_eq!(code, 2, "{out}");
+    assert!(out.contains("main claude-sonnet-5-5 is below advisor claude-opus-5-5."), "{out}");
+    assert_eq!(
+        rank_plan("rkj2", &[&att, USER, &main_model("claude-sonnet-5-5"), &side.replace("true", "false")], None),
+        (0, String::new()),
+        "not a sidechain: the Opus entry is the main model"
+    );
+}
+
+// ---- GH #500 narrow scope: plan and retry rules only, main session only, never inside present() -----------------------------------
+
+fn opus_att() -> String {
+    attach_with(Some(OPUS_ATT))
+}
+
+#[test]
+fn p1_1_opus_main_review_agent_on_sonnet_still_exit_2_switch_on() {
+    // the review rule (model-routing) is not rank-gated: an Opus main still has its review spawn on sonnet blocked
+    let tp = transcript("pr11", &[&opus_att(), USER, &main_model("claude-opus-5-5")]);
+    let p = spawn("pr11", &tp, "Review the diff", Some("sonnet"), json!({}));
+    assert_eq!(run("model-routing", &[ON], &p), 2);
+}
+
+#[test]
+fn p1_1_opus_main_phase3_rules_still_apply_when_main_is_a_non_flagship_tier() {
+    // phase-3 rules gate on the flagship regex, not on rank: a Sonnet main dispatching thinking work is nudged with the switch on
+    let tp = transcript("pr12", &[&opus_att(), USER, &main_model("claude-sonnet-5-5")]);
+    let (code, out) = dispatch("pr12", &tp, "Fix the parser bug in ISSUE-1", &[ON]);
+    assert_eq!(code, 0);
+    assert!(out.contains(NUDGE), "{out}");
+}
+
+#[test]
+fn p1_2_subagent_opus_with_opus_advisor_plan_write_still_blocked_all_sidechain_transcript() {
+    let tp = transcript("pr2", &[&opus_att(), USER, &main_model("claude-opus-5-5")]);
+    let head = r#"{"type":"user","agentId":"s1","isSidechain":true,"message":{"role":"user","content":"write the plan"}}"#;
+    let side_att =
+        r#"{"type":"attachment","isSidechain":true,"attachment":{"type":"advisor_tool","available":true,"model":"claude-opus-5-5","toolChange":"add"}}"#;
+    let side_opus =
+        r#"{"type":"assistant","isSidechain":true,"message":{"role":"assistant","model":"claude-opus-5-5","content":[{"type":"text","text":"sub"}]}}"#;
+    sub_transcript("pr2", "s1", &[head, side_att, side_opus]);
+    let p = json!({"session_id": "pr2", "agent_id": "s1", "cwd": "/tmp", "hook_event_name": "PreToolUse", "tool_name": "Write", "tool_input": {"file_path": "/r/PLAN.md", "content": "x"}, "transcript_path": tp});
+    let (code, out) = run_out("advisor-guard", &[ON], &p);
+    assert_eq!(code, 2, "a subagent is never exempted: {out}");
+    assert!(!out.contains("is below advisor") && !out.contains("unranked"), "the plain text, no rank wording: {out}");
+}
+
+#[test]
+fn p1_3_sidechain_advisor_attachment_with_opus_never_sets_advisor_model() {
+    // the main thread's advisor is Opus, a sidechain attachment names Haiku: the Sonnet main must stay blocked
+    let side_haiku =
+        r#"{"type":"attachment","isSidechain":true,"attachment":{"type":"advisor_tool","available":true,"model":"claude-haiku-5","toolChange":"add"}}"#;
+    let (code, out) = rank_plan("pr3", &[&opus_att(), USER, &main_model("claude-sonnet-5-5"), side_haiku], None);
+    assert_eq!(code, 2, "a sidechain attachment must not lower the advisor model to haiku: {out}");
+    assert!(out.contains("main claude-sonnet-5-5 is below advisor claude-opus-5-5."), "{out}");
+    // and a sidechain Opus attachment must not raise a Haiku advisor
+    let side_opus =
+        r#"{"type":"attachment","isSidechain":true,"attachment":{"type":"advisor_tool","available":true,"model":"claude-opus-5-5","toolChange":"add"}}"#;
+    let (code, _) = rank_plan("pr3b", &[&attach_with(Some(HAIKU_ATT)), USER, &main_model("claude-sonnet-5-5"), side_opus], None);
+    assert_eq!(code, 0, "sonnet main vs the main thread's haiku advisor stays skipped");
+}
+
+#[test]
+fn p1_4_opus_main_edit_fail_then_main_switches_to_sonnet_same_edit_exit_2() {
+    let tp = transcript("pr4", &[&opus_att(), USER, &main_model("claude-opus-5-5")]);
+    let ed = |f: &str| run_out("advisor-guard", &[ON], &tool("pr4", &tp, "PreToolUse", "Edit", json!({"file_path": f}))).0;
+    assert_eq!(ed("/r/a.rs"), 0, "first edit");
+    assert_eq!(run_out("advisor-guard", &[ON], &tool("pr4", &tp, "PostToolUseFailure", "Bash", json!({"command": "cargo test -p x"}))).0, 0);
+    assert_eq!(ed("/r/a.rs"), 0, "Opus main vs Opus advisor: the retry block is skipped, and the skip is not remembered");
+    // the failure stays armed (the skip is recomputed at each Edit), the main switches to Sonnet, the same edit is blocked
+    append(&tp, USER);
+    append(&tp, &main_model("claude-sonnet-5-5"));
+    let (code, out) = run_out("advisor-guard", &[ON], &tool("pr4", &tp, "PreToolUse", "Edit", json!({"file_path": "/r/a.rs"})));
+    assert_eq!(code, 2, "{out}");
+    assert!(out.contains("main claude-sonnet-5-5 is below advisor claude-opus-5-5."), "{out}");
+}
+
+#[test]
+fn settings_advisor_model_never_stands_in_after_a_discard() {
+    // an unparsable line makes both models unknown; the settings advisorModel (opus) must not rank the main
+    let tp = transcript("pr5", &[&opus_att(), USER, &main_model("claude-opus-5-5")]);
+    assert_eq!(plan_at("pr5", &tp, Some("opus"), &[]), (0, String::new()), "control");
+    append(&tp, USER);
+    append(&tp, r#"{"type":"assistant","message":{"model":"claude-opus-5-5","content":[ broken"#);
+    let (code, out) = plan_at("pr5", &tp, Some("opus"), &[]);
+    assert_eq!(code, 2, "{out}");
+    assert!(out.contains("or advisor unknown unranked"), "{out}");
+}
+
+#[test]
+fn rank_counters_include_the_subagent_verdict_and_the_metric() {
+    let state = dir().join("rank-sub-state");
+    std::fs::create_dir_all(&state).unwrap();
+    let st = state.to_str().unwrap();
+    let tp = transcript("pr6", &[&opus_att(), USER, &main_model("claude-opus-5-5")]);
+    sub_transcript("pr6", "s6", &[r#"{"type":"user","agentId":"s6","isSidechain":true,"message":{"role":"user","content":"plan"}}"#, &opus_att()]);
+    let p = json!({"session_id": "pr6", "agent_id": "s6", "cwd": "/tmp", "hook_event_name": "PreToolUse", "tool_name": "Write", "tool_input": {"file_path": "/r/PLAN.md"}, "transcript_path": tp});
+    assert_eq!(run_out("advisor-guard", &[ON, ("AH_ENGINE_DIR", st)], &p).0, 2);
+    let o = Command::new(env!("CARGO_BIN_EXE_ah-engine"))
+        .args(["telemetry", "summary", "--json"])
+        .env_clear()
+        .env("PATH", std::env::var("PATH").unwrap_or_default())
+        .env("HOME", dir().join("home"))
+        .env("AH_ENGINE_DIR", &state)
+        .env("AH_ENGINE_NOSPAWN", "1")
+        .env("AH_ENGINE_PLUGIN_ROOT", plugin())
+        .output()
+        .unwrap();
+    let v: Value = serde_json::from_slice(&o.stdout).unwrap();
+    assert_eq!(v["advisory"]["advisor_guard"]["applied_subagent_unranked"].as_u64(), Some(1), "{v}");
+}
+
+// GH #558: a transcript far longer than advisor.max_lines made the script fail ('quickjs: Null') and the call passed. Now one read
+// stops at advisor.max_lines, the rules stay silent for that call (counted silent_behind) and later reads catch up.
+#[test]
+fn n99999_appended_lines_plan_write_blocks_or_counts_silent_behind() {
+    let fill = r#"{"type":"progress","n":1}"#;
+    let mut lines: Vec<&str> = vec![USER];
+    lines.extend(std::iter::repeat_n(fill, 99_999));
+    let sonnet = main_model("claude-sonnet-5-5");
+    lines.push(&sonnet);
+    let tp = transcript("pb1", &lines);
+    let state = dir().join("pb1-state");
+    std::fs::create_dir_all(&state).unwrap();
+    let p = tool("pb1", &tp, "PreToolUse", "Write", json!({"file_path": "/r/PLAN.md", "content": "x"}));
+    let (code, out) = run_out("advisor-guard", &[("AH_ENGINE_DIR", state.to_str().unwrap())], &p);
+    let log = std::fs::read_to_string(state.join("ah-engine.log")).unwrap_or_default();
+    assert!(!log.contains("script_error") && !log.contains("quickjs"), "the hook must not crash: {log}\n{out}");
+    let counters = std::fs::read_to_string(state.join("obs-counters.log")).unwrap_or_default();
+    // blocked (exit 2) or, when the read stopped at advisor.max_lines with bytes left, silent and counted
+    assert!(code == 2 || (code == 0 && counters.contains("silent_behind")), "code {code}, counters {counters}, out {out}");
+}
+
+// Review round 1 (P1): a read that stopped at advisor.max_lines with bytes left saw only a stale model (the newest entry is past the
+// cap), so the payload's own tool list must not make the advisor "present" before that is checked. Same input through the check and
+// through the real hook; the rank switch is irrelevant (default off and on both stay silent).
+fn behind_transcript(name: &str) -> String {
+    let fill = r#"{"type":"progress","n":1}"#;
+    let opus = main_model("claude-opus-5-5");
+    let sonnet = main_model("claude-sonnet-5-5");
+    let mut lines: Vec<&str> = vec![RANK_ATTACH, USER_FIX, &sonnet];
+    lines.extend(std::iter::repeat_n(fill, 40_010));
+    lines.push(&opus);
+    transcript(name, &lines)
+}
+const USER_FIX: &str = r#"{"type":"user","message":{"role":"user","content":"fix parser"}}"#;
+
+fn behind_payload(session: &str, tp: &str) -> Value {
+    json!({"session_id": session, "cwd": "/tmp", "hook_event_name": "PreToolUse", "tool_name": "Agent",
+        "tool_input": {"description": "Fix the parser bug in ISSUE-42", "prompt": "do the work", "subagent_type": "general-purpose", "model": "opus"},
+        "transcript_path": tp, "tools": ["advisor", "Agent", "Task", "Write", "Edit", "Bash"]})
+}
+
+#[test]
+fn behind_read_with_the_payload_tool_list_stays_silent_for_phase3_dispatch() {
+    for (s, env) in [("bh1", vec![]), ("bh2", vec![ON])] {
+        let tp = behind_transcript(s);
+        let state = dir().join(format!("{s}-state"));
+        std::fs::create_dir_all(&state).unwrap();
+        let mut e = env;
+        e.push(("AH_ENGINE_DIR", state.to_str().unwrap()));
+        for call in 0..2 {
+            let (code, out) = run_out("advisor-guard", &e, &behind_payload(s, &tp));
+            assert_eq!((code, out.as_str()), (0, ""), "{s} call {call}: a read cut at advisor.max_lines must not dispatch on a stale model");
+        }
+        let counters = std::fs::read_to_string(state.join("obs-counters.log")).unwrap_or_default();
+        assert!(counters.contains("silent_behind"), "{s}: counted, not dropped: {counters}");
+    }
+}
+
+#[test]
+fn behind_read_through_the_real_hook_allows_both_calls_with_the_tool_list() {
+    let state = dir().join("bh3-state");
+    std::fs::create_dir_all(&state).unwrap();
+    let tp = behind_transcript("bh3");
+    for call in 0..2 {
+        let mut c = Command::new(env!("CARGO_BIN_EXE_ah-engine"));
+        c.args(["hook", "--event", "PreToolUse", "--host", "claude"])
+            .env_clear()
+            .env("PATH", std::env::var("PATH").unwrap_or_default())
+            .env("HOME", dir().join("home"))
+            .env("AH_ENGINE_DIR", &state)
+            .env("AH_ENGINE_NOSPAWN", "1")
+            .env("AH_ENGINE_DISPATCH_IN_PROCESS", "1")
+            .env("AH_ENGINE_SCRIPT_TIME_MS", "2000")
+            .env("ANTIHALL_EDIT_GUARD", "0")
+            .env("ANTIHALL_PAIR_RULE", "0") // R-pair defaults to on and denies an unnamed spawn: this test is about the advisor guard alone
+            .env("AH_ENGINE_PLUGIN_ROOT", plugin())
+            .current_dir(dir())
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut ch = c.spawn().unwrap();
+        ch.stdin.take().unwrap().write_all(behind_payload("bh3", &tp).to_string().as_bytes()).unwrap();
+        let o = ch.wait_with_output().unwrap();
+        assert_eq!(o.status.code(), Some(0), "call {call}: {}", String::from_utf8_lossy(&o.stderr));
+        assert!(o.stdout.is_empty(), "call {call}: {}", String::from_utf8_lossy(&o.stdout));
+    }
+}
+
+// Review round 1 (P2): a sidechain assistant row without a message object must not clear the MAIN model.
+#[test]
+fn rank_malformed_sidechain_assistant_row_keeps_the_main_model() {
+    let att = attach_with(Some(OPUS_ATT));
+    let bad = r#"{"type":"assistant","isSidechain":true,"content":"no message object"}"#;
+    assert_eq!(rank_plan("rkm1", &[&att, USER, &main_model("claude-opus-5-5"), bad], None), (0, String::new()), "sidechain row ignored");
+    let bad_main = r#"{"type":"assistant","content":"no message object"}"#;
+    assert_eq!(rank_plan("rkm2", &[&att, USER, &main_model("claude-opus-5-5"), bad_main], None).0, 2, "a main-thread row still clears");
+}

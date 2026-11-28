@@ -38,11 +38,23 @@ Handover, resume and compaction guards.
 - `autoHandover.nagQuietMin` = 15: The autoHandover.nagQuietMin setting: the minutes between two nags at a quiet pause
 - `autoHandover.nagStepPct` = 5: The autoHandover.nagStepPct setting: the context points between two nags
 - `autoHandover.pct` = 93: The autoHandover.pct setting: the context percent that triggers the handover
+- `autoHandover.workspaceMaxTokens` = 150000: The autoHandover.workspaceMaxTokens setting (GH #884): the context ceiling of a DevSwarm...
 - `guards.compactAdviceMarginPct` = 10: The guards.compactAdviceMarginPct setting: context points below autoHandover.pct at which a...
 - `guards.compactAdviceRecentTurns` = 10: The guards.compactAdviceRecentTurns setting: a compact boundary within this many turns makes a...
 - `guards.compactAdviceGuard` = true: The guards.compactAdviceGuard setting: block a /compact recommendation made at low context or...
+- `handover.memoryIndexMaxChars` = 12000: Most characters the MEMORY.md index may hold at a handover
+- `handover.memoryIndexMaxLines` = 100: Most lines the MEMORY.md index may hold at a handover
+- `handover.taskListBudget` = 12: Most active tasks the session task list may hold at a handover
+- `handover.taskDoneNote` = true: The handover.taskDoneNote setting: when a task is marked completed, tell the agent once, in one...
+- `handover.taskListEnforce` = "advisory": The handover.taskListEnforce setting: what happens when a created task subject is over...
+- `handover.taskSubjectMax` = 60: Longest task subject (characters) allowed at a handover
 - `maintenance.progressPrune` = true: Switch: archive stale per-session progress files into the history ledger...
 - `maintenance.precompactSnapshot` = true: Where the PreCompact snapshot switch is read from (maintenance.precompactSnapshot, default on)
 - `context.handoverResume` = true: Where the handover resume switch is read from (context.handoverResume, default on)
+- `autoHandover.promptHint` = true: Point a plain-words handover request at anti-hall's handover skill
+- `guards.compactAdviceDeferToOmc` = true: Defer compact advice to OMC's context guard
+- `autoHandover.quietOnOmcLoop` = true: Stay quiet about stopping points while an OMC loop runs
+- `guards.handoverGateOnChangeRepeatS` = 1800: Unchanged post-handover gate reminder interval, seconds
+- `guards.handoverGateOnChange` = true: Send the post-handover gate on change
 
 _Generated from the engine registry by `ah-engine docs --format skill`; do not edit by hand._

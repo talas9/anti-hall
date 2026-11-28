@@ -81,7 +81,8 @@ function decide(p) {
   var claim1 = oosClaimRel(sid, m.epochId, ah.cfg('orch_on_spawn.claim_suffix'));
   var won = false;
   try { won = ah.state.op(sh.ok, 'create', claim1, JSON.stringify({ at: t, pid: ah.pid() })); } catch (e) { won = false; }
-  if (!won) {
+  var retry = !won;
+  if (retry) {
     // the retry slot: only after the lease, only when no delivered copy is visible; once the second slot exists the epoch is done
     if (ah.fs.kind(abs(oosClaimRel(sid, m.epochId, ah.cfg('orch_on_spawn.claim2_suffix')))) !== null) return 'allow';
     var at = oosClaimAt(abs(claim1));
@@ -94,6 +95,10 @@ function decide(p) {
 
   var event = typeof p.hook_event_name === 'string' && p.hook_event_name ? p.hook_event_name : ah.cfg('orch_on_spawn.default_event');
   var codex = new RegExp(ah.cfg('orch_on_spawn.codex_tool_suffix')).test(String(p.tool_name)) || vf.codexPayload(p);
-  var body = vfoFull(codex) + '\n' + text.render(ah.cfg('orch_on_spawn.token_format'), { epoch: m.epochId });
+  var rules = vfoFull(codex);
+  // A new context needs the rules again. The retry slot already proved the previous attempt was not delivered;
+  // its advisory fingerprint records only an attempt, so it cannot veto that recovery.
+  if (!retry && !dedupe.advisory(p, 'orchestration', { rules: rules, epochId: m.epochId }, rules)) return 'allow';
+  var body = rules + '\n' + text.render(ah.cfg('orch_on_spawn.token_format'), { epoch: m.epochId });
   return { advisory: text.advisoryJson(event, body) };
 }

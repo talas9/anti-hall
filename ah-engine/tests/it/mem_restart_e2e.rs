@@ -29,11 +29,22 @@ fn lower(plugin: &Path, dir: &str) {
         .replace("value = 60\nmin = 1\nunit = \"s\"", "value = 1\nmin = 1\nunit = \"s\""); // mem.global_restart_after_s
     assert!(text.contains("value = 1\nmin = 1\nunit = \"s\""), "restart_after_s was not lowered");
     std::fs::write(p, text).unwrap();
+    // A memory restart is a forced drain: the exit timer cuts it off after `daemon.drain_grace_ms` (1 s shipped) with an `exit forced`
+    // line, whatever the drain was doing. This test is about the CLEAN drain and its recorded reason, so the grace is made longer
+    // than any drain on a loaded machine; the shipped value is the daemon's own contract and is exercised by the drain tests.
+    let p = plugin.join("engine").join(dir).join("engine.toml");
+    let text = std::fs::read_to_string(&p).unwrap();
+    let head = "[daemon.drain_grace_ms]";
+    let at = text.find(head).expect("daemon.drain_grace_ms is shipped");
+    let rest = &text[at..];
+    let line = rest.find("\nvalue = 1000\n").expect("drain_grace_ms value") + at;
+    let text = format!("{}\nvalue = 25000\n{}", &text[..line], &text[line + "\nvalue = 1000\n".len()..]);
+    std::fs::write(p, text).unwrap();
 }
 
 #[test]
 fn a_daemon_over_the_global_hard_limit_for_too_long_restarts_cleanly_and_says_why() {
-    let root: PathBuf = std::env::temp_dir().join(format!("ahd-memrestart-{}", std::process::id()));
+    let root: PathBuf = crate::common::testtmp::path(format!("ahd-memrestart-{}", std::process::id()));
     std::fs::remove_dir_all(&root).ok(); // our own scratch directory from a crashed earlier run
     let plugin = root.join("plugin");
     copy_dir(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall"), &plugin);
@@ -41,7 +52,7 @@ fn a_daemon_over_the_global_hard_limit_for_too_long_restarts_cleanly_and_says_wh
     lower(&plugin, "defaults.pristine");
     let (home, state) = (root.join("home"), root.join("state"));
     std::fs::create_dir_all(&home).unwrap();
-    let mut child = Command::new(env!("CARGO_BIN_EXE_ah-engine"))
+    let mut child = crate::common::Daemon::new(Command::new(env!("CARGO_BIN_EXE_ah-engine"))
         .arg("serve")
         .env_clear()
         .env("PATH", std::env::var("PATH").unwrap_or_default())
@@ -58,7 +69,7 @@ fn a_daemon_over_the_global_hard_limit_for_too_long_restarts_cleanly_and_says_wh
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-        .unwrap();
+        .unwrap());
     let start = Instant::now();
     let exited = loop {
         if let Some(s) = child.try_wait().unwrap() {

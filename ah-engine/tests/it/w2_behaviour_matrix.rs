@@ -27,7 +27,7 @@ struct World {
 }
 impl World {
     fn new() -> Self {
-        let home = std::env::temp_dir().join(format!("ah-w2-{}-{}-{}", std::process::id(), now(), ID.fetch_add(1, Ordering::Relaxed)));
+        let home = crate::common::testtmp::path(format!("ah-w2-{}-{}-{}", std::process::id(), now(), ID.fetch_add(1, Ordering::Relaxed)));
         std::fs::create_dir_all(home.join("proj/.git")).unwrap();
         Self { home: home.canonicalize().unwrap() }
     }
@@ -120,8 +120,10 @@ fn tasks(status: &str, count: usize) -> Vec<Value> {
         })
         .collect()
 }
-fn work(n: usize) -> Vec<Value> {
-    (0..n).map(|n| tool(&format!("e{n}"), "Edit", json!({"file_path":format!("/project/f{n}.js")}))).collect()
+/// `n` edits of files inside the session's project (the work count judges a written path by the project it is in).
+fn work(w: &World, n: usize) -> Vec<Value> {
+    let proj = w.home.join("proj");
+    (0..n).map(|n| tool(&format!("e{n}"), "Edit", json!({"file_path":proj.join(format!("f{n}.js"))}))).collect()
 }
 
 #[test]
@@ -149,7 +151,7 @@ fn w2_behaviour_matrix_tasklist_guard() {
         for near in [false, true] {
             let w = World::new();
             let mut p = w.payload();
-            let mut lines = work(if near && ["no-tasks", "reset", "reduced"].contains(&branch) { 2 } else { 3 });
+            let mut lines = work(&w, if near && ["no-tasks", "reset", "reduced"].contains(&branch) { 2 } else { 3 });
             if branch == "reset" {
                 lines.extend([tool("get", "TaskGet", json!({"taskId":"99"})), result("get", "Task #99 not found")]);
             }
@@ -181,7 +183,7 @@ fn w2_behaviour_matrix_tasklist_guard() {
     // Jev unavailable cannot relax the baseline block; below-threshold remains allowed.
     for (n, blocked) in [(3, true), (2, false)] {
         let w = World::new();
-        w.transcript(work(n));
+        w.transcript(work(&w, n));
         w.file(".anti-hall/settings.json", r#"{"jevIntegrations":{"tasklistTrivial":"on"}}"#);
         w.check("tasklist-guard", w.payload(), &[("ANTIHALL_JEV", "1")], blocked, "jev-unavailable");
         if blocked {

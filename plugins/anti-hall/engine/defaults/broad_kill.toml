@@ -5,7 +5,7 @@
 # engine/logic/broad-kill-guard.js; every command list, pattern, number and text is here (D88).
 
 [broad_kill.sw]
-doc = "Switch guards.broadKill (default on, a locked safety switch): off lets every agent run pkill, killall and the other broad kills."
+doc = "Switch for the broad-kill guard. Switch guards.broadKill (default on, a locked safety switch): off lets every agent run pkill, killall and the other broad kills."
 value = { section = "guards", key = "broadKill", env = "ANTIHALL_BROAD_KILL", option = "", default = true }
 
 [broad_kill.guard_name]
@@ -14,7 +14,7 @@ value = "broad-kill-guard"
 
 [broad_kill.summary]
 doc = "One-line description of the broad-kill-guard check in the generated reference."
-value = "PreToolUse on Bash, every agent: blocks pkill, killall, `kill -9 -1`, a kill of process group 0 and a kill fed by a name, pattern or port lookup (xargs kill, kill $(pgrep ...)); kill <pid> of an explicit PID is allowed."
+value = "Block broad or unscoped process kills. PreToolUse on Bash, every agent: blocks pkill, killall, `kill -9 -1`, a kill of process group 0 and a kill fed by a name, pattern or port lookup (xargs kill, kill $(pgrep ...)); kill <pid> of an explicit PID is allowed."
 
 [broad_kill.blocked_commands]
 doc = "Commands that select processes by name or pattern: always blocked, except where broad_kill.scoped_commands allows a narrow form."

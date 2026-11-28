@@ -13,7 +13,7 @@ struct Env {
 
 impl Env {
     fn new(name: &str) -> Env {
-        let dir = std::env::temp_dir().join(format!("ahd-ctxb-{name}-{}", std::process::id()));
+        let dir = crate::common::testtmp::path(format!("ahd-ctxb-{name}-{}", std::process::id()));
         ah_engine::discard::harmless(std::fs::remove_dir_all(&dir));
         std::fs::create_dir_all(dir.join("home/.anti-hall")).unwrap();
         // These cases exercise the configured 85% threshold, independently of the shipped default.
@@ -60,6 +60,19 @@ impl Env {
         std::fs::write(&p, format!("{line}\n")).unwrap();
         p.to_string_lossy().to_string()
     }
+
+    /// A transcript whose one assistant message holds server-tool iterations (an advisor call between two main-model iterations):
+    /// the top-level usage is the SUM the host reports (billing), each iteration is one real request. `iters` is (type, tokens).
+    fn transcript_iters(&self, top_level: u64, iters: &[(&str, u64)]) -> String {
+        let its: Vec<serde_json::Value> = iters
+            .iter()
+            .map(|(ty, n)| serde_json::json!({"input_tokens":2,"output_tokens":10,"cache_creation_input_tokens":0,"cache_read_input_tokens":n - 2,"type":ty}))
+            .collect();
+        let line = serde_json::json!({"type":"assistant","message":{"usage":{"input_tokens":2,"cache_creation_input_tokens":0,"cache_read_input_tokens":top_level - 2,"iterations":its},"content":[{"type":"text","text":"x"}]}});
+        let p = self.dir.join("tr.jsonl");
+        std::fs::write(&p, format!("{line}\n")).unwrap();
+        p.to_string_lossy().to_string()
+    }
 }
 
 /// A quiet prompt turn says nothing: the context-budget checks print an empty context, which the host skips, so the
@@ -92,27 +105,34 @@ fn a_quiet_prompt_is_answered_without_running_any_node_hook_and_adds_no_joiner()
     assert_eq!((code, out.as_str(), err.as_str()), (0, QUIET_PROMPT, ""));
 }
 
-/// Regression for the empty-context rule of `dispatch::combine` (a quiet hook adds no joiner): on a quiet UserPromptSubmit turn
-/// every check that answers natively (the context-budget gates print an empty context, the verify-first reminder prints a line,
-/// the idle-agent sweep and the others print nothing) is combined into ONE context with no stray newline, whichever
-/// reminder line the payload happens to pick.
+/// Regression for the empty-context rule of `dispatch::combine` (a quiet hook adds no joiner): on a UserPromptSubmit turn every
+/// check that answers natively (the context-budget gates print an empty context when quiet, the limit-conservation line and the
+/// handover fire print text, the idle-agent sweep and the others print nothing) is combined into ONE context with no stray newline,
+/// whichever of them speak (two speakers are joined by one blank line, a quiet one adds none). The per-turn verify-first reminder is gone (#958), so the speakers are varied by the context size and the
+/// conservation switch instead of by a rotating reminder line.
 #[test]
 fn a_quiet_prompt_has_no_stray_newlines_whichever_checks_answer_natively() {
     let e = Env::new("ups-newlines");
     let map = e.map("UserPromptSubmit", &[], "true");
-    let tr = e.transcript(50_000);
     let mut lines = std::collections::BTreeSet::new();
-    for i in 0..40 {
+    let mut spoke = 0;
+    for (i, (tokens, conserve)) in [(50_000u64, "off"), (50_000, "on"), (170_000, "off"), (170_000, "on"), (180_000, "off"), (180_000, "on")].into_iter().enumerate() {
+        let tr = e.transcript(tokens);
         let p = serde_json::json!({"session_id": format!("nl{i}"), "hook_event_name": "UserPromptSubmit", "prompt": format!("p{i}"), "cwd": "/tmp", "transcript_path": tr}).to_string();
-        let (code, out, err) = e.run("UserPromptSubmit", &map, &p, &[WINDOW, ("CLAUDE_PLUGIN_OPTION_CONTEXT_TASK_TRACKER", "false")]);
-        assert_eq!((code, err.as_str()), (0, ""), "{out:?}");
-        let v: serde_json::Value = serde_json::from_str(out.trim_end()).unwrap_or_else(|_| panic!("not JSON: {out:?}"));
-        let ctx = v["hookSpecificOutput"]["additionalContext"].as_str().unwrap_or_else(|| panic!("no context: {out:?}"));
-        assert!(!ctx.contains("\n\n") && ctx == ctx.trim(), "stray newline in {ctx:?}");
-        assert_eq!(out.matches('\n').count(), 1, "one JSON line, got {out:?}");
+        let (code, out, err) = e.run("UserPromptSubmit", &map, &p, &[WINDOW, ("ANTIHALL_LIMIT_CONSERVE", conserve), ("CLAUDE_PLUGIN_OPTION_CONTEXT_TASK_TRACKER", "false")]);
+        assert_eq!((code, err.as_str()), (0, ""), "case {i}: {out:?}");
+        if out.is_empty() {
+            continue; // every check was quiet: no output at all, never a bare joiner
+        }
+        spoke += 1;
+        let v: serde_json::Value = serde_json::from_str(out.trim_end()).unwrap_or_else(|_| panic!("case {i}: not JSON: {out:?}"));
+        let ctx = v["hookSpecificOutput"]["additionalContext"].as_str().unwrap_or_else(|| panic!("case {i}: no context: {out:?}"));
+        // two speaking checks are joined by one blank line; a quiet one adds no joiner (no run of 3 newlines, no leading or trailing one)
+        assert!(!ctx.contains("\n\n\n") && ctx == ctx.trim(), "case {i}: stray newline in {ctx:?}");
+        assert_eq!(out.matches('\n').count(), 1, "case {i}: one JSON line, got {out:?}");
         lines.insert(ctx.to_string());
     }
-    assert!(lines.len() > 1, "the payloads must reach more than one reminder line");
+    assert!(spoke >= 3 && lines.len() > 1, "the cases must reach more than one native answer: {spoke} spoke, {lines:?}");
 }
 
 #[test]
@@ -232,4 +252,101 @@ fn a_handover_over_the_read_cap_still_fires_the_stop_fire_natively() {
         code == 0 && !err.contains("NODEBLOCK-") && out.contains(r#""decision":"block""#) && out.contains("Do instead: follow the saved instructions."),
         "{out:?} {err:?}"
     );
+}
+
+/// #709 (context size is the last `message` iteration, not the summed top-level usage). One assistant message that holds an advisor
+/// call reports the SUM of its main-model iterations at the top level (769K here, real context 385K); with `autoHandover.maxTokens`
+/// at 500K the handover fired at about 386K. A real crossing (a single 510K iteration) must still fire, on a prompt and on a stop.
+const BIG_WINDOW: (&str, &str) = ("ANTIHALL_CONTEXT_WINDOW_TOKENS", "1000000"); // 77% of it is under the 85% line: only the token ceiling can fire
+
+#[test]
+fn an_advisor_iteration_does_not_inflate_the_context_size_but_a_real_crossing_still_fires() {
+    let e = Env::new("iterations");
+    let stop_map = e.map("Stop", &["auto-handover-pause-nag"], "echo NODEBLOCK-{id} >&2; exit 2");
+    let ups_map = e.map("UserPromptSubmit", &["auto-handover"], "echo NODE-{id}");
+    // [message 384K, advisor_message 386K, message 385K]: the top-level sum is 769K, the context is 385K
+    let summed = e.transcript_iters(769_000, &[("message", 384_000), ("advisor_message", 386_000), ("message", 385_000)]);
+    let (code, out, err) = e.run("Stop", &stop_map, &stop(&summed), &[BIG_WINDOW]);
+    assert!(code == 0 && !format!("{out}{err}").contains("handover:"), "no fire at 385K of a 500K ceiling: {out:?} {err:?}");
+    // the prompt fire goes by percent: a 600K window puts 385K at 64% (no fire) and 769K at 128% (the old fire), 510K at 85%
+    let ups_window = ("ANTIHALL_CONTEXT_WINDOW_TOKENS", "600000");
+    let (_, out, _) = e.run("UserPromptSubmit", &ups_map, &prompt(&summed), &[ups_window]);
+    assert!(!out.contains("handover:"), "no fire on a prompt either: {out:?}");
+    // a single 510K iteration crosses the ceiling for real
+    let real = e.transcript_iters(510_000, &[("message", 510_000)]);
+    let (_, out, err) = e.run("Stop", &stop_map, &stop(&real), &[BIG_WINDOW]);
+    assert!(format!("{out}{err}").contains("handover:"), "a real 510K crossing fires on a stop: {out:?} {err:?}");
+    let (_, out, _) = e.run("UserPromptSubmit", &ups_map, &prompt(&real), &[ups_window]);
+    assert!(out.contains("handover:"), "a real 510K crossing fires on a prompt: {out:?}");
+    // a transcript with no iterations array reads the top-level fields, as before (a new session: the pause nag latches per session)
+    let e = Env::new("iterations-flat");
+    let stop_map = e.map("Stop", &["auto-handover-pause-nag"], "echo NODEBLOCK-{id} >&2; exit 2");
+    let flat = e.transcript(510_000);
+    let (_, out, err) = e.run("Stop", &stop_map, &stop(&flat), &[BIG_WINDOW]);
+    assert!(format!("{out}{err}").contains("handover:"), "the flat shape still fires: {out:?} {err:?}");
+    // Codex: total_token_usage is the session's CUMULATIVE billing total (420M against a 237.5K window in a real rollout), last_token_usage
+    // is the last request. The context is the last one.
+    let codex = |last: u64| {
+        let line = serde_json::json!({"type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"total_tokens":420_000_000u64},"last_token_usage":{"total_tokens":last},"model_context_window":237_500}}});
+        let p = e.dir.join("rollout.jsonl");
+        std::fs::write(&p, format!("{line}\n")).unwrap();
+        p.to_string_lossy().to_string()
+    };
+    let (code, out, err) = e.run("Stop", &stop_map, &stop(&codex(182_276)), &[]);
+    assert!(code == 0 && !format!("{out}{err}").contains("handover:"), "182K of 237.5K is 77%, under the 85% line: {out:?} {err:?}");
+    let (_, out, err) = e.run("Stop", &stop_map, &stop(&codex(210_000)), &[]);
+    assert!(format!("{out}{err}").contains("handover:"), "210K of 237.5K is 88%: {out:?} {err:?}");
+}
+
+/// GH #894: the post-handover new-work gate repeated the same directive on every prompt. It is sent when its state changes (the
+/// handover point or the context band) and again only after guards.handoverGateOnChangeRepeatS; off restores every prompt.
+#[test]
+fn the_post_handover_gate_is_sent_on_a_state_change_not_on_every_prompt() {
+    let gate = "new work exceeds the post-handover budget";
+    for (name, extra, second) in [("gate-on", None, false), ("gate-off", Some(("ANTIHALL_HANDOVER_GATE_ON_CHANGE", "false")), true)] {
+        let e = Env::new(name);
+        let map = e.map("UserPromptSubmit", &["auto-handover"], "echo NODE-{id}");
+        let tr = e.transcript(180_000); // 90 percent
+        std::fs::create_dir_all(e.dir.join("home/.anti-hall/auto-handover")).unwrap();
+        std::fs::write(e.dir.join("home/.anti-hall/auto-handover/e2e.json"), r#"{"fired":true,"firedPct":85,"lastNagPct":89,"handoverPct":80}"#).unwrap();
+        let mut env = vec![WINDOW];
+        env.extend(extra);
+        let (_, out, _) = e.run("UserPromptSubmit", &map, &prompt(&tr), &env);
+        assert!(out.contains(gate), "{name}: the first armed prompt gets the gate: {out:?}");
+        let (_, out, _) = e.run("UserPromptSubmit", &map, &prompt(&tr), &env);
+        assert_eq!(out.contains(gate), second, "{name}: the same state on the next prompt: {out:?}");
+        if !second {
+            // the context grows into the next band (autoHandover.nagStepPct, 5 points): the gate speaks again
+            let tr = e.transcript(191_000); // 95.5 percent
+            let (_, out, _) = e.run("UserPromptSubmit", &map, &prompt(&tr), &env);
+            assert!(out.contains(gate), "{name}: a new band is a state change: {out:?}");
+        }
+    }
+}
+
+/// GH #884 item 4: a DevSwarm workspace grew from 74K to 284K with no handover (on a 1M window the percent line is far away and the
+/// main token ceiling is 500K). A workspace session past autoHandover.workspaceMaxTokens (150K) is ordered to finish its PR and
+/// continue in a fresh session; a main session at the same size is not.
+#[test]
+fn a_workspace_past_its_context_ceiling_is_ordered_to_a_fresh_session_and_a_main_session_is_not() {
+    let e = Env::new("ws-ceiling");
+    let map = e.map("UserPromptSubmit", &["auto-handover"], "echo NODE-{id}");
+    let tr = e.transcript(160_000); // 16 percent of the 1M window
+    let (_, out, _) = e.run("UserPromptSubmit", &map, &prompt(&tr), &[BIG_WINDOW]);
+    assert!(!out.contains("handover:"), "a main session at 160K of 1M: nothing: {out:?}");
+    let e = Env::new("ws-ceiling-child");
+    let map = e.map("UserPromptSubmit", &["auto-handover"], "echo NODE-{id}");
+    let tr = e.transcript(160_000);
+    let child = ("DEVSWARM_SOURCE_BRANCH", "main");
+    let (_, out, _) = e.run("UserPromptSubmit", &map, &prompt(&tr), &[BIG_WINDOW, child]);
+    assert!(!out.contains("NODE-") && out.contains("over its 150K ceiling") && out.contains("next PR in a fresh session"), "{out:?}");
+    // once per session: the next prompt does not repeat the order
+    let (_, out, _) = e.run("UserPromptSubmit", &map, &prompt(&tr), &[BIG_WINDOW, child]);
+    assert!(!out.contains("150K ceiling"), "fires once: {out:?}");
+    // the ceiling is a setting: 0 switches it off
+    let e = Env::new("ws-ceiling-off");
+    let map = e.map("UserPromptSubmit", &["auto-handover"], "echo NODE-{id}");
+    let tr = e.transcript(160_000);
+    let (_, out, _) = e.run("UserPromptSubmit", &map, &prompt(&tr), &[BIG_WINDOW, child, ("ANTIHALL_AUTO_HANDOVER_WORKSPACE_MAX_TOKENS", "0")]);
+    assert!(!out.contains("handover:"), "ceiling off: {out:?}");
 }

@@ -1,0 +1,13 @@
+diff --git a/plugins/anti-hall/engine/logic/tasklist-guard.js b/plugins/anti-hall/engine/logic/tasklist-guard.js
+index 528868fe..50a21093 100644
+--- a/plugins/anti-hall/engine/logic/tasklist-guard.js
++++ b/plugins/anti-hall/engine/logic/tasklist-guard.js
+@@ -646,7 +646,7 @@ function decide(p, opts) {
+   if (t.unsure) ah.unable('tasklist-guard:tasks_unsure'); // keep known work and task facts when a line cannot be reconstructed
+   if (t.quiet) return 'allow';
+   var stored = tk.storeScan(home, rawSid); // the session's task store, when it has one, is the list; the transcript only says whether tasks were used
+-  if (stored !== null) { t.openTaskIds = stored.openTaskIds; t.inProgressCount = stored.inProgressCount; }
++  if (stored !== null) { t.openTaskIds = []; t.inProgressCount = stored.inProgressCount; } // M6: the store's open ids are not carried into the scan
+   var scan = {
+     work: work.work, lastWork: work.lastWork, lastProgressWrite: work.lastProgressWrite,
+     names: work.names || [], nameTotal: work.nameTotal || 0,

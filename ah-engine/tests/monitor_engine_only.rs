@@ -4,6 +4,9 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)] // a test crate: a panic is the failure report
 #![allow(clippy::panic, clippy::unreachable)] // integration tests: a panic is the failure report; production crates deny these in Cargo.toml
 
+#[path = "common/testtmp.rs"]
+mod testtmp;
+
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -11,7 +14,7 @@ use std::process::Command;
 fn monitor_command() -> String {
     let p = Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall/monitors/monitors.json");
     let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(p).unwrap()).unwrap();
-    let m = v.as_array().unwrap().iter().find(|m| m["name"] == "devswarm-wake-watch").expect("the wake-watch monitor");
+    let m = v.as_array().unwrap().iter().find(|m| m["name"] == "wake-watch").expect("the wake-watch monitor");
     m["command"].as_str().unwrap().to_string()
 }
 
@@ -28,7 +31,7 @@ struct Run {
 
 /// Run the monitor command with a stub engine (`engine_body`, absent when None) and a stub installer that must never run.
 fn run(tag: &str, engine_body: Option<&str>) -> Run {
-    let root: PathBuf = std::env::temp_dir().join(format!("ah-monfb-{tag}-{}", std::process::id()));
+    let root: PathBuf = testtmp::path(format!("ah-monfb-{tag}-{}", std::process::id()));
     std::fs::remove_dir_all(&root).ok();
     let home = root.join("home");
     let plugin = root.join("plugin");
@@ -73,5 +76,5 @@ fn a_missing_engine_starts_nothing_in_its_place() {
 #[test]
 fn engine_receives_the_wake_watch_arguments_and_plugin_root() {
     let r = run("args", Some("echo \"$AH_ENGINE_PLUGIN_ROOT|$*\"; exit 0"));
-    assert!(r.out.trim().ends_with("/plugin|devswarm wake-watch --auto"), "{}", r.out);
+    assert!(r.out.trim().ends_with("/plugin|agents wake-watch --auto"), "{}", r.out);
 }

@@ -6,9 +6,12 @@ name: ah-engine-deps
 #
 # Note: the repository setting "Allow GitHub Actions to create and approve pull requests" must be on. A pull request
 # opened with GITHUB_TOKEN does not trigger other workflows, so this run is itself the gate.
+# paused until release: owner decision 2026-11-10 / #708. This job gates on test.sh and was written for Linux; on macOS Apple silicon its
+# release-profile build would exceed the job limit (see ah-engine/test.sh), so the weekly cron is off and it runs on a manual dispatch only.
+# Restore the cron below when Linux support returns or the gate is moved to the ci-test profile.
 on:
-  schedule:
-    - cron: '17 5 * * 1'
+  # schedule:
+  #   - cron: '17 5 * * 1'
   workflow_dispatch:
 
 permissions:
@@ -20,7 +23,7 @@ concurrency:
 
 jobs:
   update:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-latest # paused until release: owner decision 2026-11-10 / #708 (dispatch only)
     timeout-minutes: 60
     permissions:
       contents: write
@@ -36,7 +39,13 @@ jobs:
           ref: dev
       - name: Toolchain
         run: rustup show active-toolchain || rustup toolchain install --profile minimal
-      - uses: taiki-e/install-action@8cca0918f8471c33515202b73f56ab27f2bed283 # v2.87.29
+      # Restore-only: the lock is updated here, so this run's own build must not displace the shared engine cache.
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          workspaces: ah-engine
+          shared-key: engine-${{ runner.os }}
+          save-if: false
+      - uses: taiki-e/install-action@ab49d3c64680143e184118bed66a46419fc15519 # v2.90.5
         with:
           tool: cargo-audit,cargo-deny
       - name: Update the lock

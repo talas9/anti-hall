@@ -24,7 +24,7 @@ function dtFirstText(inp) {
 // `isOwnerBlocked` of lib/dispatch-demand.js.
 function dtOwnerBlocked(t) {
   if (!ah.settings.bool('dispatch_tier.owner_marker_setting')) return false;
-  if (typeof t.blockedOn === 'string' && ah.cfg('dispatch_tier.owner_values').indexOf(t.blockedOn.trim().toLowerCase()) >= 0) return true;
+  if (ah.ownerNamed(t.blockedOn)) return true;
   return new RegExp(ah.cfg('dispatch_tier.owner_subject_re'), 'i').test(t.content);
 }
 
@@ -48,7 +48,7 @@ function dtTask(p, tool) {
   var base = { content: '', description: '', blockedOn: undefined };
   var tp = p.transcript_path;
   if (tp) {
-    var r = typeof tp === 'string' ? ah.transcript.tasks(tp, 'state', ah.cfgNum('taskstate.tail_bytes')) : { unreadable: true }; // a path that is not a string reads nothing
+    var r = typeof tp === 'string' ? tk.tasksOf(ah.home(), p.session_id, tp, 'state') : { unreadable: true }; // a path that is not a string reads nothing
     if (typeof tp !== 'string') ah.unable('dispatch-tier:transcript_type');
     if (r.unsure) { ah.unable('dispatch-tier:tasks_unsure'); r = { unreadable: true }; }
     if (!r.unreadable) {

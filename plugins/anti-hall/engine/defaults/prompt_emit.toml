@@ -16,16 +16,48 @@ doc = "One-line description of the emit-dedupe-reset check in the generated refe
 value = "SessionStart: marks a context loss in the session's emit-dedupe state so the next UserPromptSubmit blocks are re-emitted."
 
 [emit_dedupe.sw_enabled]
-doc = "Where the emit-dedupe on/off switch is read from (guards.emitDedupe, default on): off emits every block every time and records nothing."
+doc = "Suppress repeated injections. Where the emit-dedupe on/off switch is read from (guards.emitDedupe, default on): off emits every block every time and records nothing."
 value = { section = "guards", key = "emitDedupe", env = "ANTIHALL_EMIT_DEDUPE", option = "guards_emit_dedupe", default = true }
 
 [emit_dedupe.num_window_min]
-doc = "Where the fallback suppression window is read from (context.dedupeWindowMin, minutes, default 20): used when the transcript cannot show whether a block was delivered; 0 turns the whole feature off."
+doc = "Fallback suppression window, minutes. Where the fallback suppression window is read from (context.dedupeWindowMin, minutes, default 20): used when the transcript cannot show whether a block was delivered; 0 turns the whole feature off."
 value = { section = "context", key = "dedupeWindowMin", env = "ANTIHALL_DEDUPE_WINDOW_MIN", option = "context_dedupe_window_min", default = 20, min = 0 }
 
 [emit_dedupe.ms_per_minute]
 doc = "Milliseconds in a minute (converts the window setting and the sweep thresholds)."
 value = 60000
+
+[emit_dedupe.ms_per_second]
+doc = "Milliseconds in a second (converts the wall-clock floor of the keepalive, guards.injectionRepeatMinS)."
+value = 1000
+
+[emit_dedupe.sw_counts_scheduled]
+doc = "Count scheduled turns toward keepalives. Switch guards.keepaliveCountsScheduled (default off): a turn the host's scheduler delivered (a cron tick) does not count toward the keepalive that re-shows an unchanged block, so an idle session is not re-told the same advisory every few ticks. On restores the old rule (every delivered turn counts)."
+value = { section = "guards", key = "keepaliveCountsScheduled", env = "ANTIHALL_KEEPALIVE_COUNTS_SCHEDULED", default = false }
+
+[emit_dedupe.num_repeat_min_s]
+doc = "Keepalive wall-clock floor, seconds. Where the wall-clock floor of the keepalive is read from (guards.injectionRepeatMinS, seconds, default 7200): an unchanged block is also re-shown once this long after its last emit, so a session that only ever sees scheduled turns still gets it now and then; 0 turns the floor off. Used only while guards.keepaliveCountsScheduled is off."
+value = { section = "guards", key = "injectionRepeatMinS", env = "ANTIHALL_INJECTION_REPEAT_MIN_S", default = 7200, min = 0 }
+
+[emit_dedupe.origin_needles]
+doc = "The strings a transcript line must hold to be a user turn that names its origin (searched in the transcript tail to tell a scheduled turn from the user's own)."
+value = ['"type":"user"', '"turnOrigin":"']
+
+[emit_dedupe.origin_record_type]
+doc = "The type of a transcript record that is a user turn."
+value = "user"
+
+[emit_dedupe.origin_field]
+doc = "The field of a user turn that names who started it (human, scheduled, a background-task notification, a peer ...)."
+value = "turnOrigin"
+
+[emit_dedupe.origin_ts_field]
+doc = "The field of a transcript record that holds its ISO timestamp."
+value = "timestamp"
+
+[emit_dedupe.uncounted_origins]
+doc = "The turn origins that do not count toward a keepalive while guards.keepaliveCountsScheduled is off."
+value = ["scheduled"]
 
 [emit_dedupe.window_default_ms]
 doc = "The fallback window when the setting cannot be read, and the gap that counts as a new turn when the transcript is unusable."
@@ -107,7 +139,7 @@ unit = "ms"
 
 [verify_first.summary]
 doc = "One-line description of the verify-first check in the generated reference."
-value = "UserPromptSubmit: the short rotating verify-first reminder, deduplicated per session; DevSwarm Primary sessions stay on Node."
+value = "Deliver deduplicated verify-first reminders. UserPromptSubmit: the short rotating verify-first reminder, deduplicated per session; DevSwarm Primary sessions stay on Node."
 
 [verify_first.event]
 doc = "The hook event name in the check's output."
@@ -118,7 +150,7 @@ doc = "Where the on/off switch is read from (context.verifyFirstTurn, default on
 value = { section = "context", key = "verifyFirstTurn", option = "context_verify_first_turn", default = true }
 
 [verify_first.num_repeat_every]
-doc = "Where the repeat interval is read from (guards.injectionRepeatEvery, delivered turns, default 10); 0 repeats the reminder every turn."
+doc = "Turns between reminder repeats. Where the repeat interval is read from (guards.injectionRepeatEvery, delivered turns, default 10); 0 repeats the reminder every turn."
 value = { section = "guards", key = "injectionRepeatEvery", env = "ANTIHALL_INJECTION_REPEAT_EVERY", option = "guards_injection_repeat_every", default = 10, min = 0 }
 
 [verify_first.prefix]
@@ -212,6 +244,14 @@ value = { section = "guards", key = "idleAgentSweepCount", env = "ANTIHALL_IDLE_
 doc = "Where the idle minutes that fire the advisory for any one agent are read from (guards.idleAgentSweepMin, default 15)."
 value = { section = "guards", key = "idleAgentSweepMin", env = "ANTIHALL_IDLE_AGENT_SWEEP_MIN", default = 15, min = 1 }
 
+[metric.misfire_suppressed]
+doc = "Nudges or blocks a reported misfire fix held back (GH #550 repeat of an already delivered idle-agents advisory, and later fixes), by guard and reason."
+value = { kind = "counter", unit = "suppressions", labels = ["guard", "reason"] }
+
+[idle_sweep.num_repeat_every]
+doc = "Turns between reminder repeats. Where the repeat interval of the idle-agents advisory is read from (guards.injectionRepeatEvery, delivered turns, default 10): once the same advisory was delivered it is not re-sent until this many turns pass or the set of idle agents changes; 0 re-sends it every turn."
+value = { section = "guards", key = "injectionRepeatEvery", env = "ANTIHALL_INJECTION_REPEAT_EVERY", option = "guards_injection_repeat_every", default = 10, min = 0 }
+
 [idle_sweep.env_test_isolation]
 doc = "When this variable is 1, the injected clock below is honoured (tests and replays only, as in the Node hook)."
 value = "ANTIHALL_TEST_ISOLATION"
@@ -266,8 +306,8 @@ doc = "Advisory advice; {verb} close or stop, {call} the exact call for the firs
 value = "{verb} each finished agent you will not reuse."
 
 [idle_sweep.call_claude]
-doc = "The call that stops a Claude teammate; {id} is its name."
-value = 'TaskStop {"task_id":"{id}"}'
+doc = "The call that stops a Claude teammate; {id} is its name, {stop_id} the id TaskStop takes (the spawn result's idle_order.spawn_id_field, teammate_id `name@session-xxxx`; a bare name is answered No task found, ignored-rules audit 2026-11-20)."
+value = 'TaskStop {"task_id":"{stop_id}"}'
 
 [idle_sweep.call_codex]
 doc = "The call that closes a Codex agent; {id} is its id."
@@ -297,7 +337,31 @@ value = '[\x00-\x1F\x7F-\x9F]'
 
 [idle_sweep.prefilter]
 doc = "A transcript line is read only when it holds one of these (the Node scan's cheap pre-filter, in the same terms)."
-value = ["idle_notification", "Async agent launched successfully", "<task-notification>", "\"name\":\"Agent\"", "\"name\": \"Agent\"", "tool_result", "\"tool_use\"", "\"name\":\"TaskStop\"", "\"name\": \"TaskStop\"", "\"task_status\""]
+value = ["idle_notification", "Async agent launched successfully", "<task-notification>", "\"name\":\"Agent\"", "\"name\": \"Agent\"", "tool_result", "\"tool_use\"", "\"name\":\"TaskStop\"", "\"name\": \"TaskStop\"", "\"task_status\"", "shutdown_approved", "teammate_terminated"]
+
+[idle_sweep.stop_id_sep]
+doc = "The separator of a teammate's TaskStop id (`name@session-xxxx`): in the waiting-teammate scan, a stop (or No task found answer) whose id matches no spawn in the window still names the teammate before the last separator."
+value = "@"
+
+[idle_sweep.end_marks]
+doc = "How a teammate's end shows in a transcript line (#844): its approval of a shutdown request, or the host's terminated notice. A line holding one is read for idle_sweep.end_types and idle_sweep.terminated_type (each must also be in idle_sweep.prefilter)."
+value = ["shutdown_approved", "teammate_terminated"]
+
+[idle_sweep.end_types]
+doc = "Teammate message types that end the teammate that sent them (its `from` is its own id): it is stopped, not finished-and-idle."
+value = ["shutdown_approved"]
+
+[idle_sweep.system_sender]
+doc = "The teammate id of the host's own notices in a teammate report."
+value = "system"
+
+[idle_sweep.terminated_type]
+doc = "The type of the host's notice that a teammate has ended; its name is read from its message by idle_sweep.re_terminated_message."
+value = "teammate_terminated"
+
+[idle_sweep.re_terminated_message]
+doc = "Regular expression (JavaScript syntax) of the host's terminated notice text; group 1 is the teammate's name."
+value = "^(\\S+) has shut down\\.?$"
 
 [idle_sweep.task_stop_marks]
 doc = "How a TaskStop call appears in a transcript line."
@@ -481,3 +545,282 @@ value = { section = "jev", key = "dispatchTierNoWorkspaceRepos", env = "ANTIHALL
 [verify_first.sw_no_ws_detect]
 doc = "Where the switch of the CLAUDE.md / AGENTS.md no-workspaces detection is read from (jev.dispatchTierDetectNoWorkspaces, default on)."
 value = { section = "jev", key = "dispatchTierDetectNoWorkspaces", env = "ANTIHALL_JEV_DISPATCH_TIER_DETECT_NO_WORKSPACES", default = true }
+
+[waste.sw_warn]
+doc = "Warn when saved-token levels rise. Switch guards.wasteWarn (default on): when the tokens saved by the smarter rules (repeats of an advisory that were not sent) in the last guards.wasteWarnWindowMin minutes reach a higher level than before, one advisory tells the agent so. The rate must RISE to a new level to warn again; a constant rate warns once. Off keeps the counters and sends no advisory."
+value = { section = "guards", key = "wasteWarn", env = "ANTIHALL_WASTE_WARN", option = "", default = true }
+
+[waste.num_window_min]
+doc = "Saved-token warning window, minutes. The rolling window (minutes) of the waste warning (guards.wasteWarnWindowMin)."
+value = { section = "guards", key = "wasteWarnWindowMin", env = "ANTIHALL_WASTE_WARN_WINDOW_MIN", option = "", default = 60, min = 1 }
+
+[waste.num_level_tokens]
+doc = "First saved-token warning threshold. The tokens saved in one window at which the first waste level is reached (guards.wasteWarnTokens); the later levels are waste.level_multipliers times it."
+value = { section = "guards", key = "wasteWarnTokens", env = "ANTIHALL_WASTE_WARN_TOKENS", option = "", default = 1000, min = 1 }
+
+[waste.level_multipliers]
+doc = "The waste levels as multiples of guards.wasteWarnTokens: level n is reached when the window holds at least the n-th multiple of tokens."
+value = [1, 4, 16]
+
+[waste.bytes_per_token]
+doc = "How many bytes of advisory text are counted as one token when the tokens of a left-out text are estimated (a rough rule; the counter is an estimate, not the host's bill)."
+value = 4
+min = 1
+unit = "bytes"
+
+[waste.max_events]
+doc = "Most events kept per category in the session's waste record (older ones are dropped first)."
+value = 200
+min = 10
+
+[waste.state_dir]
+doc = "The directory under the anti-hall base directory that holds the per-session waste records."
+value = "waste"
+
+[waste.state_ext]
+doc = "The file extension of a per-session waste record."
+value = ".json"
+
+[waste.session_key_max]
+doc = "Most characters of a session id used in the waste record's file name."
+value = 80
+min = 8
+
+[waste.ms_per_minute]
+doc = "Milliseconds in a minute (the window is set in minutes)."
+value = 60000
+min = 1000
+unit = "ms"
+
+[waste.guard_name]
+doc = "The name the waste advisory carries."
+value = "token-waste"
+
+[waste.msg_what]
+doc = "The waste advisory when a category's level rose: {tokens} (estimated tokens saved in the window), {cat}, {m} (window minutes), {level} and {levels}."
+value = "idle waste: ~{tokens} tokens saved in {m} min by {cat} rules (level {level}/{levels})."
+
+[waste.msg_instead]
+doc = "The order that follows the waste advisory."
+value = "end turns that have no new state; delete crons with nothing to watch."
+
+[emit_dedupe.record_needles]
+doc = "The strings a transcript line must hold to be read when the engine decides whether the prompt now submitted is a scheduled turn (every user and assistant record, so a prompt's record can be told from what follows it)."
+value = ['"type":"']
+
+[emit_dedupe.assistant_record_type]
+doc = "The type of a transcript record that is an assistant turn."
+value = "assistant"
+
+[emit_dedupe.tool_result_block_type]
+doc = "The type of a content block that carries a tool's result; a user record made only of these is not a prompt."
+value = "tool_result"
+
+[waste.hysteresis_pct]
+doc = "How far (percent of a level's threshold) the window's tokens may fall below the level held before the level is lowered: a rate flapping around a threshold then warns once, not every time it crosses. 0 lowers a level as soon as the sum is under it."
+value = 10
+min = 0
+max = 50
+unit = "percent"
+
+# ---- idle orders (GH #744): an idle finished workspace or teammate gets one order to the coordinator, repeated on an escalating schedule ----
+
+[idle_order.sw_enabled]
+doc = "Where the on/off switch of the idle orders is read from (guards.idleOrder, default on). Off: no order is given, a long-idle child workspace counts as live again for the mailbox wake path, and the idle-agents advisory stays as before."
+value = { section = "guards", key = "idleOrder", env = "ANTIHALL_IDLE_ORDER", default = true }
+
+[idle_order.num_after_min]
+doc = "Where the idle minutes before the first order are read from (guards.idleOrderAfterMin, default 30): a child workspace with no activity, no open plan and no unread mail, or a teammate that delivered its report and owns no open task, that long gets the order. A workspace idle this long also needs no mailbox wake path."
+value = { section = "guards", key = "idleOrderAfterMin", env = "ANTIHALL_IDLE_ORDER_AFTER_MIN", default = 30, min = 1 }
+
+[idle_order.steps_min]
+doc = "The escalation schedule: minutes to wait after the 1st order before the 2nd, after the 2nd before the 3rd, and so on; the last entry repeats. Never every turn."
+value = [30, 60, 120]
+
+[idle_order.max_orders]
+doc = "Most orders given for one idle workspace or teammate; after that it is left alone (counted as suppressed, reason cap)."
+value = 6
+
+[idle_order.dir]
+doc = "The state directory (under the home directory) of the idle-order records: one file per kind and scope holding {subjects: {<id>: {count, lastAt}}}."
+value = ".anti-hall/idle-orders"
+
+[idle_order.key_max]
+doc = "Most characters of a scope or subject id kept in a record file name."
+value = 80
+
+[idle_order.file_prefix]
+doc = "The file name prefix of an idle-order record (<prefix>-<kind>-<scope>.json); stale ones are pruned by that prefix."
+value = "idle"
+
+[idle_order.ms_per_minute]
+doc = "Milliseconds in a minute (idle times are kept in ms, settings in minutes)."
+value = 60000
+
+[idle_order.list_max]
+doc = "Most children named in one order; the rest are counted."
+value = 5
+
+[idle_order.list_joiner]
+doc = "Separator between the children named in one order."
+value = ", "
+
+[idle_order.more]
+doc = "Appended to the named children when more are idle. Placeholder: {m}."
+value = " +{m} more"
+
+[idle_order.item_ws]
+doc = "One idle workspace in the order. Placeholders: {name} its title (or id), {min} minutes idle."
+value = "{name} ({min}m)"
+
+[idle_order.item_mate]
+doc = "One idle teammate in the order. Placeholders: {name}, {min} minutes idle."
+value = "{name} ({min}m)"
+
+[idle_order.msg_workspace]
+doc = "The order for idle child workspaces with no open task and no unread mail. Placeholders: {n}, {list}, {cli} the DevSwarm CLI, {id} the first listed workspace's id. The archive command only asks the child to archive (it never archives mechanically)."
+value = "⚠️ Do now: {n} child workspace(s) idle with no task: {list}. Each must converge or be archived. Converge: give it a concrete next step and a deadline to finish its PR set. Archive: only once its PRs are pushed and nothing is in flight, via `{cli} archive-request {id}` (it archives nothing until the child runs `archive`).{merged}"
+
+[idle_order.msg_teammate]
+doc = "The order for idle teammates that delivered their report and own no open task. Placeholders: {n}, {list}, {id} the first listed teammate's name, {stop_id} the id TaskStop takes for it."
+value = "⚠️ Do now: {n} teammate(s) finished and idle: {list}. Verify each result, then stop it (`TaskStop {\"task_id\":\"{stop_id}\"}`) or give it new work."
+
+[idle_order.kind_workspace]
+doc = "The kind label of a child workspace in the idle-order counter."
+value = "workspace"
+
+[idle_order.kind_teammate]
+doc = "The kind label of a teammate (or Codex agent) in the idle-order counter."
+value = "teammate"
+
+[idle_order.re_plan_done]
+doc = "A workspace's step-plan finish label that says every step is done (JavaScript regex; the head of mesh_write.lbl_all_done, 'steps N/N done'). A plan with that label is finished, not open: its workspace is idle like one with no plan."
+value = '^steps (\d+)/\1 done'
+
+[idle_order.waiting_after_min]
+doc = "Minutes a teammate must stay idle with no idleReason (its report said it is waiting on its own background work) before the coordinator is ordered to check it. Shorter than the finished-teammate threshold because a dead background job is otherwise found only by the owner."
+value = 15
+
+[idle_order.line_max]
+doc = "Longest transcript line (characters) the waiting-teammate scan reads; a longer one is skipped."
+value = 262144
+
+[idle_order.scan_needles]
+doc = "Text a transcript line must hold to be read by the waiting-teammate scan besides the idle notice type: the tool names that re-task or end a teammate."
+value = ["SendMessage", "TaskStop", "No task found", "teammate_spawned"]
+
+[idle_order.quote_max]
+doc = "Longest piece of a transcript line between two double quotes the waiting-teammate scan keeps to ask whether a line names a teammate (`\"name\"`); a name longer than this is never found in a line, as no teammate name is that long."
+value = 128
+min = 16
+max = 4096
+
+[idle_order.idle_marker]
+doc = "The type of the notice a teammate sends when its turn ends (read from the transcript)."
+value = "idle_notification"
+
+[idle_order.re_idle_json]
+doc = "The idle_notification object inside a teammate message (JavaScript regex, first match)."
+value = '\{[^{}]*"type"\s*:\s*"idle_notification"[^{}]*\}'
+
+[idle_order.re_retask]
+doc = "A tool call that re-tasks or ends a teammate (JavaScript regex over a transcript line): a later one naming the teammate means it is no longer idle."
+value = '"name"\s*:\s*"(?:SendMessage|TaskStop)"'
+
+[idle_order.re_stop]
+doc = "A tool call that ENDS a teammate (JavaScript regex over a transcript line): the teammate named on that line is gone for good, so a later idle notice (its last turn can arrive after the stop) never lists it as waiting again."
+value = '"name"\s*:\s*"TaskStop"'
+
+[idle_order.re_task_id]
+doc = "The teammate a stop names (JavaScript regex over the same transcript line as re_stop, group 1 = the task_id, which is the teammate's name)."
+value = '"task_id"\s*:\s*"([^"\\]+)"'
+
+[idle_order.re_gone]
+doc = "The host's answer to a stop of a teammate that no longer exists (JavaScript regex over a transcript line, group 1 = the name): that teammate is gone too."
+value = 'No task found with ID: ([^<"\\\s]*[^<"\\\s.])'
+
+[idle_order.spawn_result_field]
+doc = "The top-level field of a transcript line that holds the host's answer to a tool call. A spawn is read from it structurally (the line parsed as JSON), because a spawn record's prompt and description carry braces a pattern cannot step over: a teammate spawned again under a name that was stopped or gone is a new one, so it is listed again when it idles."
+value = "toolUseResult"
+
+[idle_order.spawn_name_field]
+doc = "The field of that answer that names the spawned teammate; the answer's status is idle_sweep.spawned_status."
+value = "name"
+
+[idle_order.spawn_id_field]
+doc = "The field of that answer that holds the id TaskStop takes for the spawned teammate: teammate_id (`name@session-xxxx`). Not agent_id: that is the internal `a<name>-<hex>` id, and it and the bare name are both answered No task found (PR #893 review, CC 2.1.294 to 2.1.329). Kept for the {stop_id} of the orders, and a stop naming it counts as that teammate's stop."
+value = "teammate_id"
+
+[idle_order.msg_waiting]
+doc = "The order for teammates that went idle saying they wait on background work, with no live task row of their own and no open task. Placeholders: {n}, {list}, {id} the first listed teammate's name, {stop_id} the id TaskStop takes for it. It asserts nothing about the job; it orders the check."
+value = "⚠️ Do now: {n} teammate(s) idle after saying they wait on background work: {list}. Check that the work is running; if not, resume it now (`SendMessage {\"to\":\"{id}\"}`) or stop it (`TaskStop {\"task_id\":\"{stop_id}\"}`)."
+
+[idle_order.kind_waiting]
+doc = "The kind label of a teammate waiting on background work in the idle-order counter."
+value = "teammate_waiting"
+
+[idle_order.kind_open_task]
+doc = "The kind label of an idle teammate that still owns an open task in the idle-order counter and record file name (GH #764)."
+value = "teammate_open_task"
+
+[idle_order.task_max]
+doc = "Most characters of an open task's subject named in the resume order; a longer one is cut with an ellipsis."
+value = 80
+
+[idle_order.item_task]
+doc = "One open task of an idle owner in the resume order. Placeholders: {task} the task subject, {name} the owner, {min} minutes idle."
+value = "task {task}, owner {name}"
+
+[idle_order.task_joiner]
+doc = "Separator between the open tasks named in one resume order."
+value = "; "
+
+[idle_order.msg_open_task]
+doc = "The resume order for a teammate or subagent that is idle past guards.idleOrderAfterMin while it still owns a pending or in_progress task. It repeats on idle_order.steps_min and starts again when the owner worked and went idle again. Placeholders: {n} how many, {list} the tasks and owners, {id} the first owner's name."
+value = "⚠️ Do now: resume or reassign {list}."
+
+[metric.idle_order]
+doc = "Idle orders (GH #744) by kind (workspace, workspace_stall, teammate, teammate_waiting, teammate_open_task) and outcome: fired (an order was given), acted_on (a child that had an order is no longer idle: given work, answered, archived or stopped), suppressed (idle past the threshold but not ordered, with the reason: interval, cap, unread, busy, plan, done, parked, focused, unknown_state, plan_unknown, running)."
+value = { kind = "counter", unit = "orders", labels = ["kind", "outcome", "reason"] }
+
+# ---- #876: stalled and idle workspaces must converge or be archived ----
+
+[idle_order.msg_merged_tail]
+doc = "Appended to the idle-workspace order when some idle children are verified merged: they can be archived at once. Placeholders: {cli} the DevSwarm CLI, {list} the merged idle children (named with idle_order.item_ws), {id} the first one's id. The archive refuses a workspace with uncommitted or unpushed work."
+value = " Merged and idle, archive now: {list} (`{cli} archive {id}`; it refuses when work is uncommitted or unpushed)."
+
+[idle_order.sw_stall]
+doc = "Where the on/off switch of the stalled-delivery orders is read from (guards.stallOrder, default on). A workspace that reports working but has made no commit for guards.stallOrderAfterMin minutes is named to the Primary on the idle-order schedule (idle_order.steps_min, idle_order.max_orders): the first time as a status check, then as an order to converge or be archived. Off: no stalled-delivery order."
+value = { section = "guards", key = "stallOrder", env = "ANTIHALL_STALL_ORDER", default = true }
+
+[idle_order.num_stall_after_min]
+doc = "Where the minutes without a commit before a working workspace counts as stalled are read from (guards.stallOrderAfterMin, default 60). Progress is the later of the worktree's newest commit and the worktree's creation, so a fresh workspace cut from an old commit is not stalled. A commit restarts the schedule."
+value = { section = "guards", key = "stallOrderAfterMin", env = "ANTIHALL_STALL_ORDER_AFTER_MIN", default = 60, min = 1 }
+
+[idle_order.kind_stall]
+doc = "The kind label of a stalled working workspace in the idle-order counter."
+value = "workspace_stall"
+
+[idle_order.kind_since]
+doc = "The kind label of the record of when each working workspace was first seen working (the stalled-delivery baseline: progress is the later of the worktree's newest commit and this). One file per project beside the order records; a workspace that is no longer working is dropped, so its next spell starts afresh."
+value = "since"
+
+[idle_order.item_stall]
+doc = "One stalled workspace in the order. Placeholders: {name} its title (or id), {min} minutes without a commit."
+value = "{name} (no commit {min}m)"
+
+[idle_order.msg_stall_advise]
+doc = "The first order for working workspaces with no commit past the stall threshold. Placeholders: {n}, {list}, {cli} the DevSwarm CLI, {id} the first listed workspace's id."
+value = "⚠️ Do now: {n} workspace(s) report working but delivered nothing: {list}. Ask each for its PR status and next step (`{cli} relay {id}`)."
+
+[idle_order.msg_stall_order]
+doc = "The repeat order for workspaces still stalled after the first. Placeholders: {n}, {list}, {cli}, {id} as for idle_order.msg_stall_advise."
+value = "⚠️ Do now: {n} workspace(s) still stalled, no commit or PR progress: {list}. Each must converge (finish and open its PR; give it a concrete next step and a deadline) or be archived once its PRs are pushed and nothing is in flight (`{cli} archive-request {id}`; archive refuses uncommitted or unpushed work)."
+
+[metric.archive_submodule_drift_passed]
+doc = "Archives that passed because the only uncommitted entries were submodule checkout drift (clean submodule, HEAD on a remote branch; #943, devswarm.archiveIgnoreSubmoduleDrift), by verb."
+value = { kind = "counter", unit = "archives", labels = ["verb"] }
+
+[metric.archive_refused_unsafe]
+doc = "Archives refused because the workspace's worktree held uncommitted changes, unpushed commits or a state git could not read (#876, devswarm_cli.archive_work_guard), by verb."
+value = { kind = "counter", unit = "archives", labels = ["verb"] }

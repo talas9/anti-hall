@@ -73,7 +73,7 @@ mod tests {
     use std::collections::HashMap;
 
     fn scratch(tag: &str) -> String {
-        let d = std::env::temp_dir().join(format!("ah-judgehost-{tag}-{}", std::process::id()));
+        let d = crate::testtmp::path(format!("ah-judgehost-{tag}-{}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&d));
         std::fs::create_dir_all(&d).unwrap();
         d.to_string_lossy().into_owned()
@@ -99,6 +99,7 @@ mod tests {
     #[test]
     fn a_process_that_may_not_block_answers_nothing() {
         // unit tests never mark the process as one that may wait for a model, as the daemon never does
+        let _g = MODEL_LOCK.lock().unwrap_or_else(|e| e.into_inner()); // a test that allows blocking holds this lock while it does
         let d = scratch("noblock");
         let spec = serde_json::json!({"transcript": transcript(&d), "message": "x"}).to_string();
         assert_eq!(call(&st(&d), &spec), None);
@@ -107,7 +108,7 @@ mod tests {
     #[test]
     fn the_call_builds_the_input_from_the_transcript_and_returns_the_answer_and_a_telemetry_row() {
         let _g = MODEL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        super::super::allow_blocking_calls();
+        let _allow = super::super::BlockingCallsGuard::allow();
         let d = scratch("call");
         let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<(String, String, String)>::new()));
         let seen2 = seen.clone();
@@ -135,7 +136,7 @@ mod tests {
     #[test]
     fn a_failed_or_unreadable_answer_is_null_and_leaves_an_error_row() {
         let _g = MODEL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-        super::super::allow_blocking_calls();
+        let _allow = super::super::BlockingCallsGuard::allow();
         let d = scratch("fail");
         *TEST_MODEL.lock().unwrap() = Some(Box::new(|_| cli::CliOutcome { result: Err(cli::CliError::Timeout), ms: 25000 }));
         let spec = serde_json::json!({"transcript": transcript(&d), "message": "x"}).to_string();

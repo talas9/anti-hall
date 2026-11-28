@@ -73,12 +73,92 @@ pub fn child_context(c: &Child<'_>) -> String {
     out
 }
 
-/// The command agents run for every DevSwarm CLI verb: `devswarm_role.engine_cli` with the absolute home filled in.
-pub fn engine_cli(home: &str) -> String {
-    fill_once(defaults::text("devswarm_role.engine_cli"), &[("home", home)])
+/// `s` as one `sh` word in single quotes (nothing inside is expanded: `$`, a backtick and `\` stay literal; a `'` closes the quote,
+/// is written escaped and reopens it).
+pub fn sh_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
 }
 
-/// The command agents arm with `Monitor` for the mailbox watcher: `devswarm_role.engine_watcher` with the home filled in.
+/// `s` as one `sh` word: as it is when it holds only characters `sh` never treats specially, else [`sh_quote`]d (a home with a
+/// space, `$` or a quote still runs; the usual path stays readable).
+pub fn sh_word(s: &str) -> String {
+    let plain = !s.is_empty() && s.bytes().all(|b| b.is_ascii_alphanumeric() || b"_-./:@%+=,".contains(&b));
+    if plain { s.to_string() } else { sh_quote(s) }
+}
+
+/// The command agents run for every DevSwarm CLI verb (`{cli}` in the texts): the binary path (`devswarm_role.engine_bin`, absolute home filled in)
+/// shell-quoted when it needs it, then `devswarm_role.engine_verb` outside the quotes.
+pub fn engine_cli(home: &str) -> String {
+    format!("{} {}", sh_word(&engine_bin(home)), engine_verb())
+}
+
+/// The engine binary path alone (`devswarm_role.engine_bin`, home filled in): callers quote it, the verb stays outside the quotes.
+pub fn engine_bin(home: &str) -> String {
+    fill_once(defaults::text("devswarm_role.engine_bin"), &[("home", home)])
+}
+
+/// The verb after the engine binary for every DevSwarm CLI command (`devswarm_role.engine_verb`).
+pub fn engine_verb() -> &'static str {
+    defaults::text("devswarm_role.engine_verb")
+}
+
+/// The command agents arm with `Monitor` for the mailbox watcher (`{watcher}`): the engine binary path shell-quoted when it needs it
+/// ([`sh_word`], same as [`engine_cli`]) then `devswarm_role.watcher_verb` outside the quotes.
 pub fn engine_watcher(home: &str) -> String {
-    fill_once(defaults::text("devswarm_role.engine_watcher"), &[("home", home)])
+    format!("{} {}", sh_word(&engine_bin(home)), defaults::text("devswarm_role.watcher_verb"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn init() {
+        defaults::init().unwrap();
+    }
+
+    #[test]
+    fn sh_word_leaves_a_plain_path_and_quotes_the_rest() {
+        assert_eq!(sh_word("/Users/a/.anti-hall/bin/ah-engine"), "/Users/a/.anti-hall/bin/ah-engine");
+        assert_eq!(sh_word("/Users/a b/x"), "'/Users/a b/x'");
+        assert_eq!(sh_word("/Users/a$b/x"), "'/Users/a$b/x'");
+        assert_eq!(sh_word("/Users/a`b/x"), "'/Users/a`b/x'");
+        assert_eq!(sh_word("/Users/it's/x"), "'/Users/it'\\''s/x'");
+        assert_eq!(sh_word(""), "''");
+    }
+
+    #[test]
+    fn the_cli_in_every_directive_text_is_one_shell_word_for_a_home_with_a_space_dollar_or_backtick() {
+        init();
+        for home in ["/Users/a b", "/Users/a$b", "/Users/a`b"] {
+            let cli = engine_cli(home);
+            let bin = sh_quote(&engine_bin(home));
+            assert_eq!(cli, format!("{bin} {}", engine_verb()), "{home}");
+            let watcher = engine_watcher(home);
+            assert_eq!(watcher, format!("{bin} {}", defaults::text("devswarm_role.watcher_verb")), "{home}");
+            for agent in ["claude", "codex"] {
+                let c = Child { cli: &cli, watcher: &watcher, agent, id: "w1", cron: "*/5 * * * *", tick_only: true };
+                let text = child_context(&c);
+                assert!(text.contains(&format!("{cli} heartbeat")), "msg_base names the quoted cli for {home} / {agent}");
+                assert!(text.contains(&format!("{cli} inbox ")), "the wake text names the quoted cli for {home} / {agent}");
+                assert!(!text.contains(&format!("{} mesh", engine_bin(home))), "never the unquoted path: {home}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_plain_home_renders_bare_commands_and_a_spaced_or_quoted_home_splits_into_the_path_and_the_verb() {
+        init();
+        assert_eq!(engine_cli("/h"), format!("/h/.anti-hall/ah-engine/bin/ah-engine {}", engine_verb()));
+        assert_eq!(engine_watcher("/h"), format!("/h/.anti-hall/ah-engine/bin/ah-engine {}", defaults::text("devswarm_role.watcher_verb")));
+        // a path with a space and one with a quote: sh accepts the text and splits it into the path plus the verb words
+        for home in ["/Users/a b", "/Users/it's"] {
+            for cmd in [engine_cli(home), engine_watcher(home)] {
+                let syntax = std::process::Command::new("sh").args(["-n", "-c", &cmd]).output().unwrap();
+                assert!(syntax.status.success(), "sh -n rejects {cmd:?}");
+                let out = std::process::Command::new("sh").arg("-c").arg(format!("set -- {cmd}; printf '%s\n' \"$@\"")).output().unwrap();
+                let first = String::from_utf8_lossy(&out.stdout).lines().next().unwrap_or("").to_string();
+                assert_eq!(first, engine_bin(home), "{cmd:?}");
+            }
+        }
+    }
 }

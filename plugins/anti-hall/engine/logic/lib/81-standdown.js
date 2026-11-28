@@ -4,13 +4,9 @@
 'use strict';
 
 function swgUsageBuckets(home) {
-  var rel = ah.cfg('ctxbudget.usage_cache'), path = ah.path.join(home, rel), size = ah.fs.size(path);
-  if (size === null) return null;
-  if (size > ah.cfgNum('script.read_max_bytes')) { ah.unable('swarm-guard:usage_big'); return null; }
-  var raw = ah.fs.readText(path), parsed;
-  if (raw === null) return null;
-  try { parsed = JSON.parse(raw); } catch (e) { return null; }
-  if (!parsed || typeof parsed !== 'object' || !parsed.data || typeof parsed.data !== 'object') return null;
+  var snap = usage.fresh(home, ah.cfg('ctxbudget.usage_reader_spawn')); // GH #981: the configured source; stale = no reading
+  if (snap === null) return null;
+  var parsed = snap.parsed;
   var d = parsed.data, ts = typeof parsed.timestamp === 'number' ? parsed.timestamp : 0, now = ah.clock.now();
   var pcts = ah.cfg('spawn_usage.bucket_pct'), resets = ah.cfg('spawn_usage.bucket_resets'), names = ah.cfg('spawn_usage.bucket_names'), out = [];
   for (var i = 0; i < pcts.length; i++) {
@@ -40,20 +36,115 @@ function swgCeiling(full) {
   return Math.max(ah.cfgNum('spawn_ceiling.floor'), ceil);
 }
 
+// The transcript's agent scan and the tracker's rows, each read ONCE per check call and shared by every swarm-guard count (the owner's
+// cap and the ceiling both count, and a long transcript made each host call the bulk of the script's time: GH #537). Keyed on the call's
+// request and payload objects, so the next call reads afresh. `agents`: null when there is no transcript path, else the host's answer.
+var swgSnap = { req: null, p: null, tp: null, agents: null, tracked: null };
+function swgSnapshot(p, tp) {
+  if (swgSnap.req !== ah.request || swgSnap.p !== p || swgSnap.tp !== tp) swgSnap = { req: ah.request, p: p, tp: tp, agents: undefined, tracked: undefined };
+  return swgSnap;
+}
+function swgSnapAgents(p, tp) {
+  var sn = swgSnapshot(p, tp);
+  if (sn.agents === undefined) sn.agents = typeof tp === 'string' && tp !== '' ? ah.transcript.agents(hookProc.open(p, tp)) : null;
+  return sn.agents;
+}
+function swgSnapTracked(p) {
+  var sn = swgSnapshot(p, p.transcript_path);
+  if (sn.tracked === undefined) sn.tracked = ah.transcript.trackedAgents(p);
+  return sn.tracked;
+}
+
 // The running agents of the session {n, names}, or null when they cannot be counted exactly (counted).
 function swgRunning(p) {
   var tp = p.transcript_path;
   if (typeof tp !== 'string' || tp === '') return null;
-  var found = ah.transcript.agents(hookProc.open(p, tp));
+  var found = swgSnapAgents(p, tp);
   if (found === null) return null;
   if (found.unsure) { ah.unable('swarm-guard:ceiling_agents_unsure'); return null; }
+  var tracked = swgSnapTracked(p), excluded = ah.cfg('spawn_ceiling.excluded_task_types'), unknownLive = !ah.cfg('spawn_ceiling.ignore_unknown_liveness');
+  var rows = found.rows.filter(function (a) {
+    if (excluded.indexOf(a.taskType) >= 0) return false;
+    var live = ah.transcript.trackedLiveness(a.id, tracked);
+    return live === null ? unknownLive : live;
+  });
   var max = ah.cfgNum('spawn_ceiling.list_max'), ctl = new RegExp(ah.cfg('spawn_ceiling.control_re'), 'g');
-  var names = found.rows.slice(0, max).map(function (a) {
+  var names = rows.slice(0, max).map(function (a) {
     return String(a.description || '').replace(ctl, ' ').trim().slice(0, ah.cfgNum('spawn_ceiling.desc_max')) || ah.cfg('spawn_ceiling.unnamed');
   });
-  return { n: found.rows.length, names: names };
+  return { n: rows.length, names: names };
 }
 
+
+// The agent type a spawn input names ('' when none): the first non-empty swarm_guard.agent_type_fields field.
+function swgAgentType(inp) {
+  if (!inp || typeof inp !== 'object') return '';
+  var fields = ah.cfg('swarm_guard.agent_type_fields');
+  for (var i = 0; i < fields.length; i++) if (typeof inp[fields[i]] === 'string' && inp[fields[i]]) return inp[fields[i]];
+  return '';
+}
+
+// Whether the owner's cap leaves this agent type out (guards.cap_excluded_agent_types: the Codex reviewers, on their own quota).
+function swgCapExcluded(atype) {
+  return atype !== '' && ah.cfg('guards.cap_excluded_agent_types').indexOf(atype) >= 0;
+}
+
+// The owner's cap count {n, names, toolUseIds} of the session, never null (a lower bound): the transcript's running agents (one of
+// unknown liveness counts as running) united with the tracker's live agent children, whose launches may lie outside the transcript
+// window (GH #494). Agent types of guards.cap_excluded_agent_types and tracker children of spawn_ceiling.cap_excluded_tracked_kinds
+// (background shell jobs) are not agents of the cap; a tracker child's agent type is the tracker's (its meta, or a known Codex
+// rescue). children: the counted tracker children {id, toolUseId, agentType}. toolUseIds: the launching tool call ids the transcript or a tracker child's meta shows.
+function swgCapRunning(p) {
+  var tp = p.transcript_path, session = typeof p.session_id === 'string' ? p.session_id : '';
+  var found = swgSnapAgents(p, tp);
+  if (found !== null && found.unsure) { ah.unable('swarm-guard:cap_agents_unsure'); found = null; }
+  var tracked = swgSnapTracked(p), rows = [], seen = {}, uses = {}, children = [];
+  if (!Array.isArray(tracked)) tracked = [];
+  var kinds = ah.cfg('spawn_ceiling.cap_excluded_tracked_kinds'), excluded = ah.cfg('spawn_ceiling.excluded_task_types');
+  if (found !== null && Array.isArray(found.rows)) found.rows.forEach(function (a) {
+    if (typeof a.toolUseId === 'string' && a.toolUseId !== '') uses[a.toolUseId] = true;
+    if (excluded.indexOf(a.taskType) >= 0) return;
+    if (swgCapExcluded(swgAgentType(a.spawnInput))) { seen[a.id] = true; return; } // nor counted again through the tracker
+    if (ah.transcript.trackedLiveness(a.id, tracked) === false) return;
+    seen[a.id] = true;
+    rows.push(a.description);
+  });
+  tracked.forEach(function (t) {
+    if (!t || t.id === session || t.parent !== session || kinds.indexOf(t.kind) >= 0) return;
+    // a child whose meta names its launch is that launch: its reservation is released and it counts once, as a child (P2-A)
+    if (typeof t.toolUseId === 'string' && t.toolUseId !== '') uses[t.toolUseId] = true;
+    if (seen[t.id] || seen[t.name] || swgCapExcluded(typeof t.agentType === 'string' ? t.agentType : '')) return;
+    if (ah.transcript.trackedLiveness(t.id, [t]) !== true) return;
+    seen[t.id] = true;
+    rows.push(t.name);
+    children.push({ id: t.id, toolUseId: typeof t.toolUseId === 'string' ? t.toolUseId : '', agentType: typeof t.agentType === 'string' ? t.agentType : '' });
+  });
+  var max = ah.cfgNum('spawn_ceiling.list_max'), ctl = new RegExp(ah.cfg('spawn_ceiling.control_re'), 'g');
+  var names = rows.slice(0, max).map(function (d) {
+    return String(d || '').replace(ctl, ' ').trim().slice(0, ah.cfgNum('spawn_ceiling.desc_max')) || ah.cfg('spawn_ceiling.unnamed');
+  });
+  return { n: rows.length, names: names, toolUseIds: uses, children: children };
+}
+
+// The tool call ids among `ids` (an object used as a set) that have a tool result in the transcript tail: an answered call, a
+// foreground result or an async launch, whether or not its agent still runs. {} when the tail cannot be read.
+function swgAnsweredIds(tp, ids) {
+  var out = {};
+  if (typeof tp !== 'string' || tp === '' || !Object.keys(ids).length) return out;
+  var r = ah.transcript.tailEntries(tp, ah.cfgNum('spawn_ceiling.answered_window_bytes'), ah.cfgNum('spawn_ceiling.answered_line_max_bytes'),
+    [['message', 'content', '*', 'type'], ['message', 'content', '*', 'tool_use_id']], 0);
+  if (r === null || !Array.isArray(r.lines)) { ah.unable('swarm-guard:cap_answered_unreadable'); return out; }
+  r.lines.forEach(function (l) {
+    var v = l[1];
+    if (typeof v === 'string') { try { v = JSON.parse(v); } catch (e) { return; } }
+    var c = v && v.message && v.message.content;
+    if (!Array.isArray(c)) return;
+    c.forEach(function (it) {
+      if (it && it.type === 'tool_result' && typeof it.tool_use_id === 'string' && ids[it.tool_use_id]) out[it.tool_use_id] = true;
+    });
+  });
+  return out;
+}
 
 // The same fresh breaker marker gates every spawn and every non-report tool call. Read-only.
 function bbMarker(p) {
@@ -63,9 +154,9 @@ function bbMarker(p) {
   var home = ah.env.get(ah.cfg('env.home'));
   if (home === null) home = ah.env.get(ah.cfg('env.home_alt'));
   if (!home) return null;
-  var paths = ah.cfg('agent_tracker.paths'), key = '', max = ah.cfg('agent_reminders.key_max');
-  for (var i = 0; i < id.length && i < max; i++) key += /[A-Za-z0-9._-]/.test(id.charAt(i)) ? id.charAt(i) : '_';
-  var rel = ah.cfg('paths.base_dir') + '/' + paths.dir + '/' + ah.cfg('burn.marker_dir') + '/' + key + ah.cfg('burn.marker_ext');
+  var paths = ah.cfg('agent_tracker.paths'), key = [], max = ah.cfg('agent_reminders.key_max');
+  for (var i = 0; i < id.length && i < max; i++) key.push(/[A-Za-z0-9._-]/.test(id.charAt(i)) ? id.charAt(i) : '_');
+  var rel = ah.cfg('paths.base_dir') + '/' + paths.dir + '/' + ah.cfg('burn.marker_dir') + '/' + key.join('') + ah.cfg('burn.marker_ext');
   var marker = ah.path.join(home, rel);
   if (ah.fs.size(marker) === null) return null;
   var raw = ah.fs.readText(marker), m;

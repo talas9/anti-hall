@@ -87,6 +87,11 @@ pub enum Kind {
     Act,
     /// A mistake signal: a later observation that an earlier action (`action_id`) should not have been taken.
     Mistake,
+    /// One use of the Stop channel (GH #540): h = the outcome (`stop_channel.counters`), e = the check; the model and project it happened under ride as fields.
+    StopChan,
+    /// Counts a process that is not the daemon bumped (the hook dispatcher): h = the metric name, e = its label values in the order
+    /// `metric.<name>.labels` lists them, joined by `/`, ib = the amount. The daemon adds it to its own metrics and keeps no event row.
+    Counter,
 }
 
 impl Kind {
@@ -107,6 +112,8 @@ impl Kind {
             Kind::Agent => "agent",
             Kind::Act => "act",
             Kind::Mistake => "mistake",
+            Kind::StopChan => "stopchan",
+            Kind::Counter => "counter",
         }
     }
 
@@ -127,6 +134,8 @@ impl Kind {
             "agent" => Kind::Agent,
             "act" => Kind::Act,
             "mistake" => Kind::Mistake,
+            "stopchan" => Kind::StopChan,
+            "counter" => Kind::Counter,
             _ => return None,
         })
     }
@@ -477,7 +486,7 @@ pub struct Event {
     pub o: Outcome,
     /// `ms`: latency in whole milliseconds, rounded up (the counters keep the microsecond histogram).
     pub ms: u32,
-    /// `ib`: bytes injected into model context.
+    /// `ib`: bytes injected into model context (for a `counter` event, the amount to add).
     pub ib: u64,
     /// Typed extras.
     pub extras: Extras,
@@ -494,7 +503,17 @@ fn extra_fields(kind: Kind) -> Vec<&'static str> {
         Kind::Jev => &["integration", "mode", "verdict", "cost_uc"],
         Kind::Spill => &["bytes"],
         Kind::Delegate => &["spawn_key", "requested_model", "selected_model", "task_class"],
-        Kind::Hook | Kind::Check | Kind::Node | Kind::Cmd | Kind::Daemon | Kind::Model | Kind::Agent | Kind::Act | Kind::Mistake => &[],
+        Kind::Hook
+        | Kind::Check
+        | Kind::Node
+        | Kind::Cmd
+        | Kind::Daemon
+        | Kind::Model
+        | Kind::Agent
+        | Kind::Act
+        | Kind::Mistake
+        | Kind::StopChan
+        | Kind::Counter => &[],
     };
     // the schema-driven kinds (and the detail of a Jev call) take their field names from the shipped `telemetry.fields`
     fixed.iter().copied().chain(schema(kind).into_iter().map(|(n, _)| n)).collect()
@@ -626,8 +645,10 @@ impl Event {
                 selected_model: tok("selected_model")?,
                 task_class: tok("task_class")?,
             }),
-            Kind::Node | Kind::Cmd | Kind::Daemon | Kind::Model | Kind::Agent | Kind::Act | Kind::Mistake => Extras::Fields(Fields::read(kind, m)?),
-            Kind::Hook | Kind::Check => Extras::None,
+            Kind::Node | Kind::Cmd | Kind::Daemon | Kind::Model | Kind::Agent | Kind::Act | Kind::Mistake | Kind::StopChan => {
+                Extras::Fields(Fields::read(kind, m)?)
+            }
+            Kind::Hook | Kind::Check | Kind::Counter => Extras::None,
         };
         Ok(Event { ts_ms, kind, h: tok("h")?, e: tok("e")?, o, ms: num("ms")?.min(u32::MAX as u64) as u32, ib: num("ib")?, extras })
     }

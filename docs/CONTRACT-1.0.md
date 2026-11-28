@@ -10,7 +10,7 @@ right and this document gets a fix.
 
 | Surface | Count | Source of truth |
 |---|---|---|
-| Settings keys | 332 in 20 sections | `plugins/anti-hall/engine/defaults/settings_cli.toml` |
+| Settings keys | 333 in 21 sections | `plugins/anti-hall/engine/defaults/settings_cli.toml` |
 | `ah-hook mesh` verbs | 47 | `ah-hook mesh` (the `run()` switch; `help` lists it) |
 | Other user-facing CLIs | 6 | `settings.js`, `doctor.js`, `update.js`, `migrate-state.js`, `capability-scan.js` |
 | Hook scripts | 62 (70 registrations, 11 events) | `plugins/anti-hall/hooks/hooks.registry.json` (`hooks.json` itself is one thin trigger per event, generated from the engine's dispatch table) |
@@ -46,8 +46,9 @@ addressed as `<section>.<key>` (for example `safety.gitGuard`, `devswarm.autoArc
 | `diskWatch` | Disk watch | 7 | |
 | `engine` | Engine | 2 | |
 | `defects` | Defects | 1 | |
+| `taskstate` | Task list | 1 | |
 
-Of the 332 keys: 175 are `advanced` (hidden from `settings.js show` without `--all`), 253
+Of the 333 keys: 176 are `advanced` (hidden from `settings.js show` without `--all`), 253
 have an env override, 14 are `locked` (safety keys), 3 are `homeOnly`. The full list with
 defaults is [GUIDE.md, "Every setting"](./GUIDE.md#every-setting);
 `tests/hygiene/docs-coverage.test.js` fails if any schema key is missing from it.
@@ -211,7 +212,7 @@ output). "Setting" is the key that turns the hook off (section 1). "Skip" is the
 | `swarm-guard` | PreToolUse(Agent), PreToolUse(Task) | block, context | `safety.swarmGuard` | `swarm-guard` | no |
 | `phase-tracker` | PreToolUse(Agent), PreToolUse(Task) | record | none (not toggleable) | — | no |
 | `devswarm-comms-guard` | PreToolUse(SendMessage) | block, context | `devswarm.commsGuard` | `devswarm-comms-guard` | no |
-| `ask-guard` | PreToolUse(AskUserQuestion) | block, context | `guards.questionAgentsNote`, `guards.noBlockingQuestions` (opt-in) | `ask-guard` | no |
+| `ask-guard` | PreToolUse(AskUserQuestion) | block, context | `guards.questionAgentsNote`, `guards.noBlockingQuestions` (opt-in), `guards.denyChildQuestions`, `guards.denyPrimaryQuestions` | `ask-guard` | no |
 | `stale-agent-stop-note` | PreToolUse(TaskStop) | context | `guards.staleAgentStopNote` | — | no |
 | `output-verify-guard` | PostToolUse(Bash) | context | `guards.outputVerifyGuard` | `output-verify-guard` | no |
 | `devswarm-parent-reply-tracker` | PostToolUse(Bash) | context | `devswarm.parentReplyTracker` | — | yes |
@@ -226,7 +227,7 @@ Not registered in `hooks.json` and so not covered: `doctor.js` (a CLI, section 2
 `agent-watchdog.js` (a manual helper), the `*-refresh.js` workers, and the shared modules
 `skip-guard.js`, `coordinator-detect.js`, `omc-detect.js`, `limit-conserve.js`,
 `session-history-index.js` and `verify-first-core.js` (libraries). The one monitor,
-`devswarm-wake-watch` (`plugins/anti-hall/monitors/monitors.json`), is stable by name.
+`wake-watch` (`plugins/anti-hall/monitors/monitors.json`; it runs `agents wake-watch --auto`, one process for the agent and the mesh wake rows), is stable by name. The former monitor names `devswarm-wake-watch` and `agent-wake-watch` and the old verb `devswarm wake-watch` are aliases of it: they run the same merged watcher (the verb prints a deprecation note on stderr only).
 
 **Kill switches**, narrowest first:
 

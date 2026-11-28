@@ -11,7 +11,13 @@ fn golden_report(check: &str, limit: usize) {
     let (mut bad, mut shown) = (0, 0);
     for c in &cases {
         let l = golden::lay(c);
-        let got = run_forced(check, &l.payload, &l.opts, &l.event, &l.env).unwrap_or_else(|| panic!("{check}: no shipped script"));
+        // a case with time tokens runs at the clock its tokens were filled at, as golden::run_case does
+        if l.pinned {
+            host::set_clock(Some(l.now));
+        }
+        let got = run_forced(check, &l.payload, &l.opts, &l.event, &l.env);
+        host::set_clock(None);
+        let got = got.unwrap_or_else(|| panic!("{check}: no shipped script"));
         let got = golden::verdict_json(&got, &l);
         let mut ok = got == c["expect"];
         if ok && c.get("watch").is_some() {
@@ -54,6 +60,9 @@ fn model_routing_script_matches_the_compiled_port() {
 
 #[test]
 fn speculation_judge_script_matches_the_compiled_port() {
+    // the corpus is the daemon's answers (a defer to the dispatcher): no test may have the process allowed to block meanwhile
+    let _g = crate::jev::cascade::MODEL_LOCK.lock().unwrap_or_else(|e| e.into_inner());
+    assert!(!crate::judge::blocking_calls_allowed(), "a test left the process allowed to wait for a model");
     golden_report("speculation-judge", 12);
 }
 

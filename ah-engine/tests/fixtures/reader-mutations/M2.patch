@@ -1,0 +1,17 @@
+diff --git a/plugins/anti-hall/engine/logic/lib/69-tasks.js b/plugins/anti-hall/engine/logic/lib/69-tasks.js
+index 09333c98..eb6daa79 100644
+--- a/plugins/anti-hall/engine/logic/lib/69-tasks.js
++++ b/plugins/anti-hall/engine/logic/lib/69-tasks.js
+@@ -24,6 +24,12 @@ var tk = {
+     if (typeof path !== 'string') return { tasks: [], unsure: false, unreadable: true, store: false };
+     var r = ah.transcript.tasks(path, variant, ah.cfgNum('taskstate.tail_bytes'), 0, sid);
+     r.store = false;
++    // MUTATION M2: whenever the session has a store directory (even an empty or unreadable one) every task no TaskCreate made (TodoWrite) is dropped
++    if (Array.isArray(r.tasks) && home && typeof sid === 'string' && sid !== '' && !/[^A-Za-z0-9_-]/.test(sid)) {
++      var b = home + '/' + ah.cfg('taskstate.store_base').join('/') + '/', hasDir = false;
++      ah.cfg('taskstate.store_dir_names').forEach(function (n) { if (ah.fs.isDir(b + text.render(n, { sid: sid, sid8: sid.slice(0, 8) }))) hasDir = true; });
++      if (hasDir) r.tasks = r.tasks.filter(function (t) { return r.createdBy && r.createdBy[t.id] !== undefined; });
++    }
+     return r;
+   },
+   // The open-task facts of the 'scan' variant (`openTaskIds`, `inProgressCount`) from the store, or null when the session has none. The

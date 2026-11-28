@@ -14,11 +14,12 @@
 
 use crate::defaults;
 use regex::Regex;
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
 /// Which of the three transcript shapes carried a task-notification
 ///.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Shape {
     /// A `user` entry: `message.content` as a string or as `text` blocks.
     User,
@@ -29,7 +30,7 @@ pub enum Shape {
 }
 
 /// One `<task-notification>` block.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Notification {
     /// Which shape carried it.
     pub shape: Shape,
@@ -70,7 +71,7 @@ impl Notification {
 
 /// A `task_status` attachment, which a compaction writes for each live background agent
 /// (`hooks/lib/agent-scan.js`, step a0).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TaskStatus {
     /// Record number of the entry.
     pub seq: u64,
@@ -87,7 +88,7 @@ pub struct TaskStatus {
 }
 
 /// One tool use found in an entry.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ToolUse {
     /// The `tool_use` block's `id`, when it has a string one.
     pub id: Option<String>,
@@ -107,7 +108,7 @@ pub struct ToolUse {
 
 /// One event of the task tools, in transcript order: enough to rebuild a task list as
 /// `hooks/lib/task-state.js` `reconstructTasks` does.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum TaskEvent {
     /// A use of one of `transcript.task_tools`.
     Use(ToolUse),
@@ -128,7 +129,7 @@ pub enum TaskEvent {
 /// newest of each: `collectTextFromEntryDedup` repeats no text, `collectTextFromEntryLegacy` is byte-identical to the
 /// pre-3e72bf3 hook, which repeats text read from `message.content`; the regex path and a stored loop-safety hash
 /// depend on the legacy one).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Assistant {
     /// The extracted text.
     pub text: String,
@@ -143,7 +144,7 @@ pub struct Assistant {
 }
 
 /// The last typed user prompt.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Prompt {
     /// The prompt text.
     pub text: String,
@@ -323,7 +324,7 @@ fn collect_tool_uses<'a>(node: &'a Value, out: &mut Vec<&'a Value>) {
 
 fn block_re() -> std::sync::Arc<Regex> {
     static R: crate::defaults::Cache<Regex> = crate::defaults::Cache::new();
-    R.get_or_init(|| crate::checks::lit_re(r"(?s)<task-notification>(.*?)</task-notification>"))
+    R.get_or_init(|| crate::checks::lit_re(defaults::text("agent_scan.re_notification_block")))
 }
 
 fn wrapped_re() -> std::sync::Arc<Regex> {
@@ -493,18 +494,11 @@ pub fn parse_line(line: &str, seq: u64, input_cap: usize, task_input_cap: usize)
     collect_tool_uses(&e, &mut found);
     for tu in found {
         let name = str_of(tu, "name").unwrap_or_default().to_string();
-        let input = tu.get("input").cloned().unwrap_or(Value::Null);
         let cap = if task_tools.contains(&name.as_str()) { task_input_cap } else { input_cap };
-        let big = serde_json::to_vec(&input).map_or(0, |v| v.len()) > cap;
-        r.tool_uses.push(ToolUse {
-            id: str_of(tu, "id").map(str::to_string),
-            name,
-            input: if big { Value::Null } else { input },
-            input_truncated: big,
-            msg_id: msg_id.clone(),
-            seq,
-            ts_ms: r.ts_ms,
-        });
+        // measured by serializing into a counter and cloned only when it stays, so a huge input (a written file) is never copied
+        let big = tu.get("input").is_some_and(|i| json_len(i) > cap);
+        let input = if big { Value::Null } else { tu.get("input").cloned().unwrap_or(Value::Null) };
+        r.tool_uses.push(ToolUse { id: str_of(tu, "id").map(str::to_string), name, input, input_truncated: big, msg_id: msg_id.clone(), seq, ts_ms: r.ts_ms });
     }
     if str_of(&e, "type") == Some("user")
         && let Some(Value::Array(c)) = e.get("message").and_then(|m| m.get("content"))
@@ -513,7 +507,17 @@ pub fn parse_line(line: &str, seq: u64, input_cap: usize, task_input_cap: usize)
             if str_of(it, "type") == Some("tool_result")
                 && let Some(id) = str_of(it, "tool_use_id")
             {
-                r.tool_results.push((id.to_string(), it.get("content").and_then(Value::as_str).unwrap_or("").to_string()));
+                // only the head of a result is kept: the consumers read a task id or a notice at its start, and a result can be megabytes
+                let mut text = it.get("content").and_then(Value::as_str).unwrap_or("");
+                let max = defaults::num("transcript.result_parse_max_bytes") as usize;
+                if text.len() > max {
+                    let mut cut = max;
+                    while !text.is_char_boundary(cut) {
+                        cut -= 1;
+                    }
+                    text = &text[..cut];
+                }
+                r.tool_results.push((id.to_string(), text.to_string()));
             }
         }
     }
@@ -537,6 +541,22 @@ pub fn parse_line(line: &str, seq: u64, input_cap: usize, task_input_cap: usize)
     }
     r.prompt = prompt_of(&e);
     r
+}
+
+/// Bytes `v` takes serialized, counted without building the text.
+fn json_len(v: &Value) -> usize {
+    struct Count(usize);
+    impl std::io::Write for Count {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            self.0 += b.len();
+            Ok(b.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut c = Count(0);
+    if serde_json::to_writer(&mut c, v).is_err() { 0 } else { c.0 }
 }
 
 /// Cut `s` to at most `max` bytes at a character boundary; true when it was cut.

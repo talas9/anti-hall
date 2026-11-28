@@ -187,7 +187,329 @@ function snStuckAdvisory(p) {
   return { advisory: text.advisoryJson(ah.cfg('procwatch.stuck_event'), msg) };
 }
 
-function decide(p, opts) { return snDecide(p, opts); }
+// ---- Stop: a child whose runtime nudges keep repeating (agent_nudge.runtime_escalation, published by the nudge loop) blocks the
+// coordinator's Stop: a block-tier row (#687) up to rt_block_cap times per session, other rows (GH #484) up to rt_stop_cap. The rows leave the file when the child finishes or is stopped.
+// Reconcile the published snapshot at read time: status/answers and snapshot publication have separate lifecycles.
+// Retain audit verdicts separately from the publisher snapshot, which is never modified here.
+// State and overlay share an input budget; answers have an independent bounded tail. Never parse
+// a truncated state document. Unavailable state leaves answers and live tracked agents usable.
+function snRuntimeRead(path, budget) {
+  var size = ah.fs.size(path);
+  if (size === null) return '';
+  if (size > budget.left) return null;
+  var raw = ah.fs.readText(path, budget.left + 1);
+  if (raw === null || raw.length > budget.left || ah.fs.size(path) !== size) return null;
+  budget.left -= size;
+  return raw;
+}
+
+// Publisher rows have no timestamp. A kernel lock serializes the entire read/merge/write:
+// no stale-lock takeover can let a delayed writer publish after its successor. Re-read the
+// publisher under the lock as well: an old caller must not prune a newer escalation's anchor.
+// Missing/expired anchors start now; unavailable locks/inputs/writes yield no release.
+// Latest tracker {at: last_sent, reminders} per [session, child] from the already-read tracker state ({} when unavailable).
+// A snooze extension also advances last_sent without bumping reminders (nudge.rs:1209), and snoozes is a lifetime count
+// (nudge.rs:618-630), so only a reminders increment together with a newer last_sent proves a send (see tr below).
+// reminders is the generation: the engine publishes the same counter in the escalation row (#752 review).
+function snRuntimeSentTimes(state) {
+  var out = {};
+  if (!state || !jx.isObj(state.nudges)) return out;
+  Object.keys(state.nudges).forEach(function (id) {
+    var n = state.nudges[id];
+    if (!n || typeof n.parent !== 'string' || !snNum(n.last_sent)) return;
+    [n.child, id].forEach(function (c) {
+      if (typeof c !== 'string') return;
+      var key = JSON.stringify([n.parent, c]);
+      if (!out[key] || n.last_sent > out[key].at) out[key] = { at: n.last_sent, reminders: snNum(n.reminders) ? n.reminders : null, snoozes: snNum(n.snoozes) ? n.snoozes : 0 };
+    });
+  });
+  return out;
+}
+
+function snRuntimeFirstSeen(home, rows, now, state) {
+  var cfg = ah.cfgLive('silent_nudge.rt_first_seen'), paths = ah.cfg('agent_tracker.paths');
+  var rel = paths.base + '/' + paths.dir + '/' + cfg.file;
+  var lock = ah.cfg('stop_reblock.lock'), held;
+  try { held = ah.state.flock(rel + lock.suffix, lock.group, lock.wait_ms); } catch (e) { return {}; }
+  if (typeof held !== 'number') return {};
+  try {
+    // Read the clock after taking the lock, never an old caller's observation time.
+    now = Math.max(now, ah.clock.now());
+    var publisher = snRuntimeRead(home + '/' + paths.base + '/' + paths.dir + '/' + ah.cfg('agent_nudge.runtime_escalation').file, { left: cfg.max_bytes });
+    var doc = jx.parse(publisher === null ? '' : publisher);
+    if (doc.invalid || doc.unsure || !jx.isObj(doc.v) || !Array.isArray(doc.v.rows)) return {};
+    var raw = snRuntimeRead(home + '/' + rel, { left: cfg.max_bytes });
+    var parsed = jx.parse(raw === null ? '' : raw), old = !parsed.invalid && !parsed.unsure && jx.isObj(parsed.v) ? parsed.v : {};
+    var seen = {}, anchors = {}, count = 0;
+    // #751: the tracker stamps last_sent when it sends/re-escalates, before the coordinator can see it. A new
+    // generation anchors there (bounded below by the previous anchor and backdate_max_ms), not at this Stop's clock.
+    var sent = snRuntimeSentTimes(state);
+    doc.v.rows.forEach(function (r) {
+      if (!r || typeof r.session !== 'string' || typeof r.child !== 'string') return;
+      var key = JSON.stringify([r.session, r.child]);
+      if (Object.prototype.hasOwnProperty.call(seen, key) || count >= cfg.max_rows) return;
+      var prior = old[key], valid = jx.isObj(prior) && snNum(prior.at) && prior.at > 0 && prior.at <= now + cfg.future_allowance_ms;
+      // ah-engine/src/agents/nudge.rs:873 recomputes dur_ms on every publication; it is not a generation.
+      // reminders changes on an actual send/refire (:610-632, :979-985); block reflects tier/extension
+      // state (:517-523). Those changes, or a row pruned here and then republished (:865-873),
+      // require a new answer. No nudge ID is published to detect an unobserved disappearance.
+      var reminders = snNum(r.reminders) ? r.reminders : null;
+      var restart = !valid || now - prior.at >= cfg.ttl_ms || prior.reminders !== reminders || prior.block !== (r.block === true);
+      var at = restart ? Math.max(now, valid ? prior.at : now) : prior.at;
+      // provisional: the anchor came from the mismatch/fallback path (now), so a tracker that later catches up may lower it once.
+      // prev keeps the previous generation's anchor as the lower bound; old entries without the flag are final.
+      var provisional = false, prev = restart ? (valid ? prior.at : 0) : (valid && snNum(prior.prev) ? prior.prev : 0);
+      // tr: the tracker's {reminders, last_sent} pair seen while the anchor is provisional. A later pair with a HIGHER reminders
+      // and a newer last_sent is the generation's own send (a snooze moves last_sent only), whatever the lifetime snoozes count.
+      var te = sent[key], tr = te ? { r: te.reminders, s: te.at } : (valid && jx.isObj(prior.tr) ? prior.tr : null);
+      if (!restart && valid && prior.provisional === true) {
+        var pt = jx.isObj(prior.tr) ? prior.tr : null;
+        if (te && reminders !== null && te.reminders === reminders && pt && snNum(pt.r) && snNum(pt.s) && te.reminders > pt.r && te.at > pt.s) {
+          // Lower only when last_sent is also strictly newer than the previous anchor (same newer-send rule as the restart path).
+          var low = Math.max(te.at, now - cfg.backdate_max_ms, prev);
+          if (snNum(te.at) && te.at > prev && te.at <= now) { if (low < at) at = low; }
+          else provisional = true;
+        } else provisional = true;
+      }
+      if (restart) {
+        // The tracker can be saved after the row is published (older state next to a newer row): backdate only when
+        // its send is the SAME generation as this row; a mismatch, or a missing or unparsable count, anchors at now.
+        var se = sent[key], ls = se && reminders !== null && se.reminders === reminders && (se.snoozes === 0 || (valid && prior.reminders !== reminders)) ? se.at : null, floor = Math.max(now - cfg.backdate_max_ms, valid ? prior.at : 0);
+        // Only a send newer than the previous anchor is a real new generation; a block-tier change alone is not.
+        if (snNum(ls) && ls > floor && ls <= now && (!valid || ls > prior.at)) at = ls;
+        provisional = ls === null;
+      }
+      // Invalid future clocks are missing, not a lower bound to preserve indefinitely.
+      seen[key] = { at: at, reminders: reminders, block: r.block === true, prev: prev };
+      if (provisional) {
+        seen[key].provisional = true;
+        // No tracker pair at anchor time (unreadable tracker): baseline = the previous generation's count and anchor, so a restored
+        // tracker at this generation with a newer last_sent proves it; a snooze (reminders unchanged) or a stale tracker never does.
+        // A block-tier-only change keeps the generation (prior.reminders === reminders): no increment can then prove a send.
+        if (!tr && restart && reminders !== null) tr = { r: valid && prior.reminders === reminders ? reminders : reminders - 1, s: prev };
+        if (tr) seen[key].tr = tr;
+      }
+      // Bound UTF-8 bytes, not JS code units. Overflow cannot retire this row.
+      if (encodeURIComponent(JSON.stringify(seen)).replace(/%[A-Fa-f0-9]{2}/g, 'x').length > cfg.max_bytes) { delete seen[key]; return; }
+      anchors[key] = at;
+      count++;
+    });
+    var ok = false;
+    try { ok = ah.state.writeAtomic(rel, JSON.stringify(seen)) === true; } catch (e) { ok = false; }
+    return ok ? anchors : {};
+  } finally { ah.state.unlock(held); }
+}
+
+function snRuntimeEvidence(p, home, budget, rows) {
+  budget = budget || { left: Math.min(ah.cfgNum('silent_nudge.rt_reconcile_bytes'), ah.cfgNum('script.read_max_bytes') - 1) };
+  var paths = ah.cfg('agent_tracker.paths'), base = home + '/' + paths.base + '/' + paths.dir + '/';
+  var raw = snRuntimeRead(base + paths.state, budget);
+  if (raw === null) ah.metric('runtime_escalation_reconcile_skipped', []);
+  var answerBytes = Math.min(ah.cfgNum('silent_nudge.rt_answers_bytes'), ah.cfgNum('script.read_max_bytes') - 1);
+  var answerPath = base + ah.cfg('agent_nudge.paths').answers;
+  if (ah.fs.size(answerPath) > answerBytes) ah.metric('runtime_escalation_reconcile_skipped', []);
+  // Native bounded line reading drops a partial first line and never loads the whole answers file.
+  var answers = ah.fs.tailLines(answerPath, answerBytes, false);
+  var parsed = jx.parse(raw === null ? '' : raw);
+  var state = !parsed.invalid && !parsed.unsure && parsed.v || {};
+  var answersByChild = {};
+  var words = ah.cfgLive('agent_nudge.answers'), nudges = state.nudges || {};
+  if (answers !== null) answers.forEach(function (line) {
+    var a; try { a = JSON.parse(line); } catch (e) { return; }
+    if (!a || typeof a.child !== 'string' || !snNum(a.ts) || [words.stop, words.acted, words.msg, words.snooze, words.other].indexOf(a.answer) < 0) return;
+    var key = a.child;
+    if (!nudges[key] && !(state.agents && state.agents[key])) {
+      var refs = Object.keys(nudges).filter(function (id) { var n = nudges[id]; return n && typeof n.ref_id === 'string' && n.ref_id && n.ref_id.toLowerCase() === a.child.toLowerCase(); });
+      var matches = refs.length ? refs : Object.keys(nudges).filter(function (id) { return nudges[id] && nudges[id].child_name === a.child; });
+      if (matches.length === 0 && rows) {
+        var publishers = rows.filter(function (r) { return r && (r.child === a.child || r.name === a.child); });
+        // Check all publishers, including other sessions, before accepting a name alias.
+        if (publishers.some(function (r) { return r.session !== p.session_id; })) return;
+        publishers.forEach(function (r) { if (matches.indexOf(r.child) < 0) matches.push(r.child); });
+      }
+      // Names are not session identities. Ambiguous aliases cannot release either parent's Stop.
+      if (matches.length > 1) return;
+      if (matches.length === 1) key = matches[0];
+    }
+    var n = nudges[key], agent = state.agents && state.agents[key];
+    var owner = n && n.parent || agent && agent.parent;
+    if (owner && owner !== p.session_id) return;
+    if (!answersByChild[key] || a.ts >= answersByChild[key].ts) answersByChild[key] = a;
+  });
+  return { state: state, answers: answersByChild, now: ah.clock.now(), live: typeof p.session_id === 'string' ? ah.transcript.trackedAgents(p) : [] };
+}
+
+// When a tracked agent's last outcome (the sample where its progress last changed) stops counting as fresh, or null when it is not
+// fresh or no change was ever seen. Mirrors last_outcome_ms in the engine: the start of the newest run of samples at the current progress.
+function snFreshOutcome(a, now, windowMs) {
+  if (!a || !isFinite(windowMs) || windowMs <= 0 || !Array.isArray(a.samples) || a.samples.length < 2) return null;
+  var s = a.samples, cur = s[s.length - 1], i = s.length - 1;
+  if (!cur || !snNum(cur.progress)) return null;
+  while (i > 0 && s[i - 1] && s[i - 1].progress === cur.progress) i--;
+  if (i === 0 || !s[i] || !snNum(s[i].t)) return null; // no change observed: the run may predate the retained samples
+  var until = s[i].t + windowMs;
+  return until > now ? until : null;
+}
+
+// blockRow: the row is a block-step row (a long run past the block step). Only that row rests on fresh progress (GH #818): a loop/burn/stall
+// escalation (block false) is the unhealthy signal itself and must keep escalating however recently the child wrote.
+function snRuntimeVerdict(child, name, session, evidence, blockRow) {
+  // Unreadable evidence cannot retire a candidate: preserve its normal nudge decision.
+  if (evidence === null) return { retired: null, since: 0 };
+  var a = evidence.state.agents && evidence.state.agents[child];
+  if (a && a.parent && a.parent !== session) a = null;
+  var live = ah.transcript.trackedLiveness(child, evidence.live), terminal = live === false;
+  if (live === null && a && (a.parent === session || a.id === child)) {
+    var kinds = ah.cfg('agent_tracker.kinds');
+    terminal = terminal || a.dead === true || a.gone === true || a.finished === true ||
+      (a.running === false && (a.kind === kinds.teammate || a.kind === kinds.subagent));
+  }
+  var n = evidence.state.nudges && evidence.state.nudges[child];
+  if (n && n.parent && n.parent !== session) n = null;
+  var since = Math.max(a && typeof a.first_seen === 'number' ? a.first_seen : 0, n && typeof n.sent_at === 'number' ? n.sent_at : 0);
+  var words = ah.cfgLive('agent_nudge.answers'), limits = ah.cfgLive('agent_nudge.limits');
+  var anchorKey = JSON.stringify([session, child]);
+  var firstSeen = evidence.firstSeen && evidence.firstSeen[anchorKey];
+  // Never subtract clock skew: that admits an answer from before this escalation.
+  // Unknown candidate clocks also start now; stored anchors have a bounded future allowance.
+  if (evidence.firstSeen) since = snNum(firstSeen) ? Math.max(since, firstSeen) : evidence.now;
+  else if (since === 0) since = evidence.now;
+  var answer = evidence.answers[child];
+  var ttl = ah.cfgLive('silent_nudge.rt_repair').ttl_ms;
+  if ((!evidence.firstSeen || snNum(firstSeen)) && answer && answer.ts > 0 && answer.ts >= since && answer.ts <= evidence.now) {
+    var until = answer.ts;
+    if (answer.answer === words.stop || answer.answer === words.acted) until = answer.ts + Math.min(ttl, limits.window_ms);
+    if (answer.answer === words.msg) until = answer.ts + limits.window_ms;
+    if (answer.answer === words.other || answer.answer === words.snooze) {
+      var minutes = answer.answer === words.snooze && snNum(answer.min) && answer.min > 0 ? answer.min : limits.snooze_default_min;
+      minutes = Math.max(limits.snooze_min_min, Math.min(minutes, limits.snooze_max_min));
+      until = answer.ts + minutes * ah.cfg('agent_tracker.fmt').unit_ms[1];
+    }
+    if (until > evidence.now) return { retired: true, until: until, since: since, answer_at: answer.ts };
+  }
+  // (a workspace child's own tracker row names itself as parent, so the raw row is read here, not the parent-checked one)
+  // A fresh outcome (its progress changed inside rt_progress_window_ms) is progress, not a stuck child: the row rests until the window ends (GH #818).
+  var fresh = snFreshOutcome(evidence.state.agents && evidence.state.agents[child], evidence.now, ah.cfgNum('silent_nudge.rt_progress_window_ms'));
+  if (blockRow === true && !terminal && fresh !== null) return { retired: true, until: fresh, since: since, answer_at: 0 };
+  if (terminal) return { retired: true, until: evidence.now + ttl, since: since, answer_at: 0 };
+  return { retired: live !== null || (a && a.running === true) ? false : null, since: since };
+}
+
+function snRetired(child, name, session, evidence) {
+  return snRuntimeVerdict(child, name, session, evidence).retired;
+}
+
+// The publisher snapshot is read-only. Only this session's atomic, expiring audit overlay is repaired.
+// Preserve every audit row; expired verdicts are ignored, and current live evidence supersedes old completion.
+function snRuntimeRows(p, home, session, doc) {
+  // A session is never nudged about itself: a row whose child is the coordinator's own seat is no child to stop or extend (GH #818).
+  var rows = doc && Array.isArray(doc.rows) ? doc.rows.filter(function (r) { return r && r.session === session && r.child !== session; }) : [];
+  if (!ah.settings.bool('silent_nudge.rt_reconcile_setting')) return rows;
+  var allRows = doc && Array.isArray(doc.rows) ? doc.rows : [];
+  if (rows.length === 0) { snRuntimeFirstSeen(home, allRows, ah.clock.now(), null); return rows; }
+  var cfg = ah.cfgLive('silent_nudge.rt_repair');
+  var rel = ah.cfg('paths.base_dir') + '/' + ah.cfg('paths.state_dir') + '/' + cfg.file_prefix + encodeURIComponent(session) + cfg.file_ext;
+  var budget = { left: Math.min(ah.cfgNum('silent_nudge.rt_reconcile_bytes'), ah.cfgNum('script.read_max_bytes') - 1) };
+  var raw = snRuntimeRead(home + '/' + rel, budget);
+  var evidence = raw !== null ? snRuntimeEvidence(p, home, budget, doc.rows) : null;
+  var firstSeen = snRuntimeFirstSeen(home, allRows, ah.clock.now(), evidence && evidence.state);
+  if (evidence === null) {
+    ah.metric('runtime_escalation_reconcile_skipped', []);
+    return rows; // skip only reconciliation: the original publisher rows still block, subject to the usual caps
+  }
+  evidence.firstSeen = firstSeen;
+  var parsed = jx.parse(raw);
+  var overlay = !parsed.invalid && !parsed.unsure && jx.isObj(parsed.v) && parsed.v.session === session && jx.isObj(parsed.v.rows) ? parsed.v : { session: session, rows: {} };
+  var changed = false, kept = [];
+  rows.forEach(function (r) {
+    var key = JSON.stringify([r.child, r.name]), old = jx.isObj(overlay.rows[key]) ? overlay.rows[key] : null;
+    var verdict = snRuntimeVerdict(r.child, r.name, session, evidence, r.block === true);
+    var active = old && old[cfg.marker] === true && snNum(old.until) && old.until > evidence.now && old.since === verdict.since && snNum(firstSeen[JSON.stringify([session, r.child])] );
+    if (verdict.retired === true) {
+      if (!active || old.answer_at !== verdict.answer_at || old.until > verdict.until) {
+        var entry = { since: verdict.since, until: Math.min(verdict.until, evidence.now + cfg.ttl_ms), answer_at: verdict.answer_at };
+        entry[cfg.marker] = true;
+        overlay.rows[key] = entry;
+        changed = true;
+      }
+    } else if (verdict.retired === false) {
+      if (old && old[cfg.marker] !== false) { old[cfg.marker] = false; changed = true; }
+    } else if (!active) { kept.push(r); return; }
+    if (verdict.retired === false) kept.push(r);
+  });
+  if (changed) {
+    var ok = false;
+    try { ok = ah.state.writeAtomic(rel, JSON.stringify(overlay)) === true; } catch (e) { ok = false; }
+    if (!ok) return rows; // an unrecorded repair must never silently release the publisher's block
+  }
+  return kept;
+}
+
+function snRuntimeEscalation(p, home, session) {
+  if (!session) return null;
+  var file = ah.cfg('agent_nudge.runtime_escalation').file;
+  var rel = ah.cfg('paths.base_dir') + '/' + ah.cfg('agent_tracker.paths').dir + '/' + file;
+  var raw = ah.fs.readText(home + '/' + rel);
+  if (raw === null) return null;
+  var doc; try { doc = JSON.parse(raw); } catch (e) { return null; }
+  var rows = snRuntimeRows(p, home, session, doc);
+  // The block-tier rows (the engine marks them) and the repeated-reminder rows (GH #484) count against their own caps, so one cannot use up the other.
+  var blockRows = rows.filter(function (r) { return r.block === true; });
+  var otherRows = rows.filter(function (r) { return r.block !== true; });
+  if (blockRows.length > 0) {
+    var b = snRtStop(p, home, session, blockRows, ah.cfgNum('silent_nudge.rt_block_cap'), ah.cfg('silent_nudge.rt_block_state_file'), ah.cfg('silent_nudge.msg_rt_block_what'), ah.cfg('silent_nudge.msg_rt_block_instead'));
+    if (b !== null) return b;
+  }
+  if (otherRows.length > 0) return snRtStop(p, home, session, otherRows, ah.cfgNum('silent_nudge.rt_stop_cap'), ah.cfg('silent_nudge.rt_state_file'), ah.cfg('silent_nudge.msg_rt_what'), ah.cfg('silent_nudge.msg_rt_instead'));
+  return null;
+}
+
+function snRtStop(p, home, session, rows, cap, stateFile, whatTpl, insteadTpl) {
+  if (cap < 1) return null;
+  var rel = ah.cfg('paths.base_dir') + '/' + ah.cfg('paths.state_dir') + '/' + stateFile;
+  var given = {}, sraw = ah.fs.readText(home + '/' + rel);
+  if (sraw !== null) { try { var o = JSON.parse(sraw); if (o !== null && typeof o === 'object' && !Array.isArray(o)) given = o; } catch (e) { given = {}; } }
+  if (typeof given[session] === 'number' && given[session] >= cap) return null;
+  given[session] = (typeof given[session] === 'number' ? given[session] : 0) + 1;
+  var ok = false;
+  try { ok = ah.state.writeAtomic(rel, JSON.stringify(given)) === true; } catch (e) { ok = false; }
+  if (!ok) { // an unrecorded block could repeat past the cap (GH #494): say nothing, count it, log it once
+    ah.metric('runtime_escalation_stop_unrecorded', []);
+    ah.log(ah.cfg('silent_nudge.rt_unrecorded_log').kind, ah.cfg('silent_nudge.rt_unrecorded_log').text);
+    return null;
+  }
+  var max = ah.cfgNum('silent_nudge.max_named');
+  var items = rows.slice(0, max).map(function (r) {
+    var mins = Math.floor((typeof r.dur_ms === 'number' ? r.dur_ms : 0) / 60000), h = Math.floor(mins / 60);
+    var dur = h > 0 ? text.render(ah.cfg('silent_nudge.rt_dur_hours'), { h: String(h), m: String(mins % 60) }) : text.render(ah.cfg('silent_nudge.rt_dur_minutes'), { m: String(mins) });
+    return text.render(ah.cfg('silent_nudge.msg_rt_item'), { name: snOneLine(String(r.name || ''), ah.cfgNum('silent_nudge.label_max')), dur: dur });
+  });
+  var more = rows.length > max ? text.render(ah.cfg('silent_nudge.msg_more'), { n: rows.length - max }) : '';
+  ah.advisory('flagged', 'runtime_escalation_stop');
+  // house format: fact, then "Do now:"; no why line (an order is not "advisory")
+  var reason = text.message('block', ah.cfg('silent_nudge.guard_name'), {
+    what: text.render(whatTpl, { names: items.join(ah.cfg('silent_nudge.msg_item_sep')), more: more }), instead: insteadTpl });
+  return stopReblock.finish(ah.cfg('silent_nudge.guard_name'), p, { exact: { code: 0, out: JSON.stringify({ decision: 'block', reason: reason }) + '\n', err: '' } }, rows.map(function (r) { return [r.child, r.name, r.block, r.reminders]; }).sort());
+}
+
+// A failed call keeps its error text (#764): the engine's own `script_error` line is rate-limited across all checks, so most failures
+// lost the text. The text goes to a size-bounded JSONL file, then the error goes on to the engine's failure policy unchanged.
+function snLogError(e, p) {
+  try {
+    var home = ah.home();
+    if (!home) return;
+    var rel = ah.cfg('silent_nudge.err_file'), st = ah.fs.lstat(home + '/' + rel);
+    if (st && st.kind === 'file' && st.size >= ah.cfgNum('silent_nudge.err_max_bytes')) ah.state.op(home, 'rename', rel, rel + '.1');
+    var msg = [e && e.message, e && e.stack].filter(function (x) { return typeof x === 'string' && x !== ''; }).join('\n') || String(e);
+    msg = msg.slice(0, ah.cfgNum('silent_nudge.err_text_max'));
+    var event = p !== null && typeof p === 'object' && typeof p[ah.cfg('procwatch.f_event')] === 'string' ? p[ah.cfg('procwatch.f_event')] : '';
+    ah.state.appendFile(rel, JSON.stringify({ ts: new Date(ah.clock.now()).toISOString(), event: event, error: msg }) + '\n');
+  } catch (e2) { /* a lost error record never changes the verdict */ }
+}
+
+function decide(p, opts) {
+  try { return snDecide(p, opts); } catch (e) { snLogError(e, p); throw e; }
+}
 
 function snDecide(p, opts) {
   if (ah.env.get(ah.cfg('silent_nudge.judge_child_env')) === ah.cfg('silent_nudge.judge_child_value')) return 'allow';
@@ -202,10 +524,16 @@ function snDecide(p, opts) {
   if (ah.settings.skipped(guard)) return 'allow';
   if (p === null || typeof p !== 'object') return 'allow';
   var session = typeof p.session_id === 'string' ? p.session_id : '';
+  var rt = snRuntimeEscalation(p, home, session);
+  if (rt !== null) return rt;
   var minutes = ah.settings.num('silent_nudge.min_setting');
   if (!isFinite(minutes) || minutes < 1) minutes = ah.cfgNum('silent_nudge.min_default');
   var threshold = minutes * 60000, now = ah.clock.now();
   var candidates = snCandidates(p, home, now, threshold, session, true);
+  if (candidates && candidates.length && ah.settings.bool('silent_nudge.rt_reconcile_setting')) {
+    var evidence = snRuntimeEvidence(p, home);
+    candidates = candidates.filter(function (c) { return snRetired(c.id, c.label, session, evidence) !== true; });
+  }
   if (candidates === null || candidates.length === 0) return 'allow';
   var stateRel = ah.cfg('silent_nudge.state_file');
   var state = snState(home + '/' + stateRel);
@@ -262,7 +590,7 @@ function snDecide(p, opts) {
     }
   }
   ah.state.op(home, 'after_reply', stateRel, stateText);
-  if (acked) return 'allow';
+  if (acked) { ah.metric('silent_agent_nudge_acked', []); return 'allow'; }
   var named = ah.cfgNum('silent_nudge.max_named');
   var items = shown.slice(0, named).map(function (c, n) { return text.render(ah.cfg('silent_nudge.msg_item'), { label: (c.shell ? ah.cfg('silent_nudge.shell_label_prefix') : '') + labels[n], mins: String(Math.floor(c.age / 60000)) }); });
   var more = shown.length > named ? text.render(ah.cfg('silent_nudge.msg_more'), { n: shown.length - named }) : '';
@@ -272,5 +600,6 @@ function snDecide(p, opts) {
   var instead = text.render(ah.cfg('silent_nudge.msg_instead'), { them: ah.cfg(shown.length === 1 ? 'silent_nudge.pronoun_one' : 'silent_nudge.pronoun_many') });
   var hint = session ? text.render(ah.cfg('silent_nudge.ack_hint'), { key: ackKey, now: String(ah.clock.now()), path: snAckPath(home, session) }) : '';
   var reason = text.message('block', guard, { what: what, why: ah.cfg('silent_nudge.msg_why'), instead: instead, allowed: ah.cfg('silent_nudge.msg_allowed'), extra: [hint] });
-  return { exact: { code: 0, out: JSON.stringify({ decision: 'block', reason: reason }) + '\n', err: '' } };
+  ah.metric('silent_agent_nudge_fired', []); // #519: every Stop nudge said is counted
+  return stopReblock.finish(guard, p, { exact: { code: 0, out: JSON.stringify({ decision: 'block', reason: reason }) + '\n', err: '' } }, shown.map(function (c) { return [c.id, c.snapshot]; }).sort());
 }

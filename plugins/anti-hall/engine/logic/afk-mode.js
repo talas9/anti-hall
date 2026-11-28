@@ -1,0 +1,545 @@
+// check = "afk-mode" (UserPromptSubmit, PreToolUse, PostToolUse, Stop on Claude; SessionStart, UserPromptSubmit, PostToolUse, Stop on Codex; engine-only,
+// no Node twin; GH #425). AFK mode: a machine-wide flag (afk.flag_file) set by `ah-engine afk on`, by the owner typing `afk`, or by
+// idle detection; the rule injected once per session per AFK period plus capped reminders; an AFK marker in the session progress
+// file, whose checklist bullets are the digest `back` / `progress` print; a capped Stop hold of overlong AFK replies; output tokens
+// per turn split AFK vs present; no blocking questions (the question tool denied with the ladder every time, a capped Stop hold of
+// a turn ending on a plain-text question, NEEDS OWNER bullets listed first). Subagents never get the rule nor touch the parent's
+// once-per-session state; their question-tool calls are denied too. The flag is only rewritten under its lock, re-read inside it
+// (OFF wins), with one lock budget per hook call (afk.lock_wait_ms); owner presence never goes backwards and idle detection never
+// re-enters AFK before the last `back` plus the idle time. Every pattern, list, number and text: afk.toml. `afkDigest` is pure (cfg and files in, text out) so
+// the `ah-engine back` command and the typed `back` share it.
+'use strict';
+
+function afkC(C, k) { return C[k]; }
+// The digest's part of afk.toml, read here when the hook renders the digest (the engine's `back` passes the same table).
+function afkDigestCfg() {
+  return {
+    msg_digest_head: ah.cfg('afk.msg_digest_head'), msg_digest_none: ah.cfg('afk.msg_digest_none'), msg_digest_more: ah.cfg('afk.msg_digest_more'),
+    msg_pct: ah.cfg('afk.msg_pct'), msg_pct_na: ah.cfg('afk.msg_pct_na'), msg_no_sessions: ah.cfg('afk.msg_no_sessions'),
+    marker_prefix: ah.cfg('afk.marker_prefix'), bullet_re: ah.cfg('afk.bullet_re'), done_re: ah.cfg('afk.done_re'), open_re: ah.cfg('afk.open_re'),
+    digest_max_entries: ah.cfgNum('afk.digest_max_entries'), needs_owner_re: ah.cfg('afk.needs_owner_re'), msg_needs_owner_head: ah.cfg('afk.msg_needs_owner_head'),
+  };
+}
+function afkR(s, vars) { return String(s).replace(/\{(\w+)\}/g, function (m, k) { return Object.prototype.hasOwnProperty.call(vars, k) ? String(vars[k]) : m; }); }
+
+// The digest of one progress file's text: { lines: [...], entries: n }. `C` is the afk.* table without the prefix.
+function afkDigestOne(C, path, txt) {
+  var head = afkR(afkC(C, 'msg_digest_head'), { path: path });
+  if (typeof txt !== 'string') return { lines: [afkR(afkC(C, 'msg_digest_none'), { path: path })], entries: 0, parked: [] };
+  var at = txt.lastIndexOf(afkC(C, 'marker_prefix'));
+  if (at < 0) return { lines: [afkR(afkC(C, 'msg_digest_none'), { path: path })], entries: 0, parked: [] };
+  var rest = txt.slice(at).split('\n').slice(1);
+  var bullet = new RegExp(afkC(C, 'bullet_re')), done = new RegExp(afkC(C, 'done_re')), open = new RegExp(afkC(C, 'open_re'));
+  var needs = new RegExp(afkC(C, 'needs_owner_re'));
+  var bullets = [], parked = [], nDone = 0, nOpen = 0;
+  for (var i = 0; i < rest.length; i++) {
+    var l = rest[i];
+    if (!bullet.test(l)) continue;
+    if (needs.test(l)) parked.push(l.replace(/^\s+/, '')); // listed first by afkDigest, never cut
+    else bullets.push(l.replace(/^\s+/, ''));
+    if (done.test(l)) nDone++;
+    else if (open.test(l)) nOpen++;
+  }
+  if (bullets.length === 0 && parked.length === 0) return { lines: [afkR(afkC(C, 'msg_digest_none'), { path: path })], entries: 0, parked: [] };
+  var max = Number(afkC(C, 'digest_max_entries')), out = [head], cut = Math.max(0, bullets.length - max);
+  if (cut > 0) out.push(afkR(afkC(C, 'msg_digest_more'), { n: cut }));
+  for (var j = cut; j < bullets.length; j++) out.push('  ' + bullets[j]);
+  var total = nDone + nOpen;
+  out.push(total > 0 ? afkR(afkC(C, 'msg_pct'), { pct: Math.round((nDone * 100) / total), done: nDone, total: total }) : afkC(C, 'msg_pct_na'));
+  return { lines: out, entries: bullets.length - cut + parked.length, parked: parked };
+}
+
+// `afkDigest({cfg, files: [{path, text}]})` -> {text, entries, parked}: called by the engine's `back` command (cfg = the afk.*
+// table). The NEEDS OWNER bullets of every file come first (parked = their count).
+function afkDigest(input) {
+  var C = input && input.cfg ? input.cfg : afkDigestCfg(), files = input && Array.isArray(input.files) ? input.files : [];
+  if (files.length === 0) return { text: afkC(C, 'msg_no_sessions'), entries: 0, parked: 0 };
+  var lines = [], n = 0, parked = [];
+  for (var i = 0; i < files.length; i++) {
+    var d = afkDigestOne(C, String(files[i].path), files[i].text);
+    lines = lines.concat(d.lines);
+    n += d.entries;
+    parked = parked.concat(d.parked);
+  }
+  if (parked.length > 0) lines = [afkR(afkC(C, 'msg_needs_owner_head'), { n: parked.length })].concat(parked.map(function (b) { return '  ' + b; }), lines);
+  return { text: lines.join('\n'), entries: n, parked: parked.length };
+}
+
+// ---- state ----------------------------------------------------------------------------------------------------------------
+
+function afkRel(name) { return ah.cfg('replykit.state_dir') + '/' + name; }
+function afkReadJson(rel) {
+  var t = ah.state.readText(rel);
+  if (t === null) return null;
+  try { var v = JSON.parse(t); return v !== null && typeof v === 'object' ? v : null; } catch (e) { return null; }
+}
+function afkWrite(rel, obj) { try { return ah.state.writeAtomic(rel, JSON.stringify(obj)); } catch (e) { return false; } }
+function afkMetric(name, labels, by) { try { ah.metric(name, labels || {}, by === undefined ? 1 : by); } catch (e) { /* counting never fails a hook */ } }
+
+function afkFlag() { return afkReadJson(afkRel(ah.cfg('afk.flag_file'))); }
+function afkOn(f) { return f !== null && f.on === true; }
+function afkIsAgent(p) { return coordinator.subagentByPayload(p); }
+
+// Every read-modify-write of the flag: under its cross-process lock (afk.lock_file, the same lock `ah-engine afk` / `back` take),
+// `fn(cur)` gets the flag as it is NOW and returns the object to write, or null to leave it. Without the lock nothing is written
+// and null is returned, so a copy read before another writer's OFF can never overwrite it.
+// One lock budget per hook call (afk.lock_wait_ms), reset by decide(): every try waits only what is left of it, and once a try
+// fails the call takes no other (a contended hook returns within the budget, writing nothing). Date.now() is the real clock (the
+// hook clock ah.clock.now() can be pinned).
+var afkLockBudget = { until: 0, failed: false };
+function afkLockReset() { afkLockBudget = { until: Date.now() + ah.cfgNum('afk.lock_wait_ms'), failed: false }; }
+// `fn` may return {flag, guard}: `guard` ([[rel, key, max], ...]) is re-checked by the host after the ownership check,
+// immediately before the rename; a watched number above its bound discards the commit (counted afk_idle_revoked, GH #426).
+function afkUpdate(fn) {
+  if (afkLockBudget.failed) return null;
+  var h = null;
+  try { h = ah.state.lock(afkRel(ah.cfg('afk.lock_file')), 'afk', Math.max(0, afkLockBudget.until - Date.now())); } catch (e) { h = null; }
+  if (h === null) { afkLockBudget.failed = true; return null; }
+  try {
+    // fenced commit (GH #426): sweep earlier holders' staged copies BEFORE reading, then publish only while the lock is still
+    // ours, so a holder whose expired lock was taken over can never land a stale ON over the new holder's OFF
+    var rel = afkRel(ah.cfg('afk.flag_file')), infix = ah.cfg('afk.fence_infix');
+    try { ah.state.fenceSweep(rel, infix); } catch (e) { /* nothing to sweep */ }
+    // `prev`: a copy of the flag as read under the lock, before `fn` may change `cur` in place
+    var cur = afkFlag(), prev = cur === null ? null : JSON.parse(JSON.stringify(cur)), next = fn(cur), guard;
+    if (next === null) return { flag: cur, prev: prev };
+    if (next.guard !== undefined) { guard = next.guard; next = next.flag; }
+    var ok = false;
+    try { ok = ah.state.writeFenced(rel, JSON.stringify(next), h, infix, guard); } catch (e) { ok = false; }
+    if (!ok) afkMetric(guard !== undefined && afkGuardMoved(guard) ? 'afk_idle_revoked' : 'afk_lock_lost', {});
+    return ok ? { flag: next, prev: prev } : null;
+  } finally {
+    try { ah.state.unlock(h); } catch (e) { /* the host releases a lock still held when the call ends */ }
+  }
+}
+
+// Whether a watched value of a discarded guarded commit moved past its bound (a newer owner presence or `back`).
+function afkGuardMoved(guard) {
+  return guard.some(function (g) { var v = afkReadJson(g[0]); return v !== null && typeof v[g[1]] === 'number' && v[g[1]] > g[2]; });
+}
+
+function afkStart(how, now) {
+  var r = afkUpdate(function (cur) {
+    if (afkOn(cur)) return null;
+    var on = { on: true, how: how, since: now, epoch: String(now), counted: false };
+    if (how !== ah.cfg('afk.how_idle')) return on;
+    // idle: re-checked against the flag as it is NOW, so a `back` written after this hook read the flag wins; and again by the
+    // host right before the rename, so an owner presence or `back` that lands while this commit is pending wins too (GH #426)
+    var base = afkIdleBase(cur);
+    if (base === null || now - base < ah.settings.num('afk.set_idle_minutes') * 60000) return null;
+    return { flag: on, guard: [[afkRel(ah.cfg('afk.presence_file')), 'last', base], [afkRel(ah.cfg('afk.flag_file')), 'ended', base]] };
+  });
+  return r !== null && afkOn(r.flag) ? r.flag : null;
+}
+
+// idleOnly: end an idle period only. Otherwise (the owner's `back` / `afk off`): ALWAYS bump the `ended` watermark under the lock,
+// even when the published flag is OFF (and with no flag yet), so an idle entry pending in another hook loses (GH #426).
+function afkEnd(f, now, idleOnly) {
+  return afkUpdate(function (cur) {
+    if (idleOnly && (!afkOn(cur) || cur.how !== ah.cfg('afk.how_idle'))) return null;
+    var next = cur !== null ? cur : { on: false };
+    next.on = false;
+    next.ended = typeof next.ended === 'number' && next.ended > now ? next.ended : now;
+    return next;
+  });
+}
+
+// Counts the CLI could not add (it runs outside the daemon) are added by the first hook that sees them, from the flag as it is under
+// the lock (a stale ON copy is never written back); without the lock the counts wait for the next hook.
+function afkFlush(f) {
+  if (f === null) return f;
+  var due = (f.on === true && f.counted !== true) || f.pending_digest > 0 || f.pending_parked > 0;
+  if (!due) return f;
+  var counts = [];
+  var r = afkUpdate(function (cur) {
+    if (cur === null) return null;
+    var changed = false;
+    counts = [];
+    if (cur.on === true && cur.counted !== true) {
+      counts.push(['afk_entered', { how: String(cur.how) }, 1]);
+      if (cur.how === ah.cfg('afk.how_idle')) counts.push(['idle_trips', {}, 1]);
+      cur.counted = true; changed = true;
+    }
+    if (typeof cur.pending_digest === 'number' && cur.pending_digest > 0) {
+      counts.push(['digest_entries', {}, cur.pending_digest]);
+      cur.pending_digest = 0; changed = true;
+    }
+    if (typeof cur.pending_parked === 'number' && cur.pending_parked > 0) {
+      counts.push(['afk_question_parked', { action: ah.cfg('afk.action_listed') }, cur.pending_parked]);
+      cur.pending_parked = 0; changed = true;
+    }
+    return changed ? cur : null;
+  });
+  if (r === null) return f;
+  for (var i = 0; i < counts.length; i++) afkMetric(counts[i][0], counts[i][1], counts[i][2]);
+  return r.flag;
+}
+
+function afkSid(p) {
+  var raw = p && p.session_id !== undefined && p.session_id !== null ? String(p.session_id) : '';
+  return raw.replace(new RegExp(ah.cfg('afk.session_id_unsafe'), 'g'), '');
+}
+function afkSessRel(sid) { return afkRel(ah.cfg('afk.session_prefix') + sid + ah.cfg('replykit.json_ext')); }
+
+// The session's progress file: <project root>/.anti-hall/progress/<UTC date>/<sid>.md (the task-list guard's layout).
+function afkProgress(p, sid, now) {
+  var cwd = p && typeof p.cwd === 'string' && p.cwd.charAt(0) === '/' ? p.cwd : null;
+  if (cwd === null || !sid) return null;
+  var root = ah.project.root(cwd);
+  if (root === null) root = cwd;
+  var segs = ah.cfg('tasklist_guard.progress_dir').concat([new Date(now).toISOString().slice(0, 10), sid + '.md']);
+  return { root: root, rel: segs.join('/'), abs: root + '/' + segs.join('/') };
+}
+
+// The session's view of the current AFK period; a new period writes the marker and returns {fresh: true}.
+function afkSession(p, f, now) {
+  var sid = afkSid(p);
+  if (!sid) return null;
+  var rel = afkSessRel(sid), s = afkReadJson(rel);
+  if (s !== null && s.epoch === f.epoch) return { sid: sid, rel: rel, s: s, fresh: false };
+  var pr = afkProgress(p, sid, now), path = pr !== null ? pr.abs : '';
+  if (pr !== null) {
+    var mark = afkR(ah.cfg('afk.marker_text'), { epoch: f.epoch, iso: new Date(Number(f.since) || now).toISOString(), how: f.how });
+    try { ah.state.op(pr.root, 'append', pr.rel, mark); } catch (e) { path = ''; }
+  }
+  s = { epoch: f.epoch, progress: path, reminded: now, reminders: 0, nudge: null, nudged: false, blocks: 0 };
+  afkWrite(rel, s);
+  ah.state.prune(ah.cfg('afk.session_prefix'), ah.cfg('afk.session_prefix') + sid + ah.cfg('replykit.json_ext'));
+  return { sid: sid, rel: rel, s: s, fresh: true };
+}
+
+function afkCtx(event, t) { return { exact: { code: 0, out: afkR(ah.cfg('afk.ctx_line'), { event: event, text: JSON.stringify(t) }), err: '' } }; }
+
+// Owner presence (afk.presence_file) only moves forward: a write older than the recorded time (a hook that read its clock before
+// a `back`) never moves it back.
+function afkPresent(now) {
+  var rel = afkRel(ah.cfg('afk.presence_file')), pr = afkReadJson(rel);
+  if (pr !== null && typeof pr.last === 'number' && pr.last >= now) return;
+  afkWrite(rel, { last: now });
+}
+
+// Idle due: no owner prompt on this machine for afk.idleMinutes, counted from the later of the last prompt and the last end of AFK
+// (`ended`, the back watermark). Never due without a recorded prompt.
+// The idle base: the later of the last owner prompt and the flag's `ended`; null without a recorded prompt.
+function afkIdleBase(f) {
+  var pr = afkReadJson(afkRel(ah.cfg('afk.presence_file')));
+  if (pr === null || typeof pr.last !== 'number') return null;
+  return f !== null && typeof f.ended === 'number' && f.ended > pr.last ? f.ended : pr.last;
+}
+function afkIdleDue(f, now) {
+  var base = afkIdleBase(f);
+  return base !== null && now - base >= ah.settings.num('afk.set_idle_minutes') * 60000;
+}
+
+// GH #509: the flag read at hook time is the only AFK state. An idle-entered AFK whose recorded owner presence is NEWER than its start is
+// stale (the owner is back; the ending write was lost, or the owner answered through the question tool, which is not a prompt): it ends
+// here under the lock (a cleared flag, nothing deleted), is counted, and the call goes on as OFF, so no AFK text is injected for it.
+// An answered question-tool call (PostToolUse of afk.question_tools, not a subagent) is owner presence (afk.set_answer_presence).
+function afkOwnerBack(p, f, now, ev) {
+  if (ev === 'PostToolUse' && !afkIsAgent(p) && ah.settings.bool('afk.set_answer_presence') && ah.cfg('afk.question_tools').indexOf(typeof p.tool_name === 'string' ? p.tool_name : '') >= 0) afkPresent(now);
+  if (!afkOn(f) || f.how !== ah.cfg('afk.how_idle')) return f;
+  var pr = afkReadJson(afkRel(ah.cfg('afk.presence_file')));
+  if (pr === null || typeof pr.last !== 'number' || pr.last <= Number(f.since)) return f;
+  var r = afkEnd(f, now, true);
+  afkMetric('afk_stale_injection_suppressed', { event: ev });
+  if (r !== null) return r.flag;
+  var off = JSON.parse(JSON.stringify(f));
+  off.on = false;
+  return off;
+}
+
+// An owner prompt typed in THIS session after this AFK period started, within afk.presentMinutes (0 = off), means the owner is at
+// this session's keyboard: its question block is suspended for its own (non-subagent) calls, though AFK stays on. The mark lives in
+// the session's state for the period (afkSessPresent), never in the machine-wide presence file: an owner typing in one session must
+// not let a parallel session ask a question nobody there will answer. Only an owner prompt marks it (afkOwnerPrompt), and the
+// prompt that turned AFK on is answered by the hook and marks nothing.
+function afkOwnerPresent(p, f, now) {
+  if (!afkOn(f) || afkIsAgent(p)) return false;
+  var win = ah.settings.num('afk.set_present_minutes');
+  if (!(win > 0)) return false;
+  var sid = afkSid(p);
+  if (!sid) return false;
+  var s = afkReadJson(afkSessRel(sid));
+  if (s === null || s.epoch !== f.epoch || typeof s.present !== 'number') return false;
+  return s.present > Number(f.since) && now - s.present < win * 60000;
+}
+
+// An owner prompt of this session while AFK is on: marked in the session's state for this period (afkOwnerPresent reads it).
+function afkSessPresent(p, f, now) {
+  var se = afkSession(p, f, now);
+  if (se === null) return;
+  se.s.present = now;
+  afkWrite(se.rel, se.s);
+}
+
+// Whether a prompt is the owner typing: not a harness, teammate or hook text (afk.non_owner_prompt_res) and not a turn the host
+// scheduler delivered (a cron tick, any text; emit_dedupe.uncounted_origins).
+function afkOwnerPrompt(p) {
+  var prompt = typeof p.prompt === 'string' ? p.prompt : '';
+  if (ah.cfg('afk.non_owner_prompt_res').some(function (r) { return ah.re.test(r, 'i', prompt); })) return false;
+  return !dedupe.scheduledTurn(p.transcript_path, prompt);
+}
+
+function afkIdleTrip(f, now) {
+  if (afkOn(f) || !ah.settings.bool('afk.set_idle') || !afkIdleDue(f, now)) return f;
+  return afkStart(ah.cfg('afk.how_idle'), now) || f;
+}
+
+function afkWordIn(list, t) {
+  for (var i = 0; i < list.length; i++) if (String(list[i]).toLowerCase() === t) return true;
+  return false;
+}
+
+function afkDigestHere(f) {
+  var files = [], seen = {};
+  // the sessions that recorded a progress file for this period (their state files), newest first, bounded
+  var dir = ah.home() + '/' + ah.cfg('replykit.state_dir'), names = ah.fs.readdir(dir) || [], pre = ah.cfg('afk.session_prefix');
+  var max = ah.cfgNum('afk.digest_max_files');
+  for (var i = 0; i < names.length && files.length < max; i++) {
+    if (names[i].indexOf(pre) !== 0) continue;
+    var s = afkReadJson(afkRel(names[i]));
+    if (s === null || f === null || s.epoch !== f.epoch || typeof s.progress !== 'string' || s.progress === '' || seen[s.progress]) continue;
+    seen[s.progress] = true;
+    files.push({ path: s.progress, text: ah.fs.readText(s.progress, ah.cfgNum('afk.read_max_bytes')) });
+  }
+  return afkDigest({ cfg: null, files: files });
+}
+
+function afkFmt(ms) { return new Date(Number(ms) || 0).toISOString(); }
+
+function afkPrompt(p, f, now, owner) {
+  var prompt = typeof p.prompt === 'string' ? p.prompt : '';
+  if (!owner) return null;
+  afkPresent(now);
+  var word = prompt.trim().toLowerCase(), reply = null;
+  if (ah.settings.bool('afk.set_prompt_commands')) {
+    if (afkWordIn(ah.cfg('afk.words_on'), word)) {
+      if (afkOn(f)) reply = afkR(ah.cfg('afk.msg_already'), { how: f.how, since: afkFmt(f.since) });
+      else {
+        var n = afkStart(ah.cfg('afk.how_prompt'), now);
+        afkFlush(n);
+        reply = n !== null ? afkR(ah.cfg('afk.msg_on'), { how: n.how }) : ah.cfg('afk.msg_lock_busy');
+      }
+    } else if (afkWordIn(ah.cfg('afk.words_off'), word) || afkWordIn(ah.cfg('afk.words_progress'), word)) {
+      var off = afkWordIn(ah.cfg('afk.words_off'), word), d = afkDigestHere(f), head = '';
+      if (off) {
+        // under the lock, whatever the published flag says (an idle ON may be pending); the head reflects the flag as it was then
+        var e = afkEnd(f, now, false), was = e !== null ? e.prev : null;
+        if (e === null) head = ah.cfg('afk.msg_lock_busy'); // the watermark was not written: say so
+        else head = afkOn(was) ? afkR(ah.cfg('afk.msg_off'), { how: was.how, since: afkFmt(was.since) }) : ah.cfg('afk.msg_not_on');
+      }
+      afkMetric('digest_entries', {}, d.entries);
+      if (d.parked > 0) afkMetric('afk_question_parked', { action: ah.cfg('afk.action_listed') }, d.parked);
+      reply = (head ? head + '\n' : '') + d.text;
+    }
+  }
+  if (reply !== null) return { exact: { code: 0, out: afkR(ah.cfg('afk.ups_block'), { reason: JSON.stringify(reply) }), err: '' } };
+  if (afkOn(f) && f.how === ah.cfg('afk.how_idle')) {
+    var r = afkEnd(f, now, true);
+    if (r !== null && !afkOn(r.flag)) return afkCtx('UserPromptSubmit', ah.cfg('afk.msg_idle_ended'));
+  }
+  return null;
+}
+
+// The output tokens of the turn that just ended (deduplicated by message id) and nothing else: {tokens} or null.
+function afkTurnTokens(tp) {
+  var keep = [['type'], ['message', 'id'], ['message', 'usage', 'output_tokens'], ['message', 'content'], ['message', 'content', '*', 'type']];
+  var r = ah.transcript.tailEntries(tp, ah.cfgNum('afk.window_bytes'), ah.cfgNum('afk.line_max_bytes'), keep, ah.cfgNum('afk.max_lines'));
+  if (r === null || !Array.isArray(r.lines)) return null;
+  var byId = {}, anon = 0;
+  for (var i = r.lines.length - 1; i >= 0; i--) {
+    var e = r.lines[i][1];
+    if (e === null || typeof e !== 'object') continue;
+    var m = e.message;
+    if (e.type === 'user' && m && (typeof m.content === 'string' || (Array.isArray(m.content) && m.content.some(function (c) { return c && c.type === 'text'; })))) break;
+    if (e.type !== 'assistant' || !m || !m.usage || typeof m.usage.output_tokens !== 'number') continue;
+    if (typeof m.id === 'string' && m.id) byId[m.id] = Math.max(byId[m.id] || 0, m.usage.output_tokens);
+    else anon += m.usage.output_tokens;
+  }
+  var t = anon;
+  for (var k in byId) if (Object.prototype.hasOwnProperty.call(byId, k)) t += byId[k];
+  return t;
+}
+
+// A turn that ends on a plain-text question while AFK: held with the ladder at most afk.question_max_holds times (null = not held).
+// GH #981: also a turn that ends offering work to the owner ("Want me to X?", "Let me know if you want me to ...": afk.offer_res over the last
+// afk.offer_tail_lines lines), and also under the session's no-stop order (autonomy) without AFK, counted in the no-stop state.
+function afkQuestionHold(p, f, now, reply, on) {
+  if (!ah.settings.bool('afk.set_no_questions')) return null;
+  var lines = reply.split('\n').filter(function (l) { return l.trim() !== ''; });
+  var last = lines[lines.length - 1];
+  if (last === undefined) return null;
+  var tail = lines.slice(-ah.cfgNum('afk.offer_tail_lines')).join('\n');
+  var offer = ah.settings.bool('afk.set_offer_hold') && ah.cfg('afk.offer_res').some(function (r) { return ah.re.test(r, 'i', tail); });
+  if (!offer && !new RegExp(ah.cfg('afk.question_re')).test(last)) return null;
+  var reason = offer ? ah.cfg('afk.msg_offer_stop') : ah.cfg('afk.msg_ladder_stop');
+  var block = { exact: { code: 0, out: afkR(ah.cfg('afk.stop_block'), { reason: JSON.stringify(reason) }), err: '' } };
+  var kind = offer ? ah.cfg('afk.action_offer') : ah.cfg('afk.action_nudged');
+  if (!on) {
+    var ns = nostop.session(p);
+    if (ns === null) return null;
+    var nheld = typeof ns.qholds === 'number' ? ns.qholds : 0;
+    if (nheld >= ah.cfgNum('afk.question_max_holds')) { afkMetric('afk_question_parked', { action: ah.cfg('afk.action_capped') }); return null; }
+    if (!nostop.write(p, Object.assign({}, ns, { qholds: nheld + 1 }))) return null; // the cap cannot be recorded: never hold
+    afkMetric('afk_question_parked', { action: kind });
+    return block;
+  }
+  if (afkOwnerPresent(p, f, now)) { afkMetric('afk_question_present_allowed', { where: ah.cfg('afk.where_stop') }); return null; }
+  var se = afkSession(p, f, now);
+  if (se === null) return null;
+  var held = typeof se.s.qholds === 'number' ? se.s.qholds : 0;
+  if (held >= ah.cfgNum('afk.question_max_holds')) { afkMetric('afk_question_parked', { action: ah.cfg('afk.action_capped') }); return null; }
+  se.s.qholds = held + 1;
+  if (!afkWrite(se.rel, se.s)) return null; // the cap cannot be recorded: never hold
+  afkMetric('afk_question_parked', { action: kind });
+  return block;
+}
+
+// ---- no-stop orders (GH #958 (a)): the owner's plain-word "do not stop" directives, held per session (lib/87-nostop.js) ----
+function afkNoStopCapture(p, now) {
+  if (!ah.settings.bool('afk.set_nostop') || ah.settings.skipped(ah.cfg('afk.guard_name'))) return;
+  var prompt = typeof p.prompt === 'string' ? p.prompt.slice(0, ah.cfgNum('afk.nostop_prompt_max')) : '';
+  var test = function (r) { return ah.re.test(r, 'i', prompt); };
+  var on = ah.cfg('afk.nostop_on_res').some(test), off = !on && ah.cfg('afk.nostop_off_res').some(test), cur = nostop.session(p);
+  if (on) {
+    if (cur === null || cur.holds !== 0 || typeof cur.quietUntil === 'number') { // an owner phrase also ends an escalation's quiet (#844)
+      var since = cur !== null && typeof cur.since === 'number' ? cur.since : now;
+      if (nostop.write(p, { on: true, since: since, holds: 0 }) && cur === null) afkMetric('afk_nostop', { action: ah.cfg('afk.action_nostop_set') });
+    }
+  } else if (off && cur !== null) {
+    if (nostop.write(p, { on: false, since: cur.since, ended: now, holds: 0 })) afkMetric('afk_nostop', { action: ah.cfg('afk.action_nostop_cleared') });
+  } else if (cur !== null && cur.holds > 0) nostop.write(p, Object.assign({}, cur, { on: true, holds: 0 })); // an owner prompt restarts the hold count (the burst window and quiet stay: #844)
+}
+
+// A Stop while the session's no-stop state is on and open work nothing covers remains: held with the next task named (null = not held).
+function afkNoStopHold(p, now) {
+  if (ah.settings.skipped(ah.cfg('afk.guard_name'))) return null;
+  var s = nostop.session(p);
+  if (s === null) return null;
+  var all = nostop.tasks(p);
+  if (all === null || all.length === 0) return null;
+  var open = all.filter(tk.isOpen);
+  if (open.length === 0) {
+    if (nostop.write(p, { on: false, since: s.since, ended: now, holds: 0 })) afkMetric('afk_nostop', { action: ah.cfg('afk.action_nostop_done') });
+    return null;
+  }
+  var unc = nostop.uncovered(p, open);
+  if (unc.length === 0) return null;
+  var holds = typeof s.holds === 'number' ? s.holds : 0;
+  if (holds >= ah.cfgNum('afk.nostop_max_holds')) { afkMetric('afk_nostop', { action: ah.cfg('afk.action_nostop_capped') }); return null; }
+  // #844: holds that rotate over tasks every turn are a loop; after afk.nostop_burst_max in the window, escalate once, then stay quiet
+  if (typeof s.quietUntil === 'number' && now < s.quietUntil) { afkMetric('afk_nostop', { action: ah.cfg('afk.action_nostop_quiet') }); return null; }
+  var win = ah.cfgNum('afk.nostop_burst_window_ms'), burstMax = ah.cfgNum('afk.nostop_burst_max');
+  var burst = (Array.isArray(s.burst) ? s.burst : []).filter(function (at) { return typeof at === 'number' && at <= now && now - at < win; });
+  var escalate = burstMax > 0 && burst.length >= burstMax, quiet = ah.cfgNum('afk.nostop_quiet_ms');
+  var next = { on: true, since: s.since, holds: holds + 1, burst: escalate ? [] : burst.concat([now]) };
+  if (escalate) next.quietUntil = now + quiet;
+  if (!nostop.write(p, next)) return null; // the cap cannot be recorded: never hold
+  afkMetric('afk_nostop', { action: ah.cfg(escalate ? 'afk.action_nostop_escalated' : 'afk.action_nostop_held') });
+  var subject = nostop.subject(nostop.next(unc));
+  var reason = escalate
+    ? afkR(ah.cfg('afk.msg_nostop_escalate'), { n: String(burst.length), min: String(Math.round(win / 60000)), subject: subject, quiet: String(Math.round(quiet / 60000)) })
+    : afkR(ah.cfg('afk.msg_nostop_stop'), { subject: subject });
+  return { exact: { code: 0, out: afkR(ah.cfg('afk.stop_block'), { reason: JSON.stringify(reason) }), err: '' } };
+}
+
+function afkStop(p, f, now) {
+  var codex = coordinator.isCodexPayload(p);
+  if (ah.cfg('coordinator_work.agent_markers').some(function (k) { return p[k] !== undefined && p[k] !== null; })) return 'allow';
+  var nh = afkNoStopHold(p, now); // before the stop_hook_active exit: the count, not the host flag, bounds it
+  if (nh !== null) return nh;
+  if (p.stop_hook_active === true) return 'allow';
+  var on = afkOn(f), tp = typeof p.transcript_path === 'string' ? p.transcript_path : '';
+  if (on && !codex) afkMetric('afk_turns', {});
+  if (tp && !codex && ah.settings.bool('afk.set_measure')) {
+    var tok = afkTurnTokens(hookProc.open(p, tp));
+    if (tok !== null) {
+      var mode = on ? ah.cfg('afk.mode_afk') : ah.cfg('afk.mode_present');
+      afkMetric('afk_output_tokens', { mode: mode }, tok);
+      afkMetric('afk_turns_measured', { mode: mode });
+    }
+  }
+  if (ah.settings.skipped(ah.cfg('afk.guard_name'))) return 'allow';
+  if (!on && nostop.session(p) === null) return 'allow';
+  var reply = typeof p.last_assistant_message === 'string' ? p.last_assistant_message : '';
+  var q = afkQuestionHold(p, f, now, reply, on);
+  if (q !== null) return q;
+  if (!on) return 'allow';
+  if (codex || !ah.settings.bool('afk.set_enforce')) return 'allow'; // Codex: Stop only holds a question
+  var lines = reply.split('\n').filter(function (l) { return l.trim() !== ''; }).length;
+  var maxC = ah.cfgNum('afk.max_reply_chars'), maxL = ah.cfgNum('afk.max_reply_lines');
+  if (reply.length <= maxC && lines <= maxL) return 'allow';
+  var se = afkSession(p, f, now);
+  if (se === null) return 'allow';
+  var vars = { chars: reply.length, lines: lines, max_chars: maxC, max_lines: maxL };
+  if (!se.s.nudged) {
+    se.s.nudged = true; se.s.nudge = afkR(ah.cfg('afk.msg_nudge'), vars);
+    afkWrite(se.rel, se.s);
+    afkMetric('afk_overlong_turns', { action: ah.cfg('afk.action_nudge') });
+    return 'allow';
+  }
+  if (se.s.blocks >= ah.cfgNum('afk.max_blocks')) { afkMetric('afk_overlong_turns', { action: ah.cfg('afk.action_capped') }); return 'allow'; }
+  se.s.blocks += 1;
+  if (!afkWrite(se.rel, se.s)) return 'allow'; // the cap cannot be recorded: never hold
+  afkMetric('afk_overlong_turns', { action: ah.cfg('afk.action_block') });
+  return { exact: { code: 0, out: afkR(ah.cfg('afk.stop_block'), { reason: JSON.stringify(afkR(ah.cfg('afk.msg_block'), vars)) }), err: '' } };
+}
+
+// PreToolUse while AFK: the question tool is denied every time with the ladder.
+function afkPre(p, f, now) {
+  if (!afkOn(f) || ah.settings.skipped(ah.cfg('afk.guard_name'))) return 'allow';
+  var tool = typeof p.tool_name === 'string' ? p.tool_name : '';
+  if (ah.cfg('afk.question_tools').indexOf(tool) >= 0) {
+    if (!ah.settings.bool('afk.set_no_questions')) return 'allow';
+    if (afkOwnerPresent(p, f, now)) { afkMetric('afk_question_present_allowed', { where: ah.cfg('afk.where_pre') }); return 'allow'; }
+    afkMetric('afk_question_denied', { tool: tool });
+    return { exact: { code: 0, out: afkR(ah.cfg('afk.pre_deny'), { reason: JSON.stringify(ah.cfg('afk.msg_ladder_deny')) }), err: '' } };
+  }
+  return 'allow';
+}
+
+// The rule once per session per period, a pending nudge, else a reminder at the capped interval.
+function afkInject(p, f, now, event) {
+  var se = afkSession(p, f, now);
+  if (se === null) return 'allow';
+  var parts = [];
+  if (se.fresh) parts.push(afkR(ah.cfg('afk.rule_text'), { progress: se.s.progress || ah.cfg('tasklist_guard.progress_dir').join('/') }));
+  if (typeof se.s.nudge === 'string' && se.s.nudge) { parts.push(se.s.nudge); se.s.nudge = null; }
+  if (!se.fresh && event === 'PostToolUse' && se.s.reminders < ah.cfgNum('afk.reminder_max') && now - (se.s.reminded || 0) >= ah.cfgNum('afk.reminder_interval_s') * 1000) {
+    parts.push(ah.cfg('afk.reminder_text'));
+    se.s.reminders += 1; se.s.reminded = now;
+  }
+  if (parts.length === 0) return 'allow';
+  if (!se.fresh) afkWrite(se.rel, se.s);
+  else if (parts.length > 1) afkWrite(se.rel, se.s);
+  return afkCtx(event, parts.join('\n'));
+}
+
+function decide(p) {
+  if (p === null || typeof p !== 'object') return 'allow';
+  if (ah.env.get(ah.cfg('session.judge_child_env')) === ah.cfg('session.judge_child_on')) return 'allow';
+  if (!ah.settings.bool('afk.set_enabled') || !ah.home()) return 'allow';
+  var ev = typeof p.hook_event_name === 'string' ? p.hook_event_name : '', now = ah.clock.now();
+  afkLockReset();
+  if (ev === 'SessionStart') {
+    if (coordinator.isCodexPayload(p) && ah.settings.bool('afk.set_concise_codex')) return afkCtx(ev, ah.cfg('afk.concise_text'));
+    return 'allow';
+  }
+  var f = afkFlush(afkFlag());
+  if (ev === 'UserPromptSubmit') {
+    var owner = afkOwnerPrompt(p);
+    if (owner) afkNoStopCapture(p, now);
+    var r = afkPrompt(p, f, now, owner);
+    if (r !== null) return r;
+    f = afkFlag();
+    if (!afkOn(f)) return 'allow';
+    var inj = afkInject(p, f, now, ev);
+    if (owner) afkSessPresent(p, f, now);
+    return inj;
+  }
+  f = afkFlush(afkIdleTrip(afkOwnerBack(p, f, now, ev), now));
+  if (ev === 'Stop') return afkStop(p, f, now);
+  if (ev === 'PreToolUse') return afkPre(p, f, now);
+  if (ev === 'PostToolUse' && !afkIsAgent(p) && afkOn(f)) return afkInject(p, f, now, ev); // a subagent never gets the rule nor consumes the parent's once-per-session state
+  return 'allow';
+}

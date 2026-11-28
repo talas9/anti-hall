@@ -28,10 +28,37 @@ if cargo nextest --version >/dev/null 2>&1; then
   # each failed once on a loaded runner for a different reason (the schedule tests assert a 250 ms start latency), so they run alone as well.
   # The memory soak is in the `soak` test group, which the default profile leaves out (its default-filter): locally it runs
   # with `--profile soak` once per release train; CI runs it (and the benches) in the nightly profile, not the PR gate.
-  timed='binary(telemetry_overhead) | binary(script_latency) | test(/^memory_soak::/) | test(/^reliability::/) | test(/^spool::/) | test(/^schedule::/)'
-  cargo nextest run --release --profile "$profile" -E "not ($timed)" "$@"
-  rc=$?
-  cargo nextest run --release --profile "$profile" -j 1 --no-tests=pass -E "$timed" "$@" || rc=1
+  timed='binary(telemetry_overhead) | binary(script_latency) | test(/^memory_soak::/) | test(/^reliability::/) | test(/^spool::/) | test(/^schedule::/) | test(/^daemon::overload_tests::(under_an_advisory_flood|every_recorder_of_a_session|advisory_work_is_not_starved)/)'
+  # AH_TEST_CARGO_PROFILE=<cargo profile> (CI's full macOS pack sets `ci-test`) builds and runs the bulk of the suite on that profile
+  # (Cargo.toml: release speed, no fat LTO, 16 codegen units), because LTO-linking ~36 test binaries took 106-111 min on the macOS
+  # runner. The wall-clock tests (`$timed`, the benches and the DevSwarm scale budget) run alone with their budgets unchanged, on
+  # the same fast profile by default: ci-test is opt-level 3 like release (only fat LTO / 1 codegen unit differ), and it reuses the
+  # bulk build's artifacts, whereas a separate `--release` build of the timed targets took 65m27s on the macOS runner (7m13s on
+  # Ubuntu; full pack run 40799356911). AH_TEST_TIMED_PROFILE=release runs them on the shipping profile instead (the nightly
+  # may set it); any other value names a cargo profile. Only the targets that hold the timed tests are selected (the lib's unit
+  # tests carry schedule:: / spool::, `it` carries reliability:: / memory_soak::). Unset, everything runs on release as before.
+  fast="${AH_TEST_CARGO_PROFILE:-}"
+  if [ -n "$fast" ]; then
+    timed="$timed | binary(watch_bench) | test(the_thread_stays_inside_its_budget_at_scale)"
+    cargo nextest run --cargo-profile "$fast" --profile "$profile" -E "not ($timed)" "$@"
+    rc=$?
+    timed_profile="${AH_TEST_TIMED_PROFILE:-$fast}"
+    if [ "$timed_profile" = release ]; then timed_flag="--release"; else timed_flag="--cargo-profile $timed_profile"; fi
+    # shellcheck disable=SC2086 # timed_flag is deliberately split into its two words
+    cargo nextest run $timed_flag --profile "$profile" -j 1 --no-tests=pass --lib --test it --test script_latency \
+      --test telemetry_overhead --test watch_bench -E "$timed" "$@" || rc=1
+    # the task_stop_cost bench is #[ignore]d (it builds a 200 MB transcript): named here, so only this timed pass runs it, and not
+    # under the `ci` profile (the pull-request gate; the nightly tier sets AH_TEST_PROFILE=nightly)
+    # shellcheck disable=SC2086
+    [ "$profile" = ci ] || cargo nextest run $timed_flag --profile "$profile" -j 1 --no-tests=pass --test task_stop_cost --run-ignored only "$@" || rc=1
+  else
+    cargo nextest run --release --profile "$profile" -E "not ($timed)" "$@"
+    rc=$?
+    cargo nextest run --release --profile "$profile" -j 1 --no-tests=pass -E "$timed" "$@" || rc=1
+    # the task_stop_cost bench is #[ignore]d (it builds a 200 MB transcript): named here, so only this timed pass runs it, and not
+    # under the `ci` profile (the pull-request gate; the nightly tier sets AH_TEST_PROFILE=nightly)
+    [ "$profile" = ci ] || cargo nextest run --release --profile "$profile" -j 1 --no-tests=pass --test task_stop_cost --run-ignored only "$@" || rc=1
+  fi
   if [ "$rc" -eq 0 ]; then
     cargo test --release --doc
     rc=$?
@@ -53,7 +80,7 @@ if [ "$rc" -eq 0 ]; then
   fi
 fi
 if [ "$rc" -eq 0 ]; then
-  sh tests/wrapper.sh && sh tests/bootstrap.sh
+  sh tests/wrapper.sh && sh tests/bootstrap.sh && sh tests/plugin-dir-limits.sh
   rc=$?
 fi
 sleep 0.3

@@ -38,7 +38,7 @@ fn dump_db(db: &Path) -> String {
             out.push_str(&format!("{t}: unreadable\n"));
             continue;
         };
-        let cols: Vec<String> = st.column_names().iter().map(|s| (*s).to_string()).collect();
+        let cols: Vec<String> = st.column_names().map(|s| s.to_string()).collect();
         out.push_str(&format!("[{t}] {}\n", cols.join(",")));
         let n = cols.len();
         let rows = st.query_map([], |r| Ok((0..n).map(|i| r.get_ref(i).map(value_text).unwrap_or_default()).collect::<Vec<_>>().join("|")));

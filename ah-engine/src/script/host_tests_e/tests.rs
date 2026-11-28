@@ -6,7 +6,7 @@ use serde_json::json;
 use std::os::unix::fs::PermissionsExt;
 
 fn home(tag: &str) -> String {
-    let d = std::env::temp_dir().join(format!("ah-hoste-{tag}-{}", std::process::id()));
+    let d = crate::testtmp::path(format!("ah-hoste-{tag}-{}", std::process::id()));
     crate::discard::harmless(std::fs::remove_dir_all(&d)); // keep: cleanup that raced; an absent dir is the goal state
     std::fs::create_dir_all(d.join(".anti-hall/logic")).unwrap();
     std::fs::canonicalize(&d).unwrap().to_string_lossy().to_string()
@@ -103,14 +103,26 @@ fn proc_ages_read_elapsed_seconds_then_the_start_time_and_leave_unknown_pids_out
 #[test]
 fn proc_managed_reports_the_platform_and_an_unverifiable_listing() {
     let h = home("managed");
-    put_override(&h, "zz-pmanaged", &format!("function decide(p){{ var res = ah.proc.managed([4242, 4343]); {WRITE} }}"));
     if cfg!(target_os = "macos") {
+        // the launchctl listing is faked, so the ids may be any fixed numbers
+        put_override(&h, "zz-pmanaged", &format!("function decide(p){{ var res = ah.proc.managed([4242, 4343]); {WRITE} }}"));
         let path = fakes(&h, &[("launchctl", "PID\tStatus\tLabel\n4242\t0\tcom.example.svc\n-\t0\tcom.example.idle")]);
         assert_eq!(run("zz-pmanaged", &env(&h, Some(&path))), Some(Some(Verdict::Allow)));
         assert_eq!(out(&h), json!({"platform": "launchd", "managed": [4242], "unverifiable": false}));
         assert_eq!(run("zz-pmanaged", &env(&h, Some(&format!("{h}/nowhere")))), Some(Some(Verdict::Allow)));
         assert_eq!(out(&h), json!({"platform": "launchd", "managed": [], "unverifiable": true}));
     } else {
+        // The Linux probe reads the real control-group file of each id, so fixed ids may belong to a live service on the host.
+        // Use ids of two children that were started and reaped: no such process exists now, so neither can be managed.
+        let gone: Vec<u32> = (0..2)
+            .map(|_| {
+                let mut c = std::process::Command::new("true").spawn().unwrap();
+                let id = c.id();
+                c.wait().unwrap();
+                id
+            })
+            .collect();
+        put_override(&h, "zz-pmanaged", &format!("function decide(p){{ var res = ah.proc.managed([{}, {}]); {WRITE} }}", gone[0], gone[1]));
         assert_eq!(run("zz-pmanaged", &env(&h, None)), Some(Some(Verdict::Allow)));
         let o = out(&h);
         assert_eq!(o["unverifiable"], json!(false));
@@ -319,4 +331,44 @@ fn every_documented_ahhost_primitive_is_registered() {
         assert!(documented.contains(must) && registered.contains(must), "{must} is documented and registered");
     }
     assert!(documented.len() > 30, "the scan found the documented API ({} names)", documented.len());
+}
+
+/// #957: a settings pattern that does not compile is counted and answers safely; it never stops the daemon.
+struct BadPattern;
+
+impl BadPattern {
+    fn set(key: &str) -> BadPattern {
+        crate::defaults::set_overlay(&[(key, json!("(unbalanced"))]);
+        BadPattern
+    }
+}
+
+impl Drop for BadPattern {
+    fn drop(&mut self) {
+        crate::defaults::set_overlay(&[]);
+    }
+}
+
+#[test]
+fn an_invalid_list_line_pattern_is_a_null_listing_and_a_counted_error_not_an_abort() {
+    let h = home("list-bad-re");
+    let path = fakes(&h, &[("ps", "      1       0 /sbin/launchd")]);
+    put_override(&h, "zz-plist-bad", &format!("function decide(p){{ var res = ah.proc.list(); {WRITE} }}"));
+    let _bad = BadPattern::set("hostproc.list_line_re");
+    let before = crate::metrics::bumped_on_this_thread("script_regex_invalid", &[]);
+    assert_eq!(run("zz-plist-bad", &env(&h, Some(&path))), Some(Some(Verdict::Allow)));
+    assert_eq!(out(&h), Value::Null);
+    assert_eq!(crate::metrics::bumped_on_this_thread("script_regex_invalid", &[]), before + 1);
+}
+
+#[test]
+fn an_invalid_etimes_pattern_leaves_the_ages_unknown_and_is_counted() {
+    let h = home("ages-bad-re");
+    let path = fakes(&h, &[("ps", "  111 7200")]);
+    put_override(&h, "zz-pages-bad", &format!("function decide(p){{ var res = ah.proc.ages([111]); {WRITE} }}"));
+    let _bad = BadPattern::set("hostproc.etimes_line_re");
+    let before = crate::metrics::bumped_on_this_thread("script_regex_invalid", &[]);
+    assert_eq!(run("zz-pages-bad", &env(&h, Some(&path))), Some(Some(Verdict::Allow)));
+    assert!(out(&h)["ages"].get("111").is_none(), "{}", out(&h));
+    assert!(crate::metrics::bumped_on_this_thread("script_regex_invalid", &[]) > before);
 }

@@ -84,6 +84,13 @@ struct Pool {
     ctx: Option<(Fingerprint, Context)>,
     /// Each loaded check's own files (includes, then its script), as they were when its entry was registered.
     checks: HashMap<String, Fingerprint>,
+    /// The shared includes (`script.shared_includes`) compiled once into this runtime, by script name, with the file version each
+    /// was built from. Every check built on one evaluates its own files inside that module's scope instead of carrying a copy.
+    modules: HashMap<String, (PathBuf, u64, u128)>,
+    /// Entries the memory limit unloaded, so a rebuild of one of them is counted as a reload (`script.toml` telemetry).
+    evicted: std::collections::HashSet<String>,
+    /// What the memory limit did on this runtime so far (the process-wide counters feed telemetry; this one is for tests and `pool_usage`).
+    stats: LimitCounts,
     /// When each loaded entry was last called (a per-pool counter), for least-recently-used unloading.
     used: HashMap<String, u64>,
     tick: u64,
@@ -102,9 +109,44 @@ struct Pool {
 impl Drop for Pool {
     fn drop(&mut self) {
         self.checks.clear();
+        self.modules.clear();
         self.used.clear();
         self.ctx = None;
         self.rt.run_gc();
+    }
+}
+
+/// Counters of the interpreter's memory limit at work, drained by the daemon into telemetry ([`take_limit_counts`]).
+static LIMIT_SOFT_TRIPS: AtomicU64 = AtomicU64::new(0);
+static LIMIT_HARD_TRIPS: AtomicU64 = AtomicU64::new(0);
+static UNLOADS: AtomicU64 = AtomicU64::new(0);
+static RELOADS: AtomicU64 = AtomicU64::new(0);
+static MODULE_LOADS: AtomicU64 = AtomicU64::new(0);
+
+/// What the interpreter's memory limit did since the last call: soft-limit trips, hard-limit trips (recycles), checks unloaded,
+/// checks rebuilt after an unload (the cost of a limit set under the working set), shared includes compiled.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct LimitCounts {
+    /// Soft-limit trips: the coldest checks were unloaded down to the low-water mark.
+    pub soft_trips: u64,
+    /// Hard-limit trips: the interpreter was recycled.
+    pub hard_trips: u64,
+    /// Checks unloaded by the limit.
+    pub unloads: u64,
+    /// Checks rebuilt from source after an unload.
+    pub reloads: u64,
+    /// Shared includes compiled.
+    pub module_loads: u64,
+}
+
+/// Drain the limit counters (the daemon adds them to its metrics after each request).
+pub fn take_limit_counts() -> LimitCounts {
+    LimitCounts {
+        soft_trips: LIMIT_SOFT_TRIPS.swap(0, Ordering::Relaxed),
+        hard_trips: LIMIT_HARD_TRIPS.swap(0, Ordering::Relaxed),
+        unloads: UNLOADS.swap(0, Ordering::Relaxed),
+        reloads: RELOADS.swap(0, Ordering::Relaxed),
+        module_loads: MODULE_LOADS.swap(0, Ordering::Relaxed),
     }
 }
 
@@ -199,8 +241,9 @@ impl Deadline {
 }
 
 impl Pool {
-    /// Start the limits of a call of `limit_ms` script time; `cut` also arms the request's client deadline.
-    fn arm(&self, limit_ms: u64, cut: bool) {
+    /// Start the limits of a call of `limit_ms` script time; `cut` (the check's grace in ms) also arms the request's client deadline,
+    /// that many ms later.
+    fn arm(&self, limit_ms: u64, cut: Option<u64>) {
         let cpu_now = crate::limits::thread_cpu_us();
         let hard_ms = hard_ms_of(limit_ms);
         self.deadline.start_cpu.store(cpu_now, Ordering::Relaxed);
@@ -208,13 +251,14 @@ impl Pool {
         let now = self.epoch.elapsed();
         let wall = hard_ms.saturating_mul(defaults::num("script.wall_limit_factor").max(1)).saturating_mul(1_000_000);
         self.deadline.wall.store((now.as_nanos() as u64).saturating_add(wall).max(1), Ordering::Relaxed);
-        let req = crate::deadline::at().filter(|_| cut).map_or(0, |at| {
+        // the request's hard deadline plus the check's grace, or the check's cap when that comes first (#763)
+        let req = cut.and_then(crate::deadline::cut_point).map_or(0, |at| {
             let left = at.saturating_duration_since(Instant::now());
             (now.as_nanos() as u64).saturating_add(left.as_nanos() as u64).max(1)
         });
         self.deadline.req.store(req, Ordering::Relaxed);
         self.deadline.trip.store(0, Ordering::Relaxed);
-        crate::deadline::set_cut_armed(req != 0);
+        crate::deadline::set_cut_grace(cut.filter(|_| req != 0)); // the native scans the call runs keep the same grace
     }
 
     /// Whether the call in progress has run past its request's client deadline.
@@ -274,6 +318,9 @@ impl Pool {
         Some(Pool {
             ctx: None,
             checks: HashMap::new(),
+            modules: HashMap::new(),
+            evicted: std::collections::HashSet::new(),
+            stats: LimitCounts::default(),
             used: HashMap::new(),
             tick: 0,
             inst: budget().instance(),
@@ -326,13 +373,19 @@ pub fn pool_usage() -> Option<(usize, i64, i64, i64, i64)> {
     })
 }
 
+/// What the memory limit did on this thread's interpreter so far (cumulative; `None` before its first scripted call).
+pub fn pool_limit_counts() -> Option<LimitCounts> {
+    POOL.with(|cell| cell.borrow().as_ref().map(|p| p.stats))
+}
+
 /// The shared regex cache against what its programs measured (`status --memory`): patterns and bytes held under the cache's weights,
 /// and the totals of every compile so far, estimated and measured (the calibration of the two `script.regex_*` weights).
 pub fn regex_diag() -> serde_json::Value {
     let (patterns, held) = recache::usage();
     let (compiled, est, measured, n) = recache::compiled_totals();
     serde_json::json!({
-        "patterns_held": patterns, "bytes_held_by_cache_weights": held, "scratch_estimate_per_pattern_bytes": recache::scratch_estimate(),
+        "patterns_held": patterns, "bytes_held_program_plus_scratch": held, "scratch_estimate_per_pattern_bytes": recache::scratch_estimate(),
+        "measured_search_scratch_bytes_cumulative": recache::search_totals().2, "searches": recache::search_totals().0, "searches_measured": recache::search_totals().1,
         "compiled": {"programs": compiled, "estimated_bytes": est, "measured_programs": n, "measured_bytes": measured},
     })
 }
@@ -444,21 +497,73 @@ fn load_libs(pool: &Pool, libs: &Fingerprint) -> Result<Context, String> {
 
 /// Evaluate check `name`'s own files `own` in the shared context, inside `script.check_scope`, and register the entry it
 /// defines. `Err` carries the reason (an unreadable file, an exception, no entry function).
-fn load_check(ctx: &Context, name: &str, own: &Fingerprint, entry: &str) -> Result<(), String> {
+fn load_check(ctx: &Context, modules: &mut HashMap<String, (PathBuf, u64, u128)>, name: &str, own: &Fingerprint, entry: &str) -> Result<bool, String> {
+    // a check built on a shared include (`script.shared_includes`, the first of its own files) evaluates the rest inside that
+    // include's module scope, compiled once per runtime, instead of carrying its own copy of the include
+    let shared = own.first().and_then(|(path, ..)| {
+        let stem = path.file_stem()?.to_str()?.to_string();
+        defaults::raw("script.shared_includes").strings().contains(&stem.as_str()).then_some(stem)
+    });
+    let rest: &[(PathBuf, u64, u128)] = if shared.is_some() { &own[1..] } else { &own[..] };
     let mut src = String::new();
-    for (path, _, _) in own {
+    for (path, _, _) in rest {
         src.push_str(&std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?);
         src.push('\n');
     }
-    let body = defaults::render("script.check_scope", &[("entry", &entry), ("source", &src)]);
-    ctx.with(|c| -> Result<(), String> {
-        let f: JsValue = c.eval(body).catch(&c).map_err(|e| format!("{name}: {e}"))?;
+    let body = if shared.is_some() && rest.is_empty() {
+        // the check IS the shared script: its entry is the module's own
+        defaults::render("script.module_entry", &[("entry", &entry)])
+    } else {
+        defaults::render("script.check_scope", &[("entry", &entry), ("source", &src)])
+    };
+    ctx.with(|c| -> Result<bool, String> {
+        let mut compiled = false;
+        let f: JsValue = match &shared {
+            None => c.eval(body).catch(&c).map_err(|e| format!("{name}: {e}"))?,
+            Some(module) => {
+                let (eval, fresh) = ensure_module(&c, modules, module, &own[0])?;
+                compiled = fresh;
+                eval.call((body,)).catch(&c).map_err(|e| format!("{name}: {e}"))?
+            }
+        };
         if !f.is_function() {
             return Err(defaults::render("script.msg_no_entry", &[("check", &name), ("entry", &entry)]));
         }
         let reg: rquickjs::Object = c.globals().get(defaults::text("script.registry_global")).map_err(|e| e.to_string())?;
-        reg.set(name, f).map_err(|e| e.to_string())
+        reg.set(name, f).map_err(|e| e.to_string())?;
+        Ok(compiled)
     })
+}
+
+/// The evaluator of shared include `module` (`script.module_scope`): the include compiled once into this runtime, kept under
+/// `script.modules_global`, and rebuilt only when its file changed. A check's body evaluated through it sees every declaration of the
+/// include, with live bindings, exactly as if the include were spliced in front of it.
+fn ensure_module<'js>(
+    c: &rquickjs::Ctx<'js>,
+    modules: &mut HashMap<String, (PathBuf, u64, u128)>,
+    module: &str,
+    file: &(PathBuf, u64, u128),
+) -> Result<(Function<'js>, bool), String> {
+    let reg: rquickjs::Object = match c.globals().get(defaults::text("script.modules_global")) {
+        Ok(o) => o,
+        Err(_) => {
+            let o = rquickjs::Object::new(c.clone()).map_err(|e| e.to_string())?;
+            c.globals().set(defaults::text("script.modules_global"), o.clone()).map_err(|e| e.to_string())?;
+            o
+        }
+    };
+    if modules.get(module) == Some(file)
+        && let Ok(f) = reg.get::<_, Function>(module)
+    {
+        return Ok((f, false));
+    }
+    let text = std::fs::read_to_string(&file.0).map_err(|e| format!("{}: {e}", file.0.display()))?;
+    let scope = defaults::render("script.module_scope", &[("source", &text)]);
+    let f: JsValue = c.eval(scope).catch(c).map_err(|e| format!("{module}: {e}"))?;
+    let f = f.into_function().ok_or_else(|| defaults::render("script.msg_no_evaluator", &[("module", &module)]))?;
+    reg.set(module, f.clone()).map_err(|e| e.to_string())?;
+    modules.insert(module.to_string(), file.clone());
+    Ok((f, true))
 }
 
 /// Convert what a script returned into a verdict. `Err` for a value of the wrong shape.
@@ -524,19 +629,79 @@ fn verdict_of(v: &Value) -> Result<Option<Verdict>, String> {
 pub fn failed(name: &str, event: &str, why: &str) -> Verdict {
     crate::discard::note("script_error", &format!("{name}: {why}"));
     crate::telemetry::emit::queue(crate::telemetry::emit::script_failure(name, event));
-    with_notice(name, why, failure_verdict(name, event, why, failure_mode(name)))
+    with_notice(name, event, why, failure_verdict(name, event, why, failure_mode(name)))
 }
 
 /// The decision for a check that gave no answer at all (a deferral of any origin: a cut call, a verdict that says nothing, a daemon
 /// that could not run it): the same failure policy as [`failed`], so a deferral never reaches a Node hook that is not launched.
 pub fn unanswered(name: &str, event: &str) -> Verdict {
     let why = defaults::text("script.msg_unanswered");
-    with_notice(name, why, failure_verdict(name, event, why, failure_mode(name)))
+    with_notice(name, event, why, failure_verdict(name, event, why, failure_mode(name)))
+}
+
+/// The decision for a call ended by its wall-clock backstop (`script.wall_limit_factor`) before its CPU limit: the interpreter thread
+/// used little CPU because it waited for a core on a loaded machine (time a host function spends blocked is credited back), so the
+/// check had no capacity to answer, which says nothing about the call. Logged and counted as a script failure, as before; with the
+/// capacity path open (`dispatch.failure_mode`, `capacity`) it then allows (told once per session) whatever the check's failure mode,
+/// closed it takes the check's failure policy ([`failed`]). A CPU-limit trip is the script's own runaway and stays a failure.
+/// A call in a hold class of `dispatch.capacity_hold` (a push, merge, delete, deploy) on a guard event is held, never let through
+/// unchecked: [`failed`], the check's own failure policy.
+fn starved_verdict(name: &str, event: &str, payload: &Value, why: &str) -> Verdict {
+    if !crate::dispatch::capacity_open() || (defaults::list("dispatch.guard_events").contains(&event) && crate::dispatch::capacity_hold(payload).is_some()) {
+        return failed(name, event, why);
+    }
+    crate::discard::note("script_error", &format!("{name}: {why}"));
+    crate::telemetry::emit::queue(crate::telemetry::emit::script_failure(name, event));
+    with_notice(name, event, why, Verdict::Allow)
+}
+
+thread_local! {
+    /// The tool call the request on this thread is deciding (its `tool_name` and `tool_input`), set by [`set_call`]; `None` when the
+    /// payload is no tool call. Read by [`read_only_call`] so a closed guard that cannot answer is told what the call was.
+    static CALL: std::cell::RefCell<Option<Value>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Names the tool call the request on this thread is deciding (a payload without a `tool_name` clears it), so a guard that cannot
+/// answer can tell a read-only call from a risky one ([`read_only_call`]).
+pub fn set_call(payload: &Value) {
+    let call = payload.get("tool_name").map(|t| serde_json::json!({"tool_name": t, "tool_input": payload.get("tool_input").cloned().unwrap_or(Value::Null)}));
+    CALL.with(|c| *c.borrow_mut() = call);
+}
+
+/// Whether `name` is risk-weighted (`script.failure_risk_weighted`) and `payload` is a call outside every hold class of
+/// `dispatch.capacity_hold` (a push, a merge, a delete, a deploy ...): a read-only or reversible call. Only a call of a tool the
+/// hold rules read (`dispatch.capacity_hold.tools`) is judged; any other stays with the check's failure mode.
+pub fn read_only_call_of(name: &str, payload: &Value) -> bool {
+    let weighted = defaults::list("script.failure_risk_weighted");
+    if !weighted.contains(&name) {
+        return false;
+    }
+    let tools = defaults::raw("dispatch.capacity_hold").get("tools").and_then(|v| v.as_array());
+    let judged = payload.get("tool_name").and_then(Value::as_str).is_some_and(|t| tools.into_iter().flatten().any(|x| x.as_str() == Some(t)));
+    judged && crate::dispatch::capacity_hold(payload).is_none()
+}
+
+/// [`read_only_call_of`] for the call of the request this thread is deciding ([`set_call`]).
+fn read_only_call(name: &str) -> bool {
+    CALL.with(|c| c.borrow().as_ref().is_some_and(|p| read_only_call_of(name, p)))
+}
+
+/// Whether check `name` on `event` fails closed for the call in hand: its failure mode is `closed`, the event is a guard event, and
+/// the call is not a read-only one of a risk-weighted guard (`script.failure_risk_weighted`): a guard that cannot answer holds an
+/// irreversible or shared-remote action and lets a read through, counted (`script.risk_open_counter`).
+fn closed_for_call(name: &str, event: &str, mode: &str) -> bool {
+    if mode != defaults::text("script.failure_mode_closed") || !defaults::list("dispatch.guard_events").contains(&event) {
+        return false;
+    }
+    !read_only_call(name)
 }
 
 /// [`failed`]'s decision for a check with failure mode `mode`.
 fn failure_verdict(name: &str, event: &str, why: &str, mode: &str) -> Verdict {
-    if mode == defaults::text("script.failure_mode_closed") && defaults::list("dispatch.guard_events").contains(&event) {
+    if mode == defaults::text("script.failure_mode_closed") && defaults::list("dispatch.guard_events").contains(&event) && !closed_for_call(name, event, mode) {
+        crate::obs::counters::advisory(defaults::text("script.risk_open_counter"), name);
+    }
+    if closed_for_call(name, event, mode) {
         return Verdict::Block(defaults::render("script.msg_fail_closed", &[("check", &name), ("why", &why)]));
     }
     Verdict::Allow
@@ -570,8 +735,16 @@ fn noticed() -> &'static std::sync::Mutex<std::collections::HashSet<(String, Str
 
 /// A fail-open `Allow` of a check that could not run says so, once per session and check: a guard that is not guarding must not be
 /// silent. Any other verdict (a block) already tells the user.
-fn with_notice(name: &str, why: &str, v: Verdict) -> Verdict {
+///
+/// Only a guard check on a guard event (`dispatch.guard_events`) tells the user (`script.notice_guard_events_only`, default on): an
+/// advisory check on any other event has nothing that went through unchecked, so its drop is only logged and counted
+/// (`script.notice_suppressed_counter`).
+fn with_notice(name: &str, event: &str, why: &str, v: Verdict) -> Verdict {
     if v != Verdict::Allow {
+        return v;
+    }
+    if defaults::num("script.notice_guard_events_only") == 1 && !defaults::list("dispatch.guard_events").contains(&event) {
+        crate::obs::counters::advisory(defaults::text("script.notice_suppressed_counter"), name);
         return v;
     }
     let session = session();
@@ -588,8 +761,26 @@ fn with_notice(name: &str, why: &str, v: Verdict) -> Verdict {
     if !first {
         return v;
     }
-    let msg = defaults::render("script.msg_guard_down", &[("check", &name), ("why", &why)]);
+    let msg = defaults::render("script.msg_guard_down", &[("check", &name), ("why", &short_why(why))]);
     Verdict::Advisory(serde_json::json!({ defaults::text("script.notice_key"): msg }).to_string())
+}
+
+/// The one short line the user is told for a failure `why` (`script.notice_why_rules`: the first rule whose `contains` is in `why`, else
+/// `script.notice_why_default`). The full text (a script stack, the limits) goes to the log only.
+fn short_why(why: &str) -> String {
+    let rules = defaults::raw("script.notice_why_rules").as_array();
+    for r in rules.into_iter().flatten() {
+        if let (Some(c), Some(t)) = (r.get("contains").and_then(defaults::V::as_str), r.get("text").and_then(defaults::V::as_str))
+            && why.contains(c)
+        {
+            return t.to_string();
+        }
+    }
+    let first = why.lines().next().unwrap_or_default();
+    if !first.is_empty() && first.len() <= defaults::num("script.notice_why_max_chars") as usize && !why.contains('\n') {
+        return first.to_string();
+    }
+    defaults::text("script.notice_why_default").to_string()
 }
 
 /// The failure mode of check `name`: its entry in `script.failure_mode_by_check`, else `script.failure_mode_default`.
@@ -683,6 +874,8 @@ fn ensure_entry(pool: &mut Pool, key: &str, libs: &Fingerprint, own: &Fingerprin
         pool.checks.remove(key);
         if libs_stale {
             pool.checks.clear();
+            pool.modules.clear();
+            pool.evicted.clear();
             pool.used.clear();
             pool.used.insert(key.to_string(), pool.tick);
             pool.ctx = None;
@@ -693,7 +886,14 @@ fn ensure_entry(pool: &mut Pool, key: &str, libs: &Fingerprint, own: &Fingerprin
             pool.ctx = Some((libs.clone(), load_libs(pool, libs)?));
         }
         let ctx = pool.ctx.as_ref().map(|(_, c)| c.clone()).ok_or("context")?;
-        load_check(&ctx, key, own, entry)?;
+        if load_check(&ctx, &mut pool.modules, key, own, entry)? {
+            MODULE_LOADS.fetch_add(1, Ordering::Relaxed);
+            pool.stats.module_loads += 1;
+        }
+        if pool.evicted.remove(key) {
+            RELOADS.fetch_add(1, Ordering::Relaxed);
+            pool.stats.reloads += 1;
+        }
         pool.checks.insert(key.to_string(), own.clone());
         pool.rt.run_gc();
         let base = pool.rt.memory_usage().malloc_size.max(0) as usize;
@@ -712,12 +912,18 @@ fn fit(pool: &mut Pool, ctx: &Context, keep: &str, mut size: usize) -> Option<us
     match pool.inst.report(size) {
         crate::mem::Action::None => {}
         crate::mem::Action::Shrink(target) => {
+            LIMIT_SOFT_TRIPS.fetch_add(1, Ordering::Relaxed);
+            pool.stats.soft_trips += 1;
             size = unload_cold(pool, ctx, keep, target);
             pool.inst.report(size);
         }
         crate::mem::Action::Recycle => {
             size = unload_cold(pool, ctx, keep, 0);
             if matches!(pool.inst.report(size), crate::mem::Action::Recycle) {
+                LIMIT_HARD_TRIPS.fetch_add(1, Ordering::Relaxed);
+                pool.stats.hard_trips += 1;
+                pool.evicted.extend(pool.checks.keys().cloned());
+                pool.modules.clear();
                 pool.checks.clear();
                 pool.used.clear();
                 pool.ctx = None;
@@ -791,7 +997,10 @@ fn unload_cold(pool: &mut Pool, ctx: &Context, keep: &str, target: usize) -> usi
         for n in &names {
             pool.checks.remove(n);
             pool.used.remove(n);
+            pool.evicted.insert(n.clone());
         }
+        UNLOADS.fetch_add(names.len() as u64, Ordering::Relaxed);
+        pool.stats.unloads += names.len() as u64;
         pool.rt.run_gc();
         size = pool.rt.memory_usage().malloc_size.max(0) as usize;
     }
@@ -837,7 +1046,7 @@ pub fn call_fn(name: &str, func: &str, args: &Value) -> Option<Value> {
         };
         host::with_call(st, || {
             host::set_deadline(Some(pool.deadline.clone()));
-            pool.arm(limit, false);
+            pool.arm(limit, None);
             let out = ctx.with(|c| -> Result<String, String> {
                 let reg: rquickjs::Object = c.globals().get(defaults::text("script.registry_global")).catch(&c).map_err(|e| e.to_string())?;
                 let f: Function = reg.get(key.as_str()).catch(&c).map_err(|e| e.to_string())?;
@@ -863,20 +1072,65 @@ pub fn call_fn(name: &str, func: &str, args: &Value) -> Option<Value> {
     }
 }
 
-/// Whether a call of check `name` on `event` is cut at its request's client deadline (`script.cut_at_request_deadline`). A cut call
-/// ends as [`unanswered`] (its failure policy); a check whose failure mode is `closed` on a guard event would allow what its
-/// failure blocks, so that one keeps only its own limit.
-pub fn cut_at_deadline(name: &str, event: &str) -> bool {
-    defaults::num("script.cut_at_request_deadline") == 1
-        && !(failure_mode(name) == defaults::text("script.failure_mode_closed") && defaults::list("dispatch.guard_events").contains(&event))
+/// The deadline policy of check `name`: its entry in `diagnostics.deadline_policy_by_check`, else `diagnostics.deadline_policy_default`.
+/// `cut` (the default): a call still running at its request's client deadline (plus its grace, [`deadline_grace_ms`]) is interrupted
+/// and the check answers by its failure policy ([`cut`]); `finish`: the call is never cut at the request deadline and runs to its own
+/// script limits, for a cheap check that carries a rule and is late only because its request waited in the queue (#463).
+pub fn deadline_policy(name: &str) -> &'static str {
+    defaults::raw("diagnostics.deadline_policy_by_check")
+        .get(name)
+        .and_then(defaults::V::as_str)
+        .unwrap_or_else(|| defaults::text("diagnostics.deadline_policy_default"))
 }
 
-/// A call cut at its request's client deadline: no failure of the script (nothing is counted as an error); the check gave no answer
-/// and the dispatcher resolves it with the check's failure policy ([`unanswered`]).
+/// Whether a call of check `name` on `event` is cut at its request's client deadline (`script.cut_at_request_deadline`). A cut call
+/// ends as [`cut`] (its failure policy); a check whose failure mode is `closed` on a guard event would allow what its failure blocks,
+/// so that one keeps only its own limit, and so does a check whose deadline policy is `finish` ([`deadline_policy`]); a risk-weighted
+/// guard ([`closed_for_call`]) is cut for a read-only call, which a failure lets through.
+pub fn cut_at_deadline(name: &str, event: &str) -> bool {
+    defaults::num("script.cut_at_request_deadline") == 1
+        && deadline_policy(name) != defaults::text("diagnostics.deadline_policy_finish")
+        && !closed_for_call(name, event, failure_mode(name))
+}
+
+/// How long past the hard request deadline `check` may still start, and a running call of it is still not cut
+/// (`diagnostics.deadline_grace_ms`, capped by `diagnostics.deadline_grace_cap_ms` so the reply stays inside the time the client waits
+/// for a late one). 0 for a check without a row.
+pub fn deadline_grace_ms(check: &str) -> u64 {
+    let grace = defaults::raw("diagnostics.deadline_grace_ms").get(check).and_then(defaults::V::as_integer).unwrap_or(0).max(0) as u64;
+    grace.min(defaults::num("diagnostics.deadline_grace_cap_ms"))
+}
+
+/// A call cut at its request's client deadline (or not started past it): no failure of the script (nothing is counted as an error).
+/// There is no Node hook to defer to any more (#463), so the check answers here by its own failure policy ([`unanswered`]: `open`
+/// allows and tells the user once per session, `closed` blocks on a guard event), never a deferral. Counted per check and outcome
+/// (`status` advisory `<diagnostics.deadline_cut_counter>.<check>.<outcome>`).
+///
+/// A call cut at its check's cap (#763: the time the checks after it are reserved, [`crate::deadline::cap_check`]) is no answer of the
+/// check either: its outcome is counted `diagnostics.deadline_cut_outcome_unsure`, never as an allow, and the dispatcher records the
+/// entry as a drop (`diagnostics.drop_reason_check_cut`), so an open guard's allow here cannot hide the block it might have given.
 pub fn cut(name: &str, event: &str) -> Verdict {
+    let at_cap = crate::deadline::cap_passed();
     crate::failopen::note(defaults::text("fail_open.reason_deadline"), name, event);
     crate::discard::note("script_deadline", &defaults::render("script.msg_deadline_cut", &[("check", &name), ("event", &event)]));
-    Verdict::Defer
+    let v = unanswered(name, event);
+    let outcome = if at_cap {
+        crate::deadline::note_cap_cut();
+        defaults::text("diagnostics.deadline_cut_outcome_unsure")
+    } else {
+        cut_outcome(&v)
+    };
+    crate::obs::counters::advisory(defaults::text("diagnostics.deadline_cut_counter"), &format!("{name}.{outcome}"));
+    v
+}
+
+/// The outcome word a deadline cut that answered `v` is counted under (`diagnostics.deadline_cut_outcome_*`).
+pub fn cut_outcome(v: &Verdict) -> &'static str {
+    match v {
+        Verdict::Block(_) => defaults::text("diagnostics.deadline_cut_outcome_block"),
+        Verdict::Advisory(_) => defaults::text("diagnostics.deadline_cut_outcome_notice"),
+        _ => defaults::text("diagnostics.deadline_cut_outcome_allow"),
+    }
 }
 
 /// Direct `ah-hook <Event>` calls need not carry a plugin-root argument. Resolve the script's root from the
@@ -901,6 +1155,7 @@ fn script_options(opts: &Value, st: &Settings) -> Value {
 fn call(name: &str, libs: &Fingerprint, own: &Fingerprint, payload: &Value, opts: &Value, event: &str, st: Settings) -> Option<Verdict> {
     let mut was_cut = false;
     let mut timed_out = false;
+    let mut starved = false;
     let r = POOL.with(|cell| -> Result<Option<Verdict>, String> {
         let mut slot = cell.borrow_mut();
         if slot.is_none() {
@@ -913,24 +1168,28 @@ fn call(name: &str, libs: &Fingerprint, own: &Fingerprint, payload: &Value, opts
         let limit = limit_ms(name, event);
         host::with_call(st, || {
             host::set_deadline(Some(pool.deadline.clone()));
-            pool.arm(limit, cut_at_deadline(name, event));
-            let out = ctx.with(|c| -> Result<String, String> {
-                let reg: rquickjs::Object = c.globals().get(defaults::text("script.registry_global")).catch(&c).map_err(|e| e.to_string())?;
-                let f: Function = reg.get(name).catch(&c).map_err(|e| e.to_string())?;
-                let p: JsValue = c.json_parse(raw).catch(&c).map_err(|e| e.to_string())?;
-                let o: JsValue = c.json_parse(opts_raw).catch(&c).map_err(|e| e.to_string())?;
-                // Shared decision helpers need the authoritative --host metadata, even on Bash/Edit payloads.
-                let api: rquickjs::Object = c.globals().get("ah").catch(&c).map_err(|e| e.to_string())?;
-                api.set("request", o.clone()).catch(&c).map_err(|e| e.to_string())?;
-                let v: JsValue = f.call((p, o, event)).catch(&c).map_err(|e| e.to_string())?;
-                if v.is_undefined() || v.is_null() {
-                    return Ok("null".into());
-                }
-                let s = c.json_stringify(v).catch(&c).map_err(|e| e.to_string())?;
-                Ok(s.and_then(|s| s.to_string().ok()).unwrap_or_else(|| "null".into()))
-            });
+            pool.arm(limit, cut_at_deadline(name, event).then(|| deadline_grace_ms(name)));
+            let js = || {
+                ctx.with(|c| -> Result<String, String> {
+                    let reg: rquickjs::Object = c.globals().get(defaults::text("script.registry_global")).catch(&c).map_err(|e| e.to_string())?;
+                    let f: Function = reg.get(name).catch(&c).map_err(|e| e.to_string())?;
+                    let p: JsValue = c.json_parse(raw).catch(&c).map_err(|e| e.to_string())?;
+                    let o: JsValue = c.json_parse(opts_raw).catch(&c).map_err(|e| e.to_string())?;
+                    // Shared decision helpers need the authoritative --host metadata, even on Bash/Edit payloads.
+                    let api: rquickjs::Object = c.globals().get("ah").catch(&c).map_err(|e| e.to_string())?;
+                    api.set("request", o.clone()).catch(&c).map_err(|e| e.to_string())?;
+                    let v: JsValue = f.call((p, o, event)).catch(&c).map_err(|e| e.to_string())?;
+                    if v.is_undefined() || v.is_null() {
+                        return Ok("null".into());
+                    }
+                    let s = c.json_stringify(v).catch(&c).map_err(|e| e.to_string())?;
+                    Ok(s.and_then(|s| s.to_string().ok()).unwrap_or_else(|| "null".into()))
+                })
+            };
+            let out = held_or(name, js);
             was_cut = out.is_err() && pool.past_request();
             timed_out = out.is_err() && matches!(Trip::of(pool.deadline.trip.load(Ordering::Relaxed)), Some(Trip::Cpu | Trip::Wall)); // a limit of its own, not the client's deadline
+            starved = out.is_err() && Trip::of(pool.deadline.trip.load(Ordering::Relaxed)) == Some(Trip::Wall); // waited for a core, used no CPU
             pool.note_soft(name, event, limit);
             let out = out.map_err(|e| pool.deadline.explain(&e, limit));
             pool.disarm();
@@ -943,11 +1202,61 @@ fn call(name: &str, libs: &Fingerprint, own: &Fingerprint, payload: &Value, opts
     match r {
         Ok(v) => v,
         Err(_) if was_cut => Some(cut(name, event)),
+        Err(e) if starved => {
+            crate::failopen::note(defaults::text("fail_open.reason_script_timeout"), name, &e);
+            Some(starved_verdict(name, event, payload, &e))
+        }
         Err(e) if timed_out => {
             crate::failopen::note(defaults::text("fail_open.reason_script_timeout"), name, &e);
             Some(failed(name, event, &e))
         }
         Err(e) => Some(failed(name, event, &e)),
+    }
+}
+
+/// The script's answer `js` gives, or (in a test) what a held call ([`hold`]) gives first.
+fn held_or(name: &str, js: impl FnOnce() -> Result<String, String>) -> Result<String, String> {
+    #[cfg(test)]
+    match hold::run(name) {
+        Ok(None) => {}
+        Ok(Some(answer)) => return Ok(answer),
+        Err(e) => return Err(e),
+    }
+    #[cfg(not(test))]
+    let _ = name;
+    js()
+}
+
+/// Test only: a call of a held check first runs as a slow native scan, inside the armed call (after [`Pool::arm`]), so the real deadline
+/// policy decides whether and when it is cut: the scan looks at its cut the way the transcript scans do ([`host::unless_cut`]), and a cut
+/// fails the call exactly as a cut scan does (the call's `was_cut`, then [`cut`]). A check that may not be cut (fails closed on a guard
+/// event, or `finish`) is never armed, so it runs the whole hold.
+#[cfg(test)]
+pub(crate) mod hold {
+    use std::cell::RefCell;
+    use std::time::{Duration, Instant};
+
+    thread_local! {
+        static HELD: RefCell<Vec<(String, Duration, Option<String>)>> = const { RefCell::new(Vec::new()) };
+    }
+
+    /// Hold the calls of these checks on this thread: (check, how long its scan runs, the verdict JSON it answers when the scan is not
+    /// cut; `None` runs the real script after it). An empty list ends every hold.
+    pub(crate) fn set(rows: &[(&str, Duration, Option<&str>)]) {
+        HELD.with(|h| *h.borrow_mut() = rows.iter().map(|(n, d, v)| (n.to_string(), *d, v.map(str::to_string))).collect());
+    }
+
+    /// `Ok(None)`: not held. `Ok(Some(json))`: the held call's answer. `Err`: its scan was cut.
+    pub(super) fn run(name: &str) -> Result<Option<String>, String> {
+        let Some((span, then)) = HELD.with(|h| h.borrow().iter().find(|(n, _, _)| n == name).map(|(_, d, v)| (*d, v.clone()))) else {
+            return Ok(None);
+        };
+        let end = Instant::now() + span;
+        while Instant::now() < end {
+            super::host::unless_cut(()).map_err(|e| e.to_string())?;
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        Ok(then)
     }
 }
 
@@ -1002,6 +1311,9 @@ pub fn expand_now(s: &str, now_ms: f64) -> String {
 #[cfg(test)]
 mod golden;
 #[cfg(test)]
+#[path = "ladder_kinds/tests.rs"]
+mod ladder_kinds;
+#[cfg(test)]
 mod tests;
 #[cfg(test)]
 #[path = "golden_d6/tests.rs"]
@@ -1016,6 +1328,9 @@ mod tests_golden_f;
 #[path = "home_unset_tests/tests.rs"]
 mod tests_home_unset;
 #[cfg(test)]
+#[path = "omc_coexist/tests.rs"]
+mod tests_omc_coexist;
+#[cfg(test)]
 #[path = "host_tests/tests.rs"]
 mod tests_host;
 #[cfg(test)]
@@ -1027,3 +1342,22 @@ mod tests_host_e;
 #[cfg(test)]
 #[path = "host_tests_f/tests.rs"]
 mod tests_host_f;
+#[cfg(test)]
+#[path = "host_tests_ts/tests.rs"]
+mod tests_host_ts;
+#[cfg(test)]
+#[path = "tests_scan_turn/tests.rs"]
+mod tests_scan_turn;
+
+#[cfg(test)]
+/// Temporary debug helper (not committed).
+pub fn golden_debug_cases(check: &str) -> Vec<(String, String)> {
+    golden::load(check)
+        .into_iter()
+        .filter(|c| c["n"].as_str().is_some_and(|n| n.contains("W2") || n == "903"))
+        .map(|c| {
+            let l = golden::lay(&c);
+            (c["n"].as_str().unwrap_or("").to_string(), format!("{}/t/session.jsonl", l.home))
+        })
+        .collect()
+}

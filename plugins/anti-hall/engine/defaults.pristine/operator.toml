@@ -168,6 +168,10 @@ value = "must be >= {bound}"
 doc = "A number above the maximum. Placeholder: bound."
 value = "must be <= {bound}"
 
+[ops.set_err_integer]
+doc = "A fraction given to a whole-number setting. Placeholder: got (JSON text)."
+value = "expected a whole number, got {got}"
+
 [ops.set_err_exclusive_min]
 doc = "A number at or below the exclusive minimum. Placeholder: bound."
 value = "must be > {bound}"
@@ -514,7 +518,7 @@ value = "regressed"
 
 [defect.max_open_files]
 doc = "Most open defect files; a new defect past it is refused."
-value = 200
+value = 1000
 
 [defect.max_file_bytes]
 doc = "Most bytes of one defect file."
@@ -1304,8 +1308,8 @@ doc = "The context_window fields that carry the used tokens."
 value = ["used_tokens", "tokens"]
 
 [statusline.max_keys]
-doc = "The context_window fields that carry the window size."
-value = ["max_tokens", "total_tokens", "context_size"]
+doc = "The context_window fields that carry the window size, first match wins (context_window_size is the field Claude Code documents; the others are older guesses kept as fallbacks)."
+value = ["context_window_size", "max_tokens", "total_tokens", "context_size"]
 
 [statusline.phase_template]
 doc = "The phase bar line. Placeholders: bar yellow pct reset dim bold magenta code white desc cyan done total extra."
@@ -1316,8 +1320,8 @@ doc = "The context gauge line. Placeholders: bar col pct reset dim tokens."
 value = "{bar} {col}{pct}%{reset} {dim}context{reset}{tokens}"
 
 [statusline.activity_template]
-doc = "The swarm activity line. Placeholders: cells cyan reset dim blue count plural."
-value = "[{cells}] {cyan}orchestrating{reset} {dim}·{reset} {blue}{count} agent{plural}{reset} {dim}active{reset}"
+doc = "The swarm activity line. Placeholders: cells cyan reset dim blue count plural ctx (the context gauge, empty when unknown)."
+value = "[{cells}] {cyan}orchestrating{reset} {dim}·{reset} {blue}{count} agent{plural}{reset} {dim}active{reset}{ctx}"
 
 [statusline.git_name_args]
 doc = "The git question for the user name."
@@ -1370,6 +1374,48 @@ value = "base"
 [statusline.no_email_key]
 doc = "The setting that hides the account email."
 value = "noEmail"
+
+[statusline.usage_key]
+doc = "The setting that shows the weekly and 5-hour usage segment."
+value = "usage"
+
+[statusline.usage_week_window]
+doc = "The rate_limits entry of the weekly window in the statusline input."
+value = "seven_day"
+
+[statusline.usage_5h_window]
+doc = "The rate_limits entry of the 5-hour window in the statusline input."
+value = "five_hour"
+
+[statusline.usage_week_label]
+doc = "Before the weekly usage percentage."
+value = "wk:"
+
+[statusline.usage_5h_label]
+doc = "Before the 5-hour usage percentage."
+value = "5h:"
+
+[statusline.version_key]
+doc = "The setting that shows the version chip."
+value = "version"
+
+[statusline.sep_pad]
+doc = "Spaces on each side of every separator on the rich line (the usage chip uses the same separator)."
+value = 1
+min = 0
+max = 4
+
+[statusline.activity_marker]
+doc = "The moving marker of the swarm activity bar (never the fill glyph of the context bar)."
+value = "◆"
+
+[statusline.duration_min_unit]
+doc = "After the minutes of the duration."
+value = "m"
+
+[statusline.duration_sec_unit]
+doc = "After the seconds of the duration."
+value = "s"
 
 [statusline.no_color_env]
 doc = "The variable that turns colors off."
@@ -1599,10 +1645,6 @@ value = "🤖 "
 doc = "Before the duration."
 value = "⏱ "
 
-[statusline.ctx_mark]
-doc = "Before the context percentage."
-value = "● "
-
 [statusline.email_icon]
 doc = "Before the account email."
 value = "✉ "
@@ -1611,9 +1653,37 @@ value = "✉ "
 doc = "Marks an available update."
 value = "★ "
 
-[statusline.chip_label]
-doc = "The version chip label."
-value = "AH: V"
+[statusline.chip_fmt]
+doc = "The version chip: `{plugin}` is the plugin version, `{engine}` the engine version (no build suffix), each `?` when not known."
+value = "AH: V{plugin}/V{engine}"
+
+[statusline.chip_unknown]
+doc = "Shown in place of a version that is not known."
+value = "?"
+
+[statusline.chip_color_ok]
+doc = "The color of the version chip when nothing is wrong."
+value = "dim"
+
+[statusline.chip_color_warn]
+doc = "The color of the version chip when the engine is older than the plugin supports, or a minor update is available."
+value = "yellow"
+
+[statusline.chip_color_bad]
+doc = "The color of the version chip when the engine version cannot be read, or a major update is available."
+value = "red"
+
+[statusline.level_color_red]
+doc = "The color of a context or usage percentage at or above the red level."
+value = "brightRed"
+
+[statusline.level_color_yellow]
+doc = "The color of a context or usage percentage at or above the yellow level."
+value = "brightYellow"
+
+[statusline.level_color_ok]
+doc = "The color of a context or usage percentage below the yellow level."
+value = "brightGreen"
 
 [statusline.branch_head]
 doc = "The git status line that names the branch."
@@ -1699,3 +1769,11 @@ value = "[{n} keys]"
 doc = "Deepest nesting read back when a default is rendered in `--json`."
 value = 64
 min = 8
+
+[statusline.ctx_mark]
+doc = "Before the context percentage."
+value = "● "
+
+[statusline.chip_label]
+doc = "The version chip label."
+value = "AH: V"

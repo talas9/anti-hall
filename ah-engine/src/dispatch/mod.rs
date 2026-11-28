@@ -24,11 +24,18 @@
 // A failure that must be seen goes through `crate::discard` instead.
 
 pub mod combine;
+pub mod ctxkeep;
+pub mod digest;
 pub mod inject;
+pub mod ladder;
 pub mod native;
 pub mod node;
+pub mod notice;
 pub mod plan;
+pub mod shellwords;
+pub mod shrink;
 pub mod spill;
+pub mod stopchan;
 pub mod stoploop;
 pub mod table;
 
@@ -85,6 +92,7 @@ fn ask_daemon(meta: &Meta, raw: &str, hold_wait: bool) -> Option<Vec<(String, An
     if request_too_big(&req) {
         return None; // the daemon would refuse it
     }
+    crate::client::set_call_event(&meta.event);
     let reply = if hold_wait { crate::client::attempt_holding_wait(req.as_bytes(), &cfg, true) } else { crate::client::attempt(req.as_bytes(), &cfg, true) };
     // ACK(res) now: the daemon's answers are in this process, and what follows (a model call the daemon deferred, Node hooks,
     // combining) is this process's own work, which can outlast `wire.res_wait_ms` by seconds and must not count as an
@@ -418,6 +426,572 @@ pub fn infra_answer(event: &str, why: &str) -> Outcome {
     no_node_answer(event, None, "infra", why).unwrap_or_else(|| Outcome { out: String::new(), code: 0, err: String::new() })
 }
 
+/// Whether `dispatch.failure_mode` lets a guard event through on `path` (a path not listed is closed).
+fn path_open(path: &str) -> bool {
+    defaults::raw("dispatch.failure_mode").get(path).and_then(|v| v.as_str()).unwrap_or("closed") == "open"
+}
+
+/// Whether a no-answer caused by load lets a guard event through (`dispatch.failure_mode`, path `capacity`): the daemon shed the
+/// request (BUSY), or a script's wall-clock backstop fired while its thread waited for a core. No check failed, so this path decides
+/// instead of each check's failure policy.
+pub(crate) fn capacity_open() -> bool {
+    path_open("capacity")
+}
+
+/// What [`capacity_decide`] found: the hold rule (if any), and whether the answer came only through the shell-word normalisation
+/// (#907: the raw text alone would have passed it) or whether a gh text value kept a rule from matching (counted by the caller).
+pub(crate) struct Decision {
+    pub rule: Option<String>,
+    pub normalised: bool,
+    pub text_exempt: bool,
+    /// #920: the class the hold falls in beyond its rule (counted): `inline_code`, `script_read`, `script_unread`, `gh_unknown`,
+    /// `unknown_command`.
+    pub via: Option<&'static str>,
+    /// #928: the exemptions that kept a false hold away (counted): `trusted_script` (a script whose path and content hash are on the
+    /// trusted list), `local_tool` (a tool in a project-local tool directory), `wrapper_opt` (a wrapper option's value skipped).
+    pub exempt: Vec<&'static str>,
+}
+
+/// #907: the word lists of the shell-word normaliser, from `dispatch.capacity_hold` (`normalise` 0 or an absent `text`/`git` table
+/// switches that step off, the raw text alone is matched then).
+fn capacity_norm_cfg(cfg: &defaults::V) -> Option<shellwords::Cfg> {
+    if cfg.get("normalise").and_then(|v| v.as_integer()) == Some(0) {
+        return None;
+    }
+    let strs = |v: Option<&'static defaults::V>| -> Vec<String> {
+        v.and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|x| x.as_str()).map(str::to_string).collect()).unwrap_or_default()
+    };
+    let one = |v: Option<&'static defaults::V>| -> String { v.and_then(|v| v.as_str()).unwrap_or_default().to_string() };
+    let count = |k: &str| cfg.get(k).and_then(|v| v.as_integer()).and_then(|v| usize::try_from(v).ok()).unwrap_or_default();
+    let (text, git) = (cfg.get("text"), cfg.get("git"));
+    Some(shellwords::Cfg {
+        text_verb: text.and_then(|t| t.get("verb")).and_then(|v| v.as_str()).unwrap_or_default().to_string(),
+        text_subs: strs(text.and_then(|t| t.get("subs"))),
+        text_opts: strs(text.and_then(|t| t.get("opts"))),
+        git_rule: git.and_then(|g| g.get("rule")).and_then(|v| v.as_str()).unwrap_or_default().to_string(),
+        git_known: strs(git.and_then(|g| g.get("known"))),
+        git_opts_with_arg: strs(git.and_then(|g| g.get("opts_with_arg"))),
+        git_wrappers: strs(git.and_then(|g| g.get("wrappers"))),
+        passes: count("passes"),
+        brace_cap: count("brace_cap"),
+        body_depth: count("body_depth"),
+        gh_rule: one(cfg.get("gh").and_then(|g| g.get("rule"))),
+        gh_known: strs(cfg.get("gh").and_then(|g| g.get("known"))),
+        gh_opts_with_arg: strs(cfg.get("gh").and_then(|g| g.get("opts_with_arg"))),
+        unknown_known: if one(cfg.get("unknown").and_then(|u| u.get("rule"))).is_empty() {
+            Vec::new()
+        } else {
+            strs(cfg.get("unknown").and_then(|u| u.get("known")))
+        },
+        script_interps: strs(cfg.get("script").and_then(|s| s.get("interpreters"))),
+        script_inline_flags: strs(cfg.get("script").and_then(|s| s.get("inline_flags"))),
+        cmd_wrappers: strs(cfg.get("script").and_then(|s| s.get("wrappers"))),
+        cmd_markers: strs(cfg.get("script").and_then(|s| s.get("markers"))),
+        cd_cmds: strs(cfg.get("script").and_then(|s| s.get("cd_commands"))),
+        local_dirs: strs(cfg.get("unknown").and_then(|u| u.get("local_dirs"))),
+        repo_marker: one(cfg.get("unknown").and_then(|u| u.get("repo_marker"))),
+        wrapper_opts: cfg
+            .get("script")
+            .and_then(|s| s.get("wrapper_opts"))
+            .and_then(|t| t.as_table())
+            .map(|t| t.iter().map(|(k, v)| (k.to_string(), strs(Some(v)))).collect())
+            .unwrap_or_default(),
+        wrapper_split_opts: cfg
+            .get("script")
+            .and_then(|s| s.get("wrapper_split_opts"))
+            .and_then(|t| t.as_table())
+            .map(|t| t.iter().map(|(k, v)| (k.to_string(), strs(Some(v)))).collect())
+            .unwrap_or_default(),
+        ro_seps: strs(cfg.get("parsed").and_then(|p| p.get("seps"))),
+        ro_skip: strs(cfg.get("parsed").and_then(|p| p.get("skip"))),
+        ro_vars: strs(cfg.get("parsed").and_then(|p| p.get("vars"))),
+        ro_placeholder: one(cfg.get("parsed").and_then(|p| p.get("placeholder"))),
+        ro_home: one(cfg.get("parsed").and_then(|p| p.get("home_env"))),
+        ro_programs: strs(cfg.get("parsed").and_then(|p| p.get("programs"))),
+        ro_verbs: strs(cfg.get("parsed").and_then(|p| p.get("verbs"))),
+        ro_shells: strs(cfg.get("parsed").and_then(|p| p.get("shells"))),
+        ro_assign_deny: strs(cfg.get("parsed").and_then(|p| p.get("assign_deny"))),
+        ro_assigners: strs(cfg.get("parsed").and_then(|p| p.get("assigners"))),
+        ro_text_opts: strs(cfg.get("parsed").and_then(|p| p.get("text_opts"))),
+        ro_bin_dirs: strs(cfg.get("parsed").and_then(|p| p.get("bin_dirs"))),
+        ro_inert: strs(cfg.get("parsed").and_then(|p| p.get("inert"))),
+    })
+}
+
+/// The risk class a guard call falls in when no check could decide it for lack of capacity (`dispatch.capacity_hold`): `Some(rule)`
+/// when its shell command matches a hold rule (an irreversible or shared-remote action: a push, a merge, a recursive delete, a deploy,
+/// a publish), which is held with a reason and a retry hint; `None` for anything else (read-only or a reversible local change), which
+/// passes with the capacity notice. The classes are config, never code; a rule that does not compile is skipped and logged.
+pub(crate) fn capacity_hold(payload: &Value) -> Option<String> {
+    capacity_decide(payload).rule
+}
+
+/// [`capacity_hold`] with how it was decided. The rules match the raw command and the command read the way the shell reads it
+/// (#907: in-word quotes and backslashes gone, only an unquoted separator splits, the free text of a gh pr/issue/release command
+/// blanked); a git subcommand that is no known one (an alias, an external command) is held under its own rule.
+pub(crate) fn capacity_decide(payload: &Value) -> Decision {
+    let none = Decision { rule: None, normalised: false, text_exempt: false, via: None, exempt: Vec::new() };
+    let cfg = defaults::raw("dispatch.capacity_hold");
+    let Some(tool) = payload.get("tool_name").and_then(Value::as_str) else { return none };
+    let tools = cfg.get("tools").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|t| t.as_str()).collect::<Vec<_>>()).unwrap_or_default();
+    if !tools.contains(&tool) {
+        return none;
+    }
+    let field = cfg.get("field").and_then(|v| v.as_str()).unwrap_or_default();
+    let Some(command) = payload.get("tool_input").and_then(|i| i.get(field)).and_then(Value::as_str) else { return none };
+    let Some(rules) = cfg.get("rules").and_then(|v| v.as_table()) else { return none };
+    let ncfg = capacity_norm_cfg(cfg);
+    let mut exempt: Vec<&'static str> = Vec::new();
+    let mut norm = ncfg.as_ref().and_then(|c| shellwords::normalise(command, c));
+    if norm.as_ref().is_some_and(|n| n.opt_skips > 0) {
+        exempt.push("wrapper_opt");
+    }
+    if capacity_read_only(cfg, norm.as_ref().map_or(command, |n| n.text.as_str())) {
+        return Decision { exempt, ..none };
+    }
+    // the parsed read exemption: a list of plain reads and engine-local verbs, read word by word (a `cd` in front, an allowed
+    // variable in an argument, `E=<the engine binary>; "$E" <local verb>`), each pipeline matched by the same read pattern
+    if ncfg.as_ref().is_some_and(|c| capacity_parsed_read(cfg, command, c)) {
+        exempt.push("parsed_read");
+        return Decision { exempt, ..none };
+    }
+    // #971: a list the exemption could not pass as a whole has its engine-local calls masked out (`parsed.mask`), so the rest of
+    // it is decided as it would be without them: an engine-local call is no reason to hold what passes on its own
+    let masked = ncfg.as_ref().and_then(|c| capacity_mask(cfg, command, c));
+    let command = masked.as_deref().unwrap_or(command);
+    if masked.is_some() {
+        exempt.push("parsed_mask");
+        norm = ncfg.as_ref().and_then(|c| shellwords::normalise(command, c));
+        if capacity_read_only(cfg, norm.as_ref().map_or(command, |n| n.text.as_str())) || ncfg.as_ref().is_some_and(|c| capacity_parsed_read(cfg, command, c)) {
+            return Decision { exempt, ..none };
+        }
+    }
+    // #918 review: a command the reading can not balance (a quote or a substitution left open) is matched quote-blind otherwise,
+    // so any such tail would switch the reading off: it is held under `unreadable` (empty = off)
+    if ncfg.is_some() && norm.is_none() {
+        let rule = cfg.get("unreadable").and_then(|v| v.as_str()).unwrap_or_default();
+        if !rule.is_empty() {
+            return Decision { rule: Some(rule.to_string()), normalised: true, text_exempt: false, via: None, exempt };
+        }
+    }
+    // a blanked gh text value leaves only the normalised text to match: the raw text still holds the words that were data
+    let mut texts: Vec<&str> = match &norm {
+        Some(n) if n.stripped => vec![n.text.as_str()],
+        Some(n) => vec![command, n.text.as_str()],
+        None => vec![command],
+    };
+    texts.extend(norm.iter().flat_map(|n| n.extra.iter().map(String::as_str)));
+    let mut raw_only_hit = false;
+    for (name, pat) in rules {
+        let Some(pat) = pat.as_str() else { continue };
+        match regex::RegexBuilder::new(pat).case_insensitive(true).build() {
+            Ok(re) => {
+                let hit = texts.iter().position(|t| re.is_match(t));
+                if let Some(at) = hit {
+                    let inline = cfg.get("inline_rules").and_then(|v| v.as_array()).is_some_and(|a| a.iter().any(|r| r.as_str() == Some(*name)));
+                    return Decision {
+                        rule: Some(name.to_string()),
+                        normalised: at > 0 && !re.is_match(command),
+                        text_exempt: false,
+                        via: inline.then_some("inline_code"),
+                        exempt,
+                    };
+                }
+                raw_only_hit |= norm.as_ref().is_some_and(|n| n.stripped) && re.is_match(command);
+            }
+            Err(e) => crate::discard::note("capacity_hold_rule", &format!("{name}: {e}")),
+        }
+    }
+    if let (Some(n), Some(ncfg)) = (&norm, &ncfg) {
+        // #969: an engine call the parsed exemption did not pass (a verb off the local list, or a list it can not read); only a
+        // command word counts, never an argument that names the engine
+        let unlisted = cfg.get("parsed").and_then(|p| p.get("unlisted_rule")).and_then(|v| v.as_str()).unwrap_or_default();
+        let home = Some(ncfg.ro_home.as_str()).filter(|h| !h.is_empty()).and_then(std::env::var_os);
+        if !unlisted.is_empty() && n.cmds.iter().any(|c| shellwords::is_engine_program(c, ncfg, home.as_deref())) {
+            return Decision { rule: Some(unlisted.to_string()), normalised: false, text_exempt: false, via: Some("engine_unlisted"), exempt };
+        }
+        if n.git_unknown.is_some() {
+            let rule = cfg.get("git").and_then(|g| g.get("rule")).and_then(|v| v.as_str()).unwrap_or_default();
+            if !rule.is_empty() {
+                return Decision { rule: Some(rule.to_string()), normalised: true, text_exempt: false, via: None, exempt };
+            }
+        }
+        // #920: a gh subcommand no list knows is a gh alias (or an extension); held as an unknown git subcommand is
+        if n.gh_unknown.is_some() && !ncfg.gh_rule.is_empty() {
+            return Decision { rule: Some(ncfg.gh_rule.clone()), normalised: true, text_exempt: false, via: Some("gh_unknown"), exempt };
+        }
+        // #920: a command name no list knows that is no binary on PATH: a shell alias or function defined earlier in the session.
+        // #928: a tool only in a project-local tool directory (.venv/bin, node_modules/.bin, target/debug) inside the repo is known, and
+        // (#929 review) its file is read as a script run by path is, so a planted tool that pushes is held for what it does
+        let unknown = cfg.get("unknown");
+        let rule = unknown.and_then(|u| u.get("rule")).and_then(|v| v.as_str()).unwrap_or_default();
+        let lookup = unknown.and_then(|u| u.get("path_lookup")).and_then(|v| v.as_integer()) != Some(0);
+        let path = std::env::var_os(unknown.and_then(|u| u.get("path_env")).and_then(|v| v.as_str()).unwrap_or_default());
+        let dirs = shellwords::dirs(
+            payload.get(cfg.get("script").and_then(|s| s.get("cwd_field")).and_then(|v| v.as_str()).unwrap_or_default()).and_then(Value::as_str),
+            &n.cds,
+            None,
+        );
+        let mut local: Vec<String> = Vec::new();
+        let mut unresolved = false;
+        for c in &n.unknown_cmds {
+            if lookup && shellwords::on_path(c, path.as_deref()) {
+                continue;
+            }
+            match shellwords::local_tool(c, &dirs, &ncfg.local_dirs, &ncfg.repo_marker).filter(|_| lookup) {
+                Some(p) => local.push(p.to_string_lossy().into_owned()),
+                None => unresolved = true,
+            }
+        }
+        if !local.is_empty() {
+            exempt.push("local_tool");
+        }
+        if let Some(mut d) = capacity_script(cfg, payload, n, ncfg, rules, &local, &mut exempt) {
+            exempt.append(&mut d.exempt);
+            d.exempt = exempt;
+            return d;
+        }
+        // #969: with `unknown.risky_only` 1 an unknown name is held only when the command also names something risky (`script.risky`)
+        let risky_only = unknown.and_then(|u| u.get("risky_only")).and_then(|v| v.as_integer()) == Some(1);
+        let risky = || {
+            let pat = cfg.get("script").and_then(|s| s.get("risky")).and_then(|v| v.as_str()).unwrap_or_default();
+            !pat.is_empty() && regex::RegexBuilder::new(pat).case_insensitive(true).build().is_ok_and(|re| re.is_match(&n.text))
+        };
+        if !rule.is_empty() && unresolved && (!risky_only || risky()) {
+            return Decision { rule: Some(rule.to_string()), normalised: true, text_exempt: false, via: Some("unknown_command"), exempt };
+        }
+    }
+    Decision { rule: None, normalised: false, text_exempt: raw_only_hit, via: None, exempt }
+}
+
+/// #920: the scripts a command runs by path (`./x.sh`, `bash x.sh`, `node x.js`; at most `script.max_refs` read in all), read when at
+/// most `script.max_bytes` and matched by the same `rules` the command is (read the way the shell does, comments gone), and the
+/// scripts each one runs in turn (`script.depth` levels); a relative path is read from the payload's cwd and each directory the
+/// command `cd`s to, a leading `~` from `script.home_env`; the rules in `script.body_skip` are not matched in a script. Held under `script.rule_prefix` + the rule. A text script over
+/// `max_bytes` but within `script.scan_bytes` is matched as written by the `script.scan_rules`. A script that is still bigger, binary or
+/// unreadable is held under `script.rule_unread` only when the command is otherwise risky-looking (it matches `script.risky`); a
+/// path that is no file, or reading off (`max_bytes` 0), holds nothing.
+fn capacity_script(
+    cfg: &defaults::V,
+    payload: &Value,
+    n: &shellwords::Normalised,
+    ncfg: &shellwords::Cfg,
+    rules: &[(&str, defaults::V)],
+    local: &[String],
+    exempt: &mut Vec<&'static str>,
+) -> Option<Decision> {
+    let sc = cfg.get("script")?;
+    let int = |k: &str| sc.get(k).and_then(|v| v.as_integer()).and_then(|v| usize::try_from(v).ok()).unwrap_or_default();
+    let text = |k: &str| sc.get(k).and_then(|v| v.as_str()).unwrap_or_default();
+    let skip: Vec<&str> = sc.get("body_skip").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|x| x.as_str()).collect()).unwrap_or_default();
+    let raw_rules: Vec<&str> = sc.get("raw_rules").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|x| x.as_str()).collect()).unwrap_or_default();
+    let scan_rules: Vec<&str> = sc.get("scan_rules").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|x| x.as_str()).collect()).unwrap_or_default();
+    let home = Some(text("home_env")).filter(|k| !k.is_empty()).and_then(std::env::var_os);
+    let dirs = shellwords::dirs(payload.get(text("cwd_field")).and_then(Value::as_str), &n.cds, home.as_deref());
+    let ro_home = Some(ncfg.ro_home.as_str()).filter(|h| !h.is_empty()).and_then(std::env::var_os);
+    let compile = |pat: &str| regex::RegexBuilder::new(pat).case_insensitive(true).build().ok();
+    let trusted: Vec<(&str, &str)> = sc
+        .get("trusted")
+        .and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(|e| Some((e.get("path")?.as_str()?, e.get("sha256")?.as_str()?))).collect())
+        .unwrap_or_default();
+    let held = |name: &str| {
+        Some(Decision {
+            rule: Some(format!("{}{name}", text("rule_prefix"))),
+            normalised: true,
+            text_exempt: false,
+            via: Some("script_read"),
+            exempt: Vec::new(),
+        })
+    };
+    let (mut unread, mut seen, mut queue) =
+        (false, Vec::new(), n.scripts.iter().chain(local).map(|p| (p.clone(), 0)).collect::<std::collections::VecDeque<_>>());
+    while let Some((path, depth)) = queue.pop_front() {
+        if seen.contains(&path) {
+            continue;
+        }
+        if seen.len() >= int("max_refs") {
+            break;
+        }
+        seen.push(path.clone());
+        // #969: the engine's own binary is no script (far over the read cap: it would be held as unread)
+        if shellwords::is_engine_program(&path, ncfg, home.as_deref()) {
+            if !exempt.contains(&"engine_program") {
+                exempt.push("engine_program");
+            }
+            continue;
+        }
+        // #928: a script on the trusted list (its repo-relative path matches an entry's glob AND its content hash is the entry's) is
+        // not matched; any edit changes the hash and the script is checked like any other
+        if !trusted.is_empty() {
+            let id = shellwords::script_identity(&path, &dirs, home.as_deref(), int("trusted_max_bytes"), &ncfg.repo_marker);
+            if let Some((rel, bytes)) = id {
+                let sha = crate::dssup::recon::view::sha256_hex(&bytes);
+                if trusted.iter().any(|(g, h)| shellwords::glob_match(g, &rel) && h.eq_ignore_ascii_case(&sha)) {
+                    if !exempt.contains(&"trusted_script") {
+                        exempt.push("trusted_script");
+                    }
+                    continue;
+                }
+            }
+        }
+        match shellwords::read_script(&path, &dirs, home.as_deref(), int("max_bytes"), int("scan_bytes")) {
+            shellwords::Script::Text(body) => {
+                let norm = shellwords::normalise(&body, ncfg);
+                let texts: Vec<&str> = match &norm {
+                    Some(nb) => std::iter::once(nb.text.as_str()).chain(nb.extra.iter().map(String::as_str)).collect(),
+                    None => vec![body.as_str()],
+                };
+                // a rule for what no reading can tell (`$cmd`) holds nearly every real script: `script.body_skip`
+                for (name, pat) in rules.iter().filter(|(name, _)| !skip.contains(name)) {
+                    if pat.as_str().and_then(compile).is_some_and(|re| texts.iter().any(|t| re.is_match(t))) {
+                        return held(name);
+                    }
+                }
+                // #928: a rule that reads quotes (an argv list: `['git', op]` against `['git', 'status']`) is matched on the script as written
+                // too, since the shell reading drops the quotes that tell a name from a variable
+                for (name, pat) in rules.iter().filter(|(name, _)| raw_rules.contains(name)) {
+                    if pat.as_str().and_then(compile).is_some_and(|re| re.is_match(&body)) {
+                        return held(name);
+                    }
+                }
+                // #969 review: an engine call in the script is held as one at the top level is (engine-unlisted): unless the whole body
+                // is a list the parsed read exemption passes (`ah-engine status` and plain reads); only a command word counts
+                let unlisted = cfg.get("parsed").and_then(|p| p.get("unlisted_rule")).and_then(|v| v.as_str()).unwrap_or_default();
+                if !unlisted.is_empty()
+                    && !skip.contains(&unlisted)
+                    && norm.as_ref().is_some_and(|nb| nb.cmds.iter().any(|c| shellwords::is_engine_program(c, ncfg, ro_home.as_deref())))
+                    && !capacity_parsed_read(cfg, &body, ncfg)
+                {
+                    return held(unlisted);
+                }
+                // the scripts this one runs (`source ./lib.sh`, `sh other.sh`), read from the same directories the shell reads them from
+                if depth < int("depth") {
+                    queue.extend(norm.iter().flat_map(|nb| nb.scripts.iter().map(|p| (p.clone(), depth + 1))));
+                }
+            }
+            shellwords::Script::Large(body) => {
+                for (name, pat) in rules.iter().filter(|(name, _)| scan_rules.contains(name)) {
+                    if pat.as_str().and_then(compile).is_some_and(|re| re.is_match(&body)) {
+                        return held(name);
+                    }
+                }
+            }
+            shellwords::Script::Unread => unread = true,
+            shellwords::Script::Skip => {}
+        }
+    }
+    let risky = compile(text("risky")).filter(|_| !text("risky").is_empty());
+    let rule = text("rule_unread");
+    (unread && !rule.is_empty() && risky.is_some_and(|re| re.is_match(&n.text))).then(|| Decision {
+        rule: Some(rule.to_string()),
+        normalised: true,
+        text_exempt: false,
+        via: Some("script_unread"),
+        exempt: Vec::new(),
+    })
+}
+
+/// #928: `capacity-hashes [<path>...]`: the current sha256 of each file on the trusted-scripts list (`dispatch.capacity_hold` `script.trusted`),
+/// found from the repo root of the current directory (the nearest parent holding `unknown.repo_marker`), with its state against the list,
+/// and the hash of every path given with the entry to paste. Read-only: the list is only ever refreshed by an owner's edit.
+pub(crate) fn cmd_capacity_hashes(p: &crate::cli::Parsed) -> i32 {
+    let cfg = defaults::raw("dispatch.capacity_hold");
+    let marker = cfg.get("unknown").and_then(|u| u.get("repo_marker")).and_then(|v| v.as_str()).unwrap_or_default();
+    let max = cfg.get("script").and_then(|s| s.get("trusted_max_bytes")).and_then(|v| v.as_integer()).and_then(|v| usize::try_from(v).ok()).unwrap_or_default();
+    let cwd = vec![std::env::current_dir().unwrap_or_default()];
+    let root = cwd[0].ancestors().find(|a| !marker.is_empty() && a.join(marker).exists()).map(std::path::Path::to_path_buf);
+    let mut rows: Vec<(&'static str, String, String)> = Vec::new();
+    let (w_match, w_changed, w_missing, w_current) = (
+        defaults::text("dispatch.msg_capacity_hash_match"),
+        defaults::text("dispatch.msg_capacity_hash_changed"),
+        defaults::text("dispatch.msg_capacity_hash_missing"),
+        defaults::text("dispatch.msg_capacity_hash_current"),
+    );
+    let sha = |bytes: &[u8]| crate::dssup::recon::view::sha256_hex(bytes);
+    for e in cfg.get("script").and_then(|s| s.get("trusted")).and_then(|v| v.as_array()).into_iter().flatten() {
+        let (Some(path), Some(want)) = (e.get("path").and_then(|v| v.as_str()), e.get("sha256").and_then(|v| v.as_str())) else { continue };
+        let found =
+            root.as_ref().and_then(|r| shellwords::script_identity(&r.join(path).to_string_lossy(), &[], None, max, marker)).filter(|(rel, _)| rel == path);
+        match found {
+            Some((_, bytes)) => {
+                let now = sha(&bytes);
+                let state = if now.eq_ignore_ascii_case(want) { w_match } else { w_changed };
+                rows.push((state, path.to_string(), now));
+            }
+            None => rows.push((w_missing, path.to_string(), String::new())),
+        }
+    }
+    for a in p.rest.iter().filter(|a| !a.starts_with("--")) {
+        match shellwords::script_identity(a, &cwd, None, max, marker) {
+            Some((rel, bytes)) => rows.push((w_current, rel, sha(&bytes))),
+            None => rows.push((w_missing, a.clone(), String::new())),
+        }
+    }
+    let mut out = Vec::new();
+    for (state, path, hash) in &rows {
+        let word = *state;
+        if p.json {
+            out.push(serde_json::json!({"state": word, "path": path, "sha256": hash}).to_string());
+        } else {
+            out.push(defaults::render("dispatch.msg_capacity_hash_line", &[("state", &word), ("path", path), ("sha256", hash)]));
+        }
+    }
+    println!("{}", out.join("\n"));
+    0
+}
+
+/// #901: whether `command` is a plain read that passes `dispatch.capacity_hold` whatever words it names: the whole command matches
+/// `read_only` (a read-only reader first, nothing chained, substituted or redirected) and does not match `read_only_unless` (a reader
+/// flag that runs a command). Fails closed: an empty or uncompilable `read_only`, or an uncompilable `read_only_unless`, exempts
+/// nothing, so the rules decide. The ah-hook launcher applies the same keys.
+pub(crate) fn capacity_read_only(cfg: &defaults::V, command: &str) -> bool {
+    let compile = |key: &str| -> Option<Result<regex::Regex, ()>> {
+        let pat = cfg.get(key).and_then(|v| v.as_str()).filter(|p| !p.is_empty())?;
+        Some(regex::RegexBuilder::new(pat).case_insensitive(true).build().map_err(|e| crate::discard::note("capacity_hold_rule", &format!("{key}: {e}"))))
+    };
+    let Some(Ok(read_only)) = compile("read_only") else { return false };
+    if !read_only.is_match(command) {
+        return false;
+    }
+    match compile("read_only_unless") {
+        None => true,
+        Some(Ok(unless)) => !unless.is_match(command),
+        Some(Err(())) => false,
+    }
+}
+
+/// The parsed read exemption (`dispatch.capacity_hold` `parsed`): `command` read as a list of pipelines ([`shellwords::read_only_parts`])
+/// each of which is a plain read the whole of which matches the read pattern, or an engine-local verb whose pipe tail does or is a
+/// `parsed.tail_ok` filter (`| jq ..`) and each of whose redirections matches `parsed.redirs` and not `parsed.redirs_unless` (#971).
+/// Fails closed: a list that can not be read, or no pipeline at all, exempts nothing.
+pub(crate) fn capacity_parsed_read(cfg: &defaults::V, command: &str, ncfg: &shellwords::Cfg) -> bool {
+    let home = Some(ncfg.ro_home.as_str()).filter(|h| !h.is_empty()).and_then(std::env::var_os);
+    let Some(parts) = shellwords::read_only_parts(command, ncfg, home.as_deref()) else { return false };
+    if parts.is_empty() || !parts.iter().all(|p| capacity_part_ok(cfg, p)) {
+        return false;
+    }
+    // #971 review: an engine call that writes a file passes only beside parts that can not run or load what it wrote: another
+    // engine-local call that writes nothing, or a read matching `parsed.after_write` (no git: a repo's config can run a pager)
+    let writers = parts.iter().filter(|p| capacity_writes(cfg, p)).count();
+    writers == 0
+        || writers == 1
+            && parts.iter().filter(|p| !capacity_writes(cfg, p)).all(|p| match p {
+                shellwords::Part::Read(t) => capacity_parsed_regex(cfg, "after_write", t),
+                shellwords::Part::Local(..) => true,
+            })
+}
+
+/// #971 review: whether `text` matches the `parsed.<key>` regular expression, read the way the ah-hook launcher reads it (ASCII,
+/// case-insensitive, on bytes). An empty or uncompilable one matches nothing.
+fn capacity_parsed_regex(cfg: &defaults::V, key: &str, text: &str) -> bool {
+    let pat = cfg.get("parsed").and_then(|p| p.get(key)).and_then(|v| v.as_str()).unwrap_or_default();
+    !pat.is_empty() && regex::bytes::RegexBuilder::new(pat).unicode(false).case_insensitive(true).build().is_ok_and(|re| re.is_match(text.as_bytes()))
+}
+
+/// #971 review: whether a redirection of an engine-local verb writes a file: it does not match `parsed.redirs_inert` (fd
+/// duplication, /dev/null, an input from /dev/null). Fails closed: an empty or uncompilable `redirs_inert` makes every one a write.
+fn capacity_redir_writes(cfg: &defaults::V, redir: &str) -> bool {
+    !capacity_parsed_regex(cfg, "redirs_inert", redir)
+}
+
+/// Whether one part of the parsed read exemption passes: a read the whole of which matches the read pattern, or an engine-local
+/// verb whose pipe tail does or is a `parsed.tail_ok` filter and whose redirections are harmless ([`capacity_redir_ok`]).
+fn capacity_part_ok(cfg: &defaults::V, part: &shellwords::Part) -> bool {
+    match part {
+        shellwords::Part::Read(t) => capacity_read_only(cfg, t),
+        shellwords::Part::Local(tail, redirs) => {
+            (tail.is_empty() || capacity_read_only(cfg, tail) || capacity_tail_ok(cfg, tail)) && redirs.iter().all(|r| capacity_redir_ok(cfg, r))
+        }
+    }
+}
+
+/// #971: `command` with each engine-local call that passes ([`shellwords::local_spans`], [`capacity_part_ok`]) replaced by
+/// `parsed.mask` (a no-op command), `None` when there is none (or `mask` is empty: off). A call that writes a file
+/// ([`capacity_writes`]) is never masked: what it writes may run. The ah-hook launcher applies the same keys.
+fn capacity_mask(cfg: &defaults::V, command: &str, ncfg: &shellwords::Cfg) -> Option<String> {
+    let mask = cfg.get("parsed").and_then(|p| p.get("mask")).and_then(|v| v.as_str()).filter(|m| !m.is_empty())?;
+    let home = Some(ncfg.ro_home.as_str()).filter(|h| !h.is_empty()).and_then(std::env::var_os);
+    let spans: Vec<_> = shellwords::local_spans(command, ncfg, home.as_deref())?
+        .into_iter()
+        .filter(|(_, p)| capacity_part_ok(cfg, p) && !capacity_writes(cfg, p))
+        .collect();
+    if spans.is_empty() {
+        return None;
+    }
+    let mut out = command.to_string();
+    for (range, _) in spans.iter().rev() {
+        out.replace_range(range.clone(), mask);
+    }
+    Some(out)
+}
+
+/// #971: whether a redirection of an engine-local verb (operator and target joined: `2>&1`, `>/dev/null`, `>>/tmp/x`) is harmless:
+/// it matches `parsed.redirs` and not `parsed.redirs_unless`. Fails closed: an empty or uncompilable `redirs`, or an uncompilable
+/// `redirs_unless`, passes none.
+fn capacity_redir_ok(cfg: &defaults::V, redir: &str) -> bool {
+    // #971 review: ASCII on bytes, as the ah-hook launcher reads it, so both sides pass the same redirections
+    let pat = |k: &str| cfg.get("parsed").and_then(|p| p.get(k)).and_then(|v| v.as_str()).unwrap_or_default();
+    let re = |p: &str| regex::bytes::RegexBuilder::new(p).unicode(false).case_insensitive(true).build();
+    let (ok, unless) = (pat("redirs"), pat("redirs_unless"));
+    !ok.is_empty()
+        && re(ok).is_ok_and(|r| r.is_match(redir.as_bytes()))
+        && (unless.is_empty() || re(unless).is_ok_and(|r| !r.is_match(redir.as_bytes())))
+}
+
+/// #971 review: whether an engine-local call writes a file ([`capacity_redir_writes`]): it is never masked, since what it wrote
+/// may be run or loaded by the rest of the list (`> /tmp/x/r.sh; cd /tmp/x; sh < r.sh`), however that is spelled.
+fn capacity_writes(cfg: &defaults::V, part: &shellwords::Part) -> bool {
+    matches!(part, shellwords::Part::Local(_, redirs) if redirs.iter().any(|r| capacity_redir_writes(cfg, r)))
+}
+
+/// Whether the pipe tail of an engine-local verb is one of the filters `parsed.tail_ok` names (`jq`, `python3 -m json.tool`), the
+/// whole of it; empty or uncompilable = none (only `read_only` passes a tail then). Code a tail would run (`python3 -c`) is no filter.
+fn capacity_tail_ok(cfg: &defaults::V, tail: &str) -> bool {
+    let pat = cfg.get("parsed").and_then(|p| p.get("tail_ok")).and_then(|v| v.as_str()).unwrap_or_default();
+    !pat.is_empty() && regex::RegexBuilder::new(pat).case_insensitive(true).build().is_ok_and(|re| re.is_match(tail))
+}
+
+/// The answer for a guard call no check could decide for lack of capacity: held (exit 2, `dispatch.msg_capacity_hold`, a reason and a
+/// retry hint) when [`capacity_hold`] puts it in a hold class, else `None` (it passes).
+pub(crate) fn capacity_held(event: &str, payload: &Value) -> Option<Outcome> {
+    let d = capacity_decide(payload);
+    for e in &d.exempt {
+        crate::obs::counters::advisory("capacity_hold", e);
+    }
+    if d.text_exempt {
+        crate::obs::counters::advisory("capacity_hold", "text_exempt");
+    }
+    let rule = d.rule?;
+    if d.normalised {
+        crate::obs::counters::advisory("capacity_hold", "normalised");
+    }
+    if let Some(via) = d.via {
+        crate::obs::counters::advisory("capacity_hold", via);
+    }
+    let tool = payload.get("tool_name").and_then(Value::as_str).unwrap_or_default();
+    crate::obs::counters::handback_why(crate::obs::counters::Handback::Abandoned, "dispatch:capacity_hold", &format!("{event}: {rule}"));
+    crate::discard::harmless(crate::limits::ensure_private_dir(&crate::paths::dir())); // keep: a failure surfaces at the next create in that directory
+    health::log_event("dispatch_capacity_hold", event, &rule);
+    let key = if d.via == Some("engine_unlisted") { "dispatch.msg_capacity_hold_engine" } else { "dispatch.msg_capacity_hold" };
+    let msg = defaults::render(key, &[("tool", &tool), ("rule", &rule)]);
+    Some(Outcome { out: String::new(), code: 2, err: format!("{msg}\n") })
+}
+
+/// The defaults key of the {why} told for a no-answer of the capacity path.
+pub(crate) fn capacity_why_key() -> &'static str {
+    "msg.engine_unreachable_why_busy"
+}
+
+/// A guard event let through on the capacity path: counted (`dispatch:capacity`, a telemetry `dispatcher-capacity` allow) and
+/// logged (`dispatch_no_node_open`), as any path the engine could not decide; the caller tells the session once.
+pub(crate) fn capacity_pass(event: &str, why: &str) {
+    crate::obs::counters::handback_why(crate::obs::counters::Handback::Abandoned, "dispatch:capacity", &format!("{event}: {why}"));
+    crate::telemetry::emit::event(crate::telemetry::emit::no_node_path("capacity", event, crate::telemetry::event::Outcome::Allow));
+    crate::discard::harmless(crate::limits::ensure_private_dir(&crate::paths::dir())); // keep: a failure surfaces at the next create in that directory
+    health::log_event("dispatch_no_node_open", event, &defaults::render("dispatch.msg_no_node_event", &[("path", &"capacity"), ("why", &why)]));
+}
+
 /// The answer of a path the engine cannot decide (`path`: `budget`, `infra` or `panic`). An event that cannot block skips its
 /// hooks (logged, counted, one stderr line); a guard event follows `dispatch.failure_mode` for the path: `closed` blocks
 /// ([`closed`], bounded on Stop), `open` lets the call through with a loud stderr line. Every answer is logged and counted
@@ -426,7 +1000,7 @@ pub fn no_node_answer(event: &str, payload: Option<&Value>, path: &str, why: &st
     crate::obs::counters::handback_why(crate::obs::counters::Handback::Abandoned, &format!("dispatch:{path}"), &format!("{event}: {why}"));
     use crate::telemetry::event::Outcome as T;
     let guard = guarded(event);
-    let closed_mode = guard && defaults::raw("dispatch.failure_mode").get(path).and_then(|v| v.as_str()).unwrap_or("closed") != "open";
+    let closed_mode = guard && !path_open(path);
     let (kind, outcome, msg) = if !guard {
         ("dispatch_no_node_skipped", T::Skip, "dispatch.msg_no_node_skipped")
     } else if closed_mode {
@@ -514,6 +1088,8 @@ fn start_node(e: &table::Entry, _raw: &[u8], _payload: Option<&File>) -> node::R
 /// a daemon that could not run it). There is no Node hook to hand it to, so the check's failure policy decides
 /// ([`crate::script::unanswered`]): `open` allows (counted `abandoned` and told to the user once per session), `closed` blocks on a
 /// guard event. Never a hook that "could not run", which on a guard event would fail the whole event closed.
+/// An open check allows quietly here; a guard event's let-through entries tell the one notice of [`fail_open_result`], never one
+/// per check (#473: the notice flood).
 fn resolve_unanswered(e: &table::Entry, event: &str) -> combine::HookResult {
     // the daemon says why (`answer_dropped` / `guard_answer_dropped` in the event log, `answers_dropped` in status); this side counts the decision
     crate::obs::counters::handback_why(
@@ -522,10 +1098,106 @@ fn resolve_unanswered(e: &table::Entry, event: &str) -> combine::HookResult {
         &defaults::render("dispatch.msg_unanswered_why", &[("event", &event)]),
     );
     let check = e.check.as_deref().unwrap_or(&e.id);
-    match native::answer_of(&e.id, Some(crate::script::unanswered(check, event))) {
+    let mut v = crate::script::unanswered(check, event);
+    if !matches!(v, crate::checks::Verdict::Block(_)) {
+        v = crate::checks::Verdict::Allow; // the script's in-memory once-per-session notice forgets by the next call (one process per call)
+    }
+    match native::answer_of(&e.id, Some(v)) {
         native::Answer::Decided(r, _) => r,
         native::Answer::Defer => combine::HookResult::quiet(&e.id), // unreachable: `unanswered` is never a deferral
     }
+}
+
+thread_local! {
+    /// The could-not-run notice this dispatcher call owes its session (session, text, whether an entry's stdout already carries it),
+    /// told by [`deliver_notice`] after the combine.
+    static OWED_NOTICE: std::cell::RefCell<Option<(String, String, bool)>> = const { std::cell::RefCell::new(None) };
+}
+
+/// `script.msg_guard_down` for check `check` that gave no answer (`script.msg_unanswered`).
+fn guard_down_text(check: &str) -> String {
+    defaults::render("script.msg_guard_down", &[("check", &check), ("why", &defaults::text("script.msg_unanswered"))])
+}
+
+/// Owe `session` one could-not-run notice; the first owed in a call wins (one line per call, never one per check). A call
+/// without a session id owes none (there is no session to tell once).
+fn owe_notice(session: &str, text: String, in_out: bool) {
+    if session.is_empty() {
+        return;
+    }
+    OWED_NOTICE.with(|o| {
+        o.borrow_mut().get_or_insert_with(|| (session.to_string(), text, in_out));
+    });
+}
+
+/// The once-per-session stamp tag of the dispatcher's could-not-run notice for `event`: `dispatch.fail_open_notice_tag` and the
+/// event family (the hook event), so a PreToolUse notice never silences the first one of a later Stop.
+fn notice_tag(event: &str) -> String {
+    format!("{}|{event}", defaults::text("dispatch.fail_open_notice_tag"))
+}
+
+/// Settle the notice this call owes ([`owe_notice`]) on the FINAL outcome, once per session and event family. The stamp is created
+/// only here, after the combine: a notice an entry's stdout carried that survived the combine is stamped as told; one the combine
+/// dropped (a block wins, Codex P2 on #473) or one owed with no entry to carry it goes to stderr as one line, only if this call creates
+/// the stamp (so concurrent first calls tell one line). A deferral to the Node hooks tells nothing.
+fn deliver_notice(mut o: Outcome, event: &str) -> Outcome {
+    let Some((session, text, in_out)) = OWED_NOTICE.with(|n| n.borrow_mut().take()) else { return o };
+    if i64::from(o.code) == defaults::num("dispatch.defer_exit") as i64 {
+        return o;
+    }
+    let escaped = serde_json::to_string(&text).unwrap_or_default();
+    let carried = in_out && (o.out.contains(&text) || o.out.contains(escaped.trim_matches('"')));
+    if !health::first_in_session(&session, &notice_tag(event)) || carried {
+        return o;
+    }
+    if !o.err.is_empty() && !o.err.ends_with('\n') {
+        o.err.push('\n');
+    }
+    o.err.push_str(text.trim_end());
+    o.err.push('\n');
+    o
+}
+
+/// Whether the user skipped the guard of entry check `check` (`~/.anti-hall/skip.json`, the same rule the scripts apply): its name is
+/// the defaults key `client.timeout_skip_name_key_by_check` names for it, else the check's own name. A check the daemon could not
+/// answer then passes instead of answering by its failure policy (Codex P1 (b) on #473: the timeout fallback ignored skips).
+fn skipped_check(env: &crate::reqenv::RequestEnv, check: &str) -> bool {
+    let name = match defaults::raw("client.timeout_skip_name_key_by_check").get(check).and_then(defaults::V::as_str) {
+        Some(key) => defaults::text(key),
+        None => check,
+    };
+    crate::checks::guardkit::settings::is_skipped(&crate::checks::git::util::Settings::from_env(env), name)
+}
+
+/// `guards.failOpenNonSafety` (default on), read from the request's environment and the loaded settings.
+fn fail_open_enabled(env: &crate::reqenv::RequestEnv) -> bool {
+    let st = crate::checks::git::util::Settings::from_env(env);
+    crate::checks::guardkit::settings::get_bool(&st, defaults::raw("dispatch.fail_open_setting"))
+}
+
+/// True when the daemon explicitly deferred a check that this process runs itself (`judge.dispatch_blocking_checks`).
+fn defers_to_blocking(answers: &[(String, Answer)], e: &table::Entry, blocking_checks: &[&str]) -> bool {
+    matches!(answers.iter().find(|(id, _)| *id == e.id), Some((_, Answer::Defer))) && e.check.as_deref().is_some_and(|c| blocking_checks.contains(&c))
+}
+
+/// The decision for a NON-safety guard entry whose check gave no answer ([`resolve_unanswered`]: an allow), counted per check
+/// (`status.advisory.fail_open.<check>`), logged, and told to the user once per session. Never a block.
+fn fail_open_result(e: &table::Entry, event: &str, payload: &Value) -> combine::HookResult {
+    let check = e.check.as_deref().unwrap_or(&e.id);
+    crate::obs::counters::advisory(defaults::text("dispatch.fail_open_counter"), check);
+    crate::discard::harmless(crate::limits::ensure_private_dir(&crate::paths::dir())); // keep: a failure surfaces at the next create in that directory
+    health::log_event("dispatch_fail_open", event, &defaults::render("dispatch.msg_fail_open_log", &[("check", &check), ("event", &event)]));
+    let mut r = resolve_unanswered(e, event);
+    let session = payload.get("session_id").and_then(Value::as_str).unwrap_or_default();
+    // the notice rides this entry's stdout (a systemMessage) unless the session and event family were already told; the stamp is set
+    // after the combine ([`deliver_notice`]), so a block that drops this stdout never consumes it
+    let owed = OWED_NOTICE.with(|o| o.borrow().is_some()); // one entry per call carries it: never one line per unanswered check
+    if r.out.is_empty() && !owed && !session.is_empty() && !health::told_in_session(session, &notice_tag(event)) {
+        let msg = guard_down_text(check);
+        r.out = format!("{}\n", serde_json::json!({ defaults::text("script.notice_key"): msg }));
+        owe_notice(session, msg, true);
+    }
+    r
 }
 
 /// [`start_node`] for a hook that runs for `event`, so its telemetry event says which.
@@ -535,7 +1207,8 @@ fn start_node_for(e: &table::Entry, event: &str, raw: &[u8], payload: Option<&Fi
 
 fn run_inner(raw: &str, args: &Args, payload: Option<&File>, complete: bool) -> Outcome {
     let mut tele = plan::Tele::default();
-    let o = run_core(raw, args, payload, complete, &mut tele);
+    OWED_NOTICE.with(|n| n.borrow_mut().take()); // nothing owed by an earlier call of this thread
+    let o = deliver_notice(run_core(raw, args, payload, complete, &mut tele), &args.event);
     crate::telemetry::emit::flush(); // the Node hooks' telemetry events of this call, in one append
     if tele.notable() {
         crate::discard::harmless(crate::limits::ensure_private_dir(&crate::paths::dir())); // keep: a failure surfaces at the next create in that directory
@@ -585,6 +1258,8 @@ fn cold_start_kick(args: &Args) -> Option<Outcome> {
         cfg: String::new(),
         payload_sha1: None,
         deadline_ms: Some(crate::config::ClientConfig::from_env().deadline.as_millis() as u64),
+        load_permille: Some(crate::deadline::client_load_factor(&args.event)).filter(|f| *f > 1000),
+        notice: None,
     };
     ask_daemon(&meta, "{}", false); // keep: the answer is empty by construction; the call is for the daemon start
     Some(Outcome { out: String::new(), code: 0, err: String::new() })
@@ -611,6 +1286,7 @@ fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele
     let guard = guarded(&args.event);
     let parsed = complete.then(|| serde_json::from_str::<Value>(raw).ok()).flatten();
     let p = parsed.clone().unwrap_or(Value::Null);
+    crate::script::set_call(&p);
     let mut pre_err = String::new();
     let entries = if guard {
         table::select_guarded(&args.host, &args.event, &p, args.tool.as_deref())
@@ -631,6 +1307,7 @@ fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele
     let dplan = plan::build(&args.event, entries, &cfg, &occurrence);
     tele.cfg_hash = dplan.cfg_hash.clone();
     tele.outcomes = dplan.outcomes();
+    tele.notice = dplan.notice.clone();
     let budget = dplan.budget;
     if dplan.event_off || dplan.items.is_empty() {
         return Outcome { out: String::new(), code: 0, err: String::new() };
@@ -702,7 +1379,10 @@ fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele
         },
         // the daemon clamps its inner budgets (git, Jev) to what this client still waits (review finding 4)
         deadline_ms: Some(crate::config::ClientConfig::from_env().deadline.as_millis() as u64),
+        load_permille: Some(crate::deadline::client_load_factor(&args.event)).filter(|f| *f > 1000),
+        notice: tele.notice.clone(),
     };
+    let session_id = parsed.as_ref().and_then(|p| p.get("session_id")).and_then(Value::as_str).unwrap_or_default().to_string();
     let answers = match (&parsed, complete) {
         // A payload serde_json cannot read falls back to Node (JS may still parse it, e.g. a lone surrogate escape): the
         // engine must not be a worse guard than Node (D74). Only a guard entry with no runnable Node command blocks.
@@ -717,14 +1397,50 @@ fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele
         (Some(p), _) if defaults::num("dispatch.in_process") == 1 => native::evaluate(&meta, p, &|_| false, &|_, _, _| {}),
         (Some(_), _) => match ask_daemon_for(&meta, raw, guard) {
             Some(a) => a,
+            // a BUSY reply: the daemon shed the request (a full queue or a rate limit), so no check ran. That is no capacity, not a
+            // failed check: the guard event follows the capacity failure mode (open by default, as a daemon that did not answer in
+            // time), never each check's failure policy, which turned every safety guard into a block under load (P0 2026-11-20)
+            None if guard && crate::client::take_busy_reply() && capacity_open() => {
+                crate::client::take_non_ok_reply();
+                if let Some(held) = serde_json::from_str::<Value>(raw).ok().and_then(|p| capacity_held(&args.event, &p)) {
+                    return held;
+                }
+                capacity_pass(&args.event, defaults::text(capacity_why_key()));
+                owe_notice(
+                    if session_id.is_empty() { "none" } else { &session_id },
+                    crate::client::unreachable_text_why(Some(&args.event), capacity_why_key()),
+                    false,
+                );
+                return Outcome { out: String::new(), code: 0, err: String::new() };
+            }
             None if crate::client::take_non_ok_reply() => Vec::new(),
+            // no reply (an unreachable daemon, or none within the whole wait window): a missing answer is never a deny, so the call
+            // passes with ONE notice per session and event family (roadmap C9; a check that DID answer deny still blocks)
             None if crate::client::take_unavailable() || crate::client::fail_open_unavailable() => {
-                return Outcome { out: String::new(), code: 0, err: crate::client::unreachable_notice(raw, Some(&args.event)) };
+                // a daemon that was there but gave no reply in time is load, as BUSY: a guard call in a hold class is held
+                if crate::client::take_slow()
+                    && guard
+                    && capacity_open()
+                    && let Some(held) = serde_json::from_str::<Value>(raw).ok().and_then(|p| capacity_held(&args.event, &p))
+                {
+                    return held;
+                }
+                // a payload without a session id is still told once, under the session `none` (as the unreachable notice always was)
+                owe_notice(if session_id.is_empty() { "none" } else { &session_id }, crate::client::unreachable_text(Some(&args.event)), false);
+                return Outcome { out: String::new(), code: 0, err: String::new() };
             }
             None => Vec::new(),
         },
     };
     let blocking_checks = defaults::list("judge.dispatch_blocking_checks");
+    let fail_open_on = std::cell::OnceCell::new();
+    let fails_open = |e: &table::Entry| {
+        *fail_open_on.get_or_init(|| fail_open_enabled(&req_env))
+            && e.check.as_deref().is_some_and(|c| crate::script::failure_mode(c) != defaults::text("script.failure_mode_closed"))
+    };
+    // a closed guard of a risk-weighted kind (`script.failure_risk_weighted`) lets a read-only call through when it gave no answer,
+    // whatever `guards.failOpenNonSafety` says: only an irreversible or shared-remote action is held
+    let fails_open = |e: &table::Entry| fails_open(e) || e.check.as_deref().is_some_and(|c| crate::script::read_only_call_of(c, &p));
     let mut blocking: Vec<usize> = Vec::new();
     let mut results: Vec<Option<combine::HookResult>> = vec![None; entries.len()];
     let mut shadow_results: Vec<Option<combine::HookResult>> = vec![None; entries.len()];
@@ -733,6 +1449,13 @@ fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele
             Some((_, Answer::Decided(r, _))) if shadow[i] => shadow_results[i] = Some(r.clone()),
             Some((_, Answer::Decided(r, _))) => results[i] = Some(r.clone()),
             _ if sibling[i] => {} // the Node hook of the same id decides; the shadowed check just goes unmeasured
+            // a skipped guard the daemon gave no answer for passes, as its script would have (the skip file is the user's command)
+            _ if !shadow[i] && e.check.as_deref().is_some_and(|c| skipped_check(&req_env, c)) => results[i] = Some(combine::HookResult::quiet(&e.id)),
+            // a non-safety guard entry that gave no answer (a late or missing daemon reply, a spent budget) is let through, counted per
+            // check and told once per session (guards.failOpenNonSafety); a safety guard (script.failure_mode_by_check) keeps failing closed
+            _ if guard && fails_open(e) && (budget.exceeded() || (!table::runnable(&e.command) && !defers_to_blocking(&answers, e, &blocking_checks))) => {
+                results[i] = Some(fail_open_result(e, &args.event, &p));
+            }
             _ if budget.exceeded() => {
                 // the event's budget has passed: start nothing further (a guard event fails closed, as for a hook that cannot run)
                 if guard {
@@ -742,7 +1465,7 @@ fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele
                 tele.mark(&e.id, plan::Outcome::SkippedBudget);
             }
             // a guard entry whose check gave no answer and that has no hook to fall back to fails closed
-            _ if guard && !table::runnable(&e.command) => {
+            _ if guard && !table::runnable(&e.command) && !fails_open(e) => {
                 // the hooks already started are finished first: one that ran and blocked still decides, as below
                 let (slots, running): (Vec<usize>, Vec<node::Running>) = started.into_iter().unzip();
                 let mut done = results.clone();
@@ -840,18 +1563,38 @@ fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele
     }
     crate::nodeback::shadow::note(&entries, &results, &shadow); // what the engine decided per check (a no-op unless the shadow follows this call)
     let mut results: Vec<combine::HookResult> = results.into_iter().flatten().collect();
+    // #516: the ladder reads the advisories before the token cuts below blank the repeated ones; its block is added after them
+    if parsed.is_some() {
+        crate::agents::note_task_list(&req_env, &p); // the named task list the session writes (GH #958): the tracker reads it back
+    }
+    let ladder_block = parsed.as_ref().and_then(|_| ladder::apply(&args.event, &p, &req_env, &results));
     if parsed.is_some() {
         inject::apply(&args.event, &p, &req_env, &mut results); // token cuts: pass on only what the model does not already hold
     }
+    if parsed.is_some() {
+        digest::apply(&args.event, &req_env, &mut results); // several advisories of one prompt become one short digest
+    }
+    shrink::apply(&args.event, &req_env, &mut results); // per-hook inline caps: a long context becomes a summary line and a file
+    ctxkeep::apply(&args.event, &req_env, &mut results); // context.injectGateNoSpill: over the event budget the lowest-priority contexts are dropped, never filed
+    if let Some(pl) = parsed.as_ref() {
+        stopchan::apply(&args.host, &args.event, pl, &req_env, &mut results); // GH #540: the Stop note's channel (stateless bounds)
+    }
+    results.extend(ladder_block);
     stoploop::reset(&args.event, parsed.as_ref()); // every hook ran: a run of fail-closed blocks is over
     let keep_advisories = defaults::list("dispatch.stop_events").iter().any(|e| *e == args.event);
-    match combine::combine_for(&results, keep_advisories) {
+    if !guard {
+        spill::order_by_priority(&mut results); // #311: blocks and decisions are never reordered below advisories; context is highest priority first
+    }
+    let fold = keep_advisories && ladder::enabled(&req_env); // #516: a Stop block also carries the other hooks' advisories, only with the ladder on
+    match combine::combine_with(&results, keep_advisories, fold) {
         combine::Combined::Answer(mut o) => {
             o.err = format!("{}{}", pre_err, o.err);
             // Only a plain answer can be handed back: an exit code, a block or a decision cannot be re-run by a wrapper
             // that does not exist yet, and exit 75 would lose it. A guard event therefore never gets 75 (its decisions
             // are delivered, the host spills the over-cap context itself).
-            let plain = o.code == 0 && !results.iter().any(|r| r.code.is_some() && combine::json_blocks(&r.out));
+            // a guard event with a block is delivered one hook after another (below); any other event keeps its block fields and only
+            // the context is trimmed (#311: a block next to an over-cap context used to leave the whole spill to the host)
+            let plain = o.code == 0 && (!guard || !results.iter().any(|r| r.code.is_some() && combine::json_blocks(&r.out)));
             let Some((len, cap)) = over_cap(args, &results, &o.out).filter(|_| plain) else { return o };
             crate::discard::harmless(crate::limits::ensure_private_dir(&crate::paths::dir())); // keep: a failure surfaces at the next create in that directory
             health::log_event("dispatch_context_over_cap", &args.event, &defaults::render("dispatch.msg_context_over_cap", &[("len", &len), ("cap", &cap)]));
@@ -859,6 +1602,7 @@ fn run_core(raw: &str, args: &Args, payload: Option<&File>, complete: bool, tele
                 return combine::sequential(&results, &args.event);
             }
             if defaults::num("dispatch.spill_over_cap") == 1
+                && !ctxkeep::covers(&args.event, &req_env)
                 && let Some(s) = spill::apply(&args.event, &results, &o.out, cap)
             {
                 o.out = s.out;
@@ -960,7 +1704,8 @@ pub fn hook_main(args: &[String]) -> i32 {
         // Non-guard events cannot block; keep matching Node's replacement-character decode there.
         let raw = String::from_utf8_lossy(raw_bytes).to_string();
         let followed = crate::nodeback::shadow::begin(&a);
-        let o = crate::failopen::with_notice(&raw, &a.event, run_inner(&raw, &a, payload.file.as_ref(), !over_cap && utf8.is_ok()));
+        let o = crate::failopen::with_notice(&raw, &a.host, &a.event, run_inner(&raw, &a, payload.file.as_ref(), !over_cap && utf8.is_ok()));
+        crate::telemetry::emit::flush(); // the health notice's Stop-channel count (GH #540) is queued after the dispatch's own flush
         crate::discard::harmless(std::io::stderr().write_all(o.err.as_bytes())); // keep: a closed pipe leaves nobody to tell
         let mut so = std::io::stdout();
         crate::discard::harmless(so.write_all(o.out.as_bytes())); // keep: a closed pipe leaves nobody to tell
@@ -998,6 +1743,317 @@ fn on_panic(event: &str, guard: bool) -> Outcome {
 mod tests {
     use super::*;
 
+    /// #882: a guard call no check could decide for lack of capacity is held only when it falls in a hold class
+    /// (dispatch.capacity_hold): never-allowed actions in their usual spellings (a force push behind `git -C`/env prefixes/`+ref`,
+    /// a merge through `gh -R` or `gh api` with an implicit POST, a gh text that could carry an AI credit, a money call, deleted
+    /// rows) are held; reads and local changes pass.
+    #[test]
+    fn capacity_hold_catches_risky_spellings_and_passes_reads() {
+        let class = |c: &str| capacity_hold(&serde_json::json!({"tool_name": "Bash", "tool_input": {"command": c}}));
+        for held in [
+            "git push --force origin main",
+            "git -C /x push -f",
+            "GIT_DIR=x git push origin +main",
+            "git push --force-with-lease",
+            "gh -R o/r pr merge 1",
+            "gh api repos/o/r/pulls/1/merge -f merge_method=merge",
+            "gh api --method=PUT repos/o/r/pulls/1/merge",
+            "gh pr create --title t --body x",
+            "gh issue comment 1 -b x",
+            "rm -v -rf build",
+            "gsutil rm gs://b/o",
+            "stripe refunds create --charge ch_1",
+            "curl -X POST https://api.stripe.com/v1/refunds",
+            "psql -c \"DELETE FROM users\"",
+            "espefuse.py --port /dev/x burn_key K",
+            "espefuse --port /dev/x write-protect-efuse X",
+            "idf.py -p /dev/x efuse-burn-key K",
+            // #901: command position in its usual spellings
+            "cd x && git push -f",
+            "bash -c \"git push -f\"",
+            "sh -lc 'git push origin +main'",
+            "sudo rm -rf /x",
+            "timeout 30 git push",
+            "(git push)",
+            "echo ok; git push",
+            "git status\ngit push",
+            "/usr/bin/git push --force",
+            "env A=1 B=2 git push",
+            "taskpolicy -c utility nice -n 19 git push",
+            "find . -name x | xargs rm -rf",
+            "npx firebase deploy --only functions",
+            "python3 -m espefuse burn_key K",
+            "git --git-dir=.git push",
+            "git branch -D feature",
+            "if git push -f origin main; then :; fi",
+            "while ! git push; do sleep 1; done",
+            "until git push; do sleep 1; done",
+            "GIT_SSH_COMMAND=\"ssh -i k\" git push -f",
+            "git -C \"/a b\" push -f",
+            "ssh host 'git push -f'",
+            "ssh -p 22 host git push --force",
+        ] {
+            assert!(class(held).is_some(), "held: {held}");
+        }
+        for pass in [
+            "git status --porcelain",
+            "git log --oneline",
+            "gh pr view 1",
+            "gh pr checks 1",
+            "gh api repos/o/r/pulls",
+            "rm a.txt",
+            "espefuse summary",
+            "cargo build",
+            "ls -rf",
+            // #901: a read that merely names the trigger words passes
+            "grep -rn \"git push\" .",
+            "rg 'rm -rf' src",
+            "echo \"git push --force\"",
+            "git log --grep push",
+            "git log --oneline -- push.rs",
+            "grep -n \"firebase deploy\" README.md",
+            "rg 'npm publish' docs",
+        ] {
+            assert_eq!(class(pass), None, "passes: {pass}");
+        }
+        let write = serde_json::json!({"tool_name": "Read", "tool_input": {"file_path": "/x"}});
+        assert_eq!(capacity_hold(&write), None, "a tool outside dispatch.capacity_hold.tools passes");
+    }
+
+    /// #901/#904: the shared corpus (tests/fixtures/capacity_hold_corpus.txt, also run through the ah-hook launcher): every spelling
+    /// the security review of #904 found an allowed-prefix anchor let through, and every edge of the read exemption, is held; a
+    /// plain read that only names the words passes. A held case that passes is a fail-open.
+    #[test]
+    fn capacity_hold_corpus_holds_every_risky_spelling_and_passes_plain_reads() {
+        let class = |c: &str| capacity_hold(&serde_json::json!({"tool_name": "Bash", "tool_input": {"command": c}}));
+        let (mut held, mut passed, mut wrong) = (0, 0, Vec::<String>::new());
+        let fix = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/capacity_scripts");
+        for line in include_str!("../../tests/fixtures/capacity_hold_corpus.txt").lines() {
+            let (want, cmd) = match line.split_once(' ') {
+                Some(("H", c)) => (true, c.replace("\\n", "\n").replace("{fix}", fix)),
+                Some(("P" | "R", c)) => (false, c.replace("\\n", "\n").replace("{fix}", fix)),
+                _ => continue,
+            };
+            if class(&cmd).is_some() != want {
+                wrong.push(format!("{}: {cmd:?} (rule {:?})", if want { "must be held" } else { "must pass" }, class(&cmd)));
+            }
+            if want { held += 1 } else { passed += 1 }
+        }
+        assert!(wrong.is_empty(), "{} of the corpus cases are wrong:\n{}", wrong.len(), wrong.join("\n"));
+        assert!(held >= 288 && passed >= 149, "corpus read: {held} held, {passed} pass");
+    }
+
+    /// #928: the exemptions that kept a false hold away are counted (wrapper_opt, local_tool, trusted_script) and the commands pass.
+    #[test]
+    fn capacity_hold_counts_the_false_hold_exemptions() {
+        let d = |c: &str, cwd: Option<&str>| {
+            let mut p = serde_json::json!({"tool_name": "Bash", "tool_input": {"command": c}});
+            if let Some(w) = cwd {
+                p["cwd"] = w.into();
+            }
+            capacity_decide(&p)
+        };
+        let sudo = d("sudo -u deploy ls /var/log", None);
+        assert_eq!((sudo.rule, sudo.exempt), (None, vec!["wrapper_opt"]));
+        let fix = concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/capacity_scripts");
+        let local = d("tool --ci", Some(fix));
+        assert_eq!((local.rule, local.exempt), (None, vec!["local_tool"]));
+        // outside the repo's tool directories the same name is an unknown command: #969 holds it only when the command names
+        // something risky (unknown.risky_only)
+        assert_eq!(d("tool --ci", Some("/")).rule, None);
+        assert_eq!(d("tool --ci push", Some("/")).rule.as_deref(), Some("unknown-command"));
+        // the cleanup of a variable is never exempt, whatever made it (the own-temp exemption is gone)
+        let own = d(r#"t=$(mktemp -d); rm -rf "$t""#, None);
+        assert_eq!((own.rule.as_deref(), own.exempt), (Some("recursive-delete"), Vec::<&str>::new()));
+    }
+
+    /// #928 (#929 rework): a script on `script.trusted` (repo-relative path glob + sha256 of its content) is not matched; the same bytes
+    /// at another path, or any edit of it, are checked like any other script. The seeded entries are the repo's own test scripts.
+    #[test]
+    fn capacity_hold_trusts_a_script_by_path_and_content_hash_only() {
+        let repo = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let real = std::fs::read(repo.join("ah-engine/test.sh")).unwrap();
+        let d = |c: &str, cwd: &std::path::Path| {
+            capacity_decide(&serde_json::json!({"tool_name": "Bash", "tool_input": {"command": c}, "cwd": cwd.to_str().unwrap()}))
+        };
+        // the unchanged file, from the checkout and from a copy at the same relative path in another repo
+        let at = d("bash ah-engine/test.sh", repo);
+        assert_eq!((at.rule, at.exempt), (None, vec!["trusted_script"]), "the seeded test script is trusted at its current hash");
+        let tmp = std::env::temp_dir().join(format!("ah-928-trust-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&tmp); // keep: this test's own scratch dir, named by pid
+        std::fs::create_dir_all(tmp.join("ah-engine")).unwrap();
+        std::fs::create_dir_all(tmp.join("other")).unwrap();
+        std::fs::write(tmp.join(".git"), "gitdir: x").unwrap();
+        std::fs::write(tmp.join("ah-engine/test.sh"), &real).unwrap();
+        std::fs::write(tmp.join("other/test.sh"), &real).unwrap();
+        let copy = d("bash ah-engine/test.sh", &tmp);
+        assert_eq!((copy.rule, copy.exempt), (None, vec!["trusted_script"]), "path and hash decide, not the checkout");
+        // the same bytes at a path no entry names are checked like any other script
+        let other = capacity_decide(&serde_json::json!({"tool_name": "Bash", "tool_input": {"command": "bash other/test.sh"}, "cwd": tmp.to_str().unwrap()}));
+        assert!(other.exempt.is_empty(), "no entry names other/test.sh: {:?}", other.exempt);
+        // a modified copy is checked normally: what it adds is matched
+        let mut edited = real.clone();
+        edited.extend_from_slice(b"\ngit push origin main\n");
+        std::fs::write(tmp.join("ah-engine/test.sh"), &edited).unwrap();
+        let bad = d("bash ah-engine/test.sh", &tmp);
+        assert_eq!(bad.rule.as_deref(), Some("script:git-push"), "an edit changes the hash: {:?}", bad.exempt);
+        assert!(bad.exempt.is_empty());
+        // the command text itself is still matched around a trusted script
+        assert_eq!(d("bash ah-engine/test.sh; git push", repo).rule.as_deref(), Some("git-push"));
+        std::fs::remove_dir_all(&tmp).unwrap(); // keep: this test's own scratch dir
+    }
+
+    /// #920: the gaps #918 left: a script run by path is read (and held only for what it does), an interpreter one-liner's code is matched,
+    /// a gh alias and a shell alias or function are held, each counted by its class (`via`); a script too big to read is held only
+    /// when the command looks risky, and plain reads and local work pass.
+    #[test]
+    fn capacity_hold_reads_scripts_inline_code_and_unknown_names_and_counts_the_class() {
+        let dir = std::env::temp_dir().join(format!("ah-920-hold-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let cap = defaults::raw("dispatch.capacity_hold").get("script").and_then(|s| s.get("max_bytes")).and_then(|v| v.as_integer()).unwrap() as usize;
+        std::fs::write(dir.join("push.sh"), "#!/bin/sh\ngit push origin main\n").unwrap();
+        std::fs::write(dir.join("ok.sh"), "#!/bin/sh\n# git push later\nls\n").unwrap();
+        std::fs::write(dir.join("deploy-all.sh"), "x\0".repeat(cap)).unwrap();
+        std::fs::write(dir.join("build.sh"), "x\0".repeat(cap)).unwrap();
+        std::fs::write(dir.join("large.sh"), format!("{}git push\n", "#\n".repeat(cap / 2 + 1))).unwrap();
+        std::fs::create_dir_all(dir.join("sub")).unwrap();
+        std::fs::write(dir.join("sub/lib.sh"), "git push origin HEAD\n").unwrap();
+        std::fs::write(dir.join("run.sh"), ". ./sub/lib.sh\n").unwrap();
+        std::fs::write(dir.join("sub/run2.sh"), "sh lib.sh\n").unwrap();
+        let cwd = dir.to_str().unwrap();
+        let decide = |c: &str| capacity_decide(&serde_json::json!({"tool_name": "Bash", "cwd": cwd, "tool_input": {"command": c}}));
+        let got = |c: &str| {
+            let d = decide(c);
+            (d.rule, d.via)
+        };
+        let want = |rule: &str, via: &'static str| (Some(rule.to_string()), Some(via));
+        assert_eq!(got("bash push.sh"), want("script:git-push", "script_read"), "a relative script is read from the payload's cwd");
+        assert_eq!(got("./push.sh --now"), want("script:git-push", "script_read"));
+        assert_eq!(got("bash deploy-all.sh"), want("script-unread", "script_unread"), "binary and risky-looking");
+        assert_eq!(got("bash build.sh"), (None, None), "binary and nothing risky about it");
+        assert_eq!(got("bash large.sh"), want("script:git-push", "script_read"), "over the read cap, within the scan cap: matched as written");
+        assert_eq!(got("bash run.sh"), want("script:git-push", "script_read"), "a script another one sources");
+        assert_eq!(got("cd sub && sh run2.sh"), want("script:git-push", "script_read"), "read from the cd target, and what it runs from there");
+        assert_eq!(got("/bin/sh run.sh"), want("script:git-push", "script_read"), "an interpreter named by its path");
+        assert_eq!(got("bash ok.sh"), (None, None), "a comment is no command");
+        assert_eq!(got("bash missing.sh"), (None, None));
+        assert_eq!(got("cat push.sh"), (None, None), "a plain read of a script");
+        assert_eq!(got("python3 -c \"import shutil; shutil.rmtree(p)\""), want("inline-delete-api", "inline_code"));
+        assert_eq!(got("node -e \"require('child_process').execSync('gi'+'t push')\""), want("inline-exec-dynamic", "inline_code"));
+        assert_eq!(got("python3 -c \"print(1)\""), (None, None));
+        assert_eq!(got("gh co 12"), want("gh-unknown-subcommand", "gh_unknown"));
+        assert_eq!(got("zzalias920 push"), want("unknown-command", "unknown_command"));
+        assert_eq!(got("zzalias920 --list"), (None, None), "#969: an unknown name that names nothing risky passes");
+        // #969: an engine call the exemption can not pass (here a redirection into a file outside /tmp; #971: /dev/null passes) is
+        // held as engine-unlisted, never as an unread script; #971 review: a write into a config file is held as config-write
+        let e = decide("~/.anti-hall/ah-engine/bin/ah-engine mesh send --to a --message \"deploy now\" > ./out.json");
+        assert_eq!(e.rule.as_deref(), Some("engine-unlisted"));
+        let e = decide("~/.anti-hall/ah-engine/bin/ah-engine mesh send --to a --message \"deploy now\" > ~/.claude/settings.json");
+        assert_eq!(e.rule.as_deref(), Some("config-write"));
+        assert_eq!(decide("~/.anti-hall/ah-engine/bin/ah-engine mesh send --to a --message \"deploy now\" > /dev/null").rule, None);
+        // a script whose whole body the parsed read exemption passes (a local engine verb, a plain read) is no engine-unlisted call
+        std::fs::write(dir.join("eng.sh"), "ah-engine status\nls\n").unwrap();
+        assert_eq!(got("bash eng.sh"), (None, None));
+        // #969 review: a script's engine call off the local list is held as engine-unlisted, as the same call at the top level is
+        std::fs::write(dir.join("engw.sh"), "ah-engine agents stop x\n").unwrap();
+        assert_eq!(got("bash engw.sh"), want("script:engine-unlisted", "script_read"));
+        std::fs::write(dir.join("engw2.sh"), "ls\nenv -S 'ah-engine config set daemon.nice 0'\n").unwrap();
+        assert_eq!(got("bash engw2.sh"), want("script:engine-unlisted", "script_read"), "through a split option too");
+        assert_eq!(got("ls -la && cd /tmp"), (None, None));
+        assert_eq!(got("git push -f").1, None, "an ordinary rule is no extra class");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// #901/#904: the read exemption fails closed: an empty or uncompilable `read_only`, or an uncompilable `read_only_unless`,
+    /// exempts nothing, so a read that names the words is held by the rules again.
+    #[test]
+    fn a_broken_read_exemption_exempts_nothing() {
+        let shipped = defaults::raw("dispatch.capacity_hold");
+        let read = "grep -rn \"git push\" .";
+        assert!(capacity_read_only(shipped, read));
+        let ro = shipped.get("read_only").copied().unwrap();
+        let with = |pairs: Vec<(&'static str, defaults::V)>| defaults::V::Table(Box::leak(pairs.into_boxed_slice()));
+        assert!(
+            !capacity_read_only(&with(vec![("read_only", ro), ("read_only_unless", defaults::V::Str("("))]), read),
+            "an uncompilable read_only_unless exempts nothing"
+        );
+        assert!(!capacity_read_only(&with(vec![("read_only", defaults::V::Str("("))]), read), "an uncompilable read_only exempts nothing");
+        assert!(!capacity_read_only(&with(vec![("read_only", defaults::V::Str(""))]), read), "an empty read_only exempts nothing");
+        assert!(capacity_read_only(&with(vec![("read_only", ro)]), read), "no read_only_unless: the read passes");
+    }
+
+    /// #907: the rule each bypass is held under, and what the normalisation changes: a gh text value is data (the command words are not),
+    /// a quoted separator hides nothing, an alias is held without reading git config, and the switch `normalise` 0 restores raw matching.
+    #[test]
+    fn capacity_hold_reads_the_command_the_way_the_shell_does() {
+        let decide = |c: &str| capacity_decide(&serde_json::json!({"tool_name": "Bash", "tool_input": {"command": c}}));
+        let rule = |c: &str| decide(c).rule;
+        // in-word quoting and a quoted separator: held by the rule they always meant, found only through the normalised text
+        for (cmd, want, via_norm) in [
+            ("g\"it\" pu\"sh\" -f", "git-push", true),
+            ("git -C \"a;b\" push -f", "git-push", true),
+            ("git pf", "git-unknown-subcommand", true),
+            ("git -C /r -c a=b pf", "git-unknown-subcommand", true),
+            ("r\\m -rf /x", "recursive-delete", true),
+        ] {
+            let d = decide(cmd);
+            assert_eq!(d.rule.as_deref(), Some(want), "{cmd:?}");
+            assert_eq!(d.normalised, via_norm, "{cmd:?}: counted as found by the normalised text only");
+        }
+        // 0.3.31 (owner's live edit): pipe-to-interpreter and interpreter-heredoc are removed, so these pass
+        for cmd in ["cat f | python3 -", "cat f | node", "python3 <<'EOF'\nx\nEOF"] {
+            assert_eq!(rule(cmd), None, "{cmd:?}");
+        }
+        // a gh text value is data; the command words still decide
+        assert_eq!(rule("gh issue create --title t --body \"x; git push -f\"").as_deref(), Some("gh-remote-change"));
+        assert_eq!(rule("gh pr merge 1 --body \"x\"").as_deref(), Some("gh-remote-change"));
+        assert!(decide("gh pr view 1 --json title --jq .title").rule.is_none());
+        // a value that runs something is not data
+        assert!(rule("gh pr view 1 --title \"$(git push -f)\"").is_some());
+        // reads and known subcommands pass
+        for c in ["git status", "git -C \"a;b\" log", "echo \"a; git push\"", "cat f | python3 script.py", "cat f | python3 -c 'print(1)'"] {
+            assert_eq!(rule(c), None, "{c:?}");
+        }
+    }
+
+    /// #907: `normalise` 0 turns the shell-word reading off (raw matching, as before): the in-word spelling passes again.
+    #[test]
+    fn normalise_zero_restores_raw_matching() {
+        let shipped = defaults::raw("dispatch.capacity_hold");
+        let off = defaults::V::Table(Box::leak(
+            shipped
+                .as_table()
+                .unwrap()
+                .iter()
+                .map(|(k, v)| (*k, if *k == "normalise" { defaults::V::Int(0) } else { *v }))
+                .collect::<Vec<_>>()
+                .into_boxed_slice(),
+        ));
+        assert!(capacity_norm_cfg(&off).is_none());
+        assert!(capacity_norm_cfg(shipped).is_some());
+    }
+
+    /// The two copies of the shell-word module (the engine's and the launcher's) are one file.
+    #[test]
+    fn the_launcher_carries_the_same_shellwords_module() {
+        assert_eq!(include_str!("shellwords.rs"), include_str!("../../../ah-launcher/src/shellwords.rs"));
+    }
+
+    /// #901: a hold rule that does not compile is skipped, which fails open silently. Every shipped rule and both read-exemption keys
+    /// compile both in the engine (Unicode) and in the ah-hook launcher (ASCII on bytes).
+    #[test]
+    fn every_capacity_hold_rule_compiles_in_the_engine_and_the_launcher() {
+        let cfg = defaults::raw("dispatch.capacity_hold");
+        let rules = cfg.get("rules").and_then(|v| v.as_table()).unwrap();
+        assert!(!rules.is_empty());
+        let keys = ["read_only", "read_only_unless"].map(|k| (k, *cfg.get(k).unwrap_or_else(|| panic!("{k} is shipped"))));
+        for (name, pat) in rules.iter().copied().chain(keys) {
+            let pat = pat.as_str().unwrap();
+            regex::RegexBuilder::new(pat).case_insensitive(true).build().unwrap_or_else(|e| panic!("{name}: {e}"));
+            regex::bytes::RegexBuilder::new(pat).unicode(false).case_insensitive(true).build().unwrap_or_else(|e| panic!("{name} (ascii): {e}"));
+        }
+    }
+
     /// The over-cap tool-name scan (a payload past the stdin cap is spooled and its top-level `tool_name` found structurally, so the
     /// right entries are selected): only the top-level key counts, wherever it sits, whatever text elsewhere looks like one.
     fn scanned(json: &str) -> Result<Option<String>, ()> {
@@ -1016,6 +2072,7 @@ mod tests {
                     rows += 1;
                     let check = e.check.as_deref().unwrap_or_else(|| panic!("{host}/{event}/{}: a shipped row without a built-in check", e.id));
                     assert!(crate::checks::get(check).is_some(), "{host}/{event}/{}: unknown check {check}", e.id);
+                    crate::script::set_call(&Value::Null);
                     let r = resolve_unanswered(&e, event);
                     assert_eq!(r.id, e.id);
                     let closed = crate::script::failure_mode(check) == defaults::text("script.failure_mode_closed");
@@ -1102,7 +2159,7 @@ mod tests {
         assert_eq!(finish_then_fail("PreToolUse", None, Vec::new(), none.clone(), &shadow, false, "slow").code, 2, "nothing ran yet: the budget mode answers");
         let o = finish_then_fail("PreToolUse", None, Vec::new(), none.clone(), &shadow, true, "slow");
         assert_eq!(o.code, 2, "a built-in check already answered: fail closed: {o:?}");
-        let dir = std::env::temp_dir().join(format!("ah-p1-1-{}", std::process::id()));
+        let dir = crate::testtmp::path(format!("ah-p1-1-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let mark = dir.join("ran");
         let started = vec![(0, node::start(&entry("a", &format!("echo x >> '{}'", mark.display())), b"{}"))];

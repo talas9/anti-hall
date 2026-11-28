@@ -77,8 +77,16 @@ doc = "Tools whose tool_result can be a message sent to a teammate's inbox."
 value = ["SendMessage"]
 
 [agent_scan.prefilter]
-doc = "Substrings that decide whether a transcript line is parsed at all: a launch, a completion notice, an Agent or TaskStop tool call (with and without a space after the colon), a tool result, a tool use, a task_status attachment and a teammate idle notice."
-value = { launch = "Async agent launched successfully", notification = "<task-notification>", agent_use = '"name":"Agent"', agent_use_spaced = '"name": "Agent"', tool_result = "tool_result", taskstop = '"name":"TaskStop"', taskstop_spaced = '"name": "TaskStop"', task_status = '"task_status"', tool_use = '"tool_use"', idle = "idle_notification" }
+doc = "Substrings that decide whether a transcript line is parsed at all: a launch, a completion notice, an Agent or TaskStop tool call (with and without a space after the colon), a tool result, a tool use, a task_status attachment a teammate message (an idle notice or the teammate's own plain-text report) and a message the host stamped with a peer origin (peer, peer_spaced)."
+value = { launch = "Async agent launched successfully", notification = "<task-notification>", agent_use = '"name":"Agent"', agent_use_spaced = '"name": "Agent"', tool_result = "tool_result", taskstop = '"name":"TaskStop"', taskstop_spaced = '"name": "TaskStop"', task_status = '"task_status"', tool_use = '"tool_use"', idle = "<teammate-message", peer = '"kind":"peer"', peer_spaced = '"kind": "peer"' }
+
+[agent_scan.peer_report]
+doc = "A teammate report the host delivers with a structured origin (#972 wave 2): a user entry (entry_type) or an attachment (attachment_entry_type, under attachment_key) of one of attachment_types (queued_command: a message delivered while the session was busy), whose origin (origin_key) has kind_key equal to kind. from_key names the sender; it counts only for a spawned teammate. The envelope text (<agent-message ...>) and the host-record keys of not_a_report_keys do not matter for it."
+value = { entry_type = "user", attachment_entry_type = "attachment", attachment_key = "attachment", attachment_types = ["queued_command"], origin_key = "origin", kind_key = "kind", kind = "peer", from_key = "from" }
+
+[agent_scan.teammate_open]
+doc = "Text that opens a teammate message block. A report body that holds it quotes earlier teammate messages: the report is the outer block's, and nothing after the first closing tag is read as another report."
+value = "<teammate-message"
 
 [agent_scan.teammate_report_prefix]
 doc = "Text a teammate report entry begins with."
@@ -225,7 +233,7 @@ doc = "The tool this check answers."
 value = "AskUserQuestion"
 
 [ask_guard.mode_setting]
-doc = "Where the question mode is read from (guards.noBlockingQuestions: off, advise or block; default off)."
+doc = "Question mode: off, advise or block. Where the question mode is read from (guards.noBlockingQuestions: off, advise or block; default off)."
 value = { section = "guards", key = "noBlockingQuestions", env = "ANTIHALL_NO_BLOCKING_QUESTIONS", aliases = [], option = "", default = "off", values = ["off", "advise", "block"] }
 
 [ask_guard.note_setting]
@@ -404,6 +412,70 @@ value = "advisory only; the stop is not blocked."
 doc = "One-line description of the silent-agent-nudge check in the generated reference."
 value = "Stop: nudges once per silent background agent (the block text, the nudge state, the stale-build downgrade and the per-session ack of the Node hook) and answers every Stop that would not nudge."
 
+[silent_nudge.rt_stop_cap]
+doc = "How many times per session a repeated-reminder runtime escalation (agent_nudge.runtime_escalation, non-block-tier rows) may block the coordinator's Stop (0 = never block); it never loops."
+value = 1
+min = 0
+max = 20
+
+[silent_nudge.rt_block_cap]
+doc = "How many times per session the block-tier runtime step (agent_nudge.runtime block_tier) may block the coordinator's Stop (0 = never block). Counted apart from rt_stop_cap, so a repeated-reminder escalation cannot use it up. It is a safety valve: the block lifts at once when the agent is stopped or extended, so a Stop is not held for good if neither works."
+value = 25
+min = 0
+max = 1000
+
+[silent_nudge.rt_block_state_file]
+doc = "Per-session count of the block-tier runtime Stop blocks given, under the engine state directory."
+value = "runtime-block-stops.json"
+
+[silent_nudge.msg_rt_block_what]
+doc = "What the block-tier runtime Stop block says; {names} the agents with their runtime, {more} the remainder."
+value = "{names}{more} past the runtime block step: Stop stays blocked until you act."
+
+[silent_nudge.msg_rt_block_instead]
+doc = "What to do about a block-tier agent (kept within the visible action length)."
+value = "stop it, or extend it with a reason: agents nudge <child> other \"<reason>\"."
+
+[silent_nudge.rt_unrecorded_log]
+doc = "The event-log line written when the runtime-escalation Stop block count could not be saved, so the Stop was not blocked (GH #494)."
+value = { kind = "silent_nudge", text = "runtime escalation Stop not blocked: the block count could not be saved" }
+
+[metric.silent_agent_nudge_fired]
+doc = "Stop nudges said by silent-agent-nudge for a background agent or heartbeat quiet for guards.silentAgentNudgeMin minutes (#519)."
+value = { kind = "counter", unit = "stops", labels = [] }
+
+[metric.silent_agent_nudge_acked]
+doc = "Stop nudges of silent-agent-nudge withheld because this exact set of agents was acked for the session (silent_nudge.ack_*)."
+value = { kind = "counter", unit = "stops", labels = [] }
+
+[metric.runtime_escalation_stop_unrecorded]
+doc = "Runtime-escalation Stop blocks withheld because the per-session block count could not be saved (an unrecorded block could repeat past silent_nudge.rt_stop_cap)."
+value = { kind = "counter", unit = "stops", labels = [] }
+
+[silent_nudge.rt_state_file]
+doc = "Per-session count of the runtime-escalation Stop blocks given, under the engine state directory."
+value = "runtime-escalation-stops.json"
+
+[silent_nudge.msg_rt_what]
+doc = "What the runtime-escalation Stop block says; {names} the agents with their runtime, {more} the remainder."
+value = "{names}{more} still running past the runtime block step, not finished and not stopped."
+
+[silent_nudge.msg_rt_item]
+doc = "One escalated agent in the Stop block; {name} its description, {dur} its runtime (hours and minutes)."
+value = "'{name}' (running {dur})"
+
+[silent_nudge.msg_rt_instead]
+doc = "What to do about an escalated agent."
+value = "stop it, or extend it with a stated reason (agents nudge <child> other \"<reason>\"); this block is shown once per session."
+
+[silent_nudge.rt_dur_hours]
+doc = "The runtime format when an escalated agent has run for hours; {h} hours, {m} minutes."
+value = "{h} h {m} min"
+
+[silent_nudge.rt_dur_minutes]
+doc = "The runtime format under one hour; {m} minutes."
+value = "{m} min"
+
 [silent_nudge.guard_name]
 doc = "The guard id this check answers to in skip.json."
 value = "silent-agent-nudge"
@@ -413,7 +485,7 @@ doc = "Where the on/off switch is read from (guards.silentAgentNudge, default on
 value = { section = "guards", key = "silentAgentNudge", env = "ANTIHALL_SILENT_AGENT_NUDGE", aliases = [], option = "guards_silent_agent_nudge", default = true }
 
 [silent_nudge.min_setting]
-doc = "Where the silence threshold in minutes is read from (guards.silentAgentNudgeMin, default 20, at least 1)."
+doc = "Silence threshold in minutes. Where the silence threshold in minutes is read from (guards.silentAgentNudgeMin, default 20, at least 1)."
 value = { section = "guards", key = "silentAgentNudgeMin", env = "ANTIHALL_SILENT_AGENT_NUDGE_MIN", aliases = [], option = "guards_silent_agent_nudge_min", default = 20, min = 1 }
 
 [silent_nudge.min_default]
@@ -433,6 +505,22 @@ value = "1"
 doc = "Bytes of the transcript tail the check scans (NUDGE_SCAN_BYTES)."
 value = 67108864
 unit = "bytes"
+
+[silent_nudge.err_file]
+doc = "JSONL file, relative to the home directory, that keeps the error text of a failed silent-agent-nudge call (#764). The engine's own script_error line is rate-limited across all checks, so most failures lost their text."
+value = ".anti-hall/silent-agent-nudge-errors.log"
+
+[silent_nudge.err_max_bytes]
+doc = "Size at which the silent-agent-nudge error log is rotated to its .1 file."
+value = 262144
+min = 1024
+unit = "bytes"
+
+[silent_nudge.err_text_max]
+doc = "Most characters of one error text (message and stack) kept in the silent-agent-nudge error log."
+value = 2000
+min = 80
+unit = "chars"
 
 [silent_nudge.state_file]
 doc = "Nudge state file, relative to the home directory."
@@ -607,7 +695,7 @@ doc = "Where the stale-build downgrade switch is read from (guards.stopHookVersi
 value = { section = "guards", key = "stopHookVersionDowngrade", env = "ANTIHALL_STOP_HOOK_VERSION_DOWNGRADE", aliases = [], option = "", default = true }
 
 [silent_nudge.ack_setting]
-doc = "Where the stop-ack switch is read from (guards.stopAck, default on)."
+doc = "Honor verified Stop acknowledgements. Where the stop-ack switch is read from (guards.stopAck, default on)."
 value = { section = "guards", key = "stopAck", env = "ANTIHALL_STOP_ACK", aliases = [], option = "", default = true }
 
 [silent_nudge.ack_dir]
@@ -646,10 +734,23 @@ value = "Override (only if the user explicitly confirmed this exact condition is
 
 # ---- the kept walk of a transcript that fits the scan window (checks::agent_scan::scan_kept, #22) ------------------
 
+[agent_scan.use_store]
+doc = "1 = the agent scan answers from the transcript store's agent digests (transcript.agent_* keys): each line is digested once when the store reads it, no walk is kept per scan, and a window the store cannot answer (not yet covered, busy, another file, settings changed) is read afresh without keeping a walk; counted in agent_scan_store{result}. 0 = the scan walks its window itself and keeps the walk between calls (agent_scan.cache_*), as before (kill switch)."
+value = 1
+min = 0
+max = 1
+unit = "flag"
+
 [agent_scan.cache_max_paths]
 doc = "How many walks the scan keeps between calls (one per transcript and window size), so a Stop reads only the bytes appended since the last scan (0 turns the cache off). The least recently used one is dropped first, so more transcripts in use at once than this are each walked afresh (the walk of a long session is its cold cost: 64 MiB read and filtered)."
 value = 24
 unit = "count"
+
+[agent_scan.max_line_bytes]
+doc = "Longest transcript line, in bytes, the agent scan holds and parses. A longer line (in practice one huge tool_result, measured 2026-10-30 at 60 MB) is read past in the reader's own buffer without being held, is not parsed, is counted in transcript_line_skipped_oversize{reader} and is not parsed; because what it carried is unknown, a scan whose window holds one returns unknown (agent_scan_degraded{reader}; the Node hook decides, the silent-agent nudge judges no transcript agents and does not block a Stop on it) rather than an answer made as if the line were absent. Before the bound the scan buffered the whole line and parsed it, and several scans overlapping on one such transcript made the daemon pass its RSS cap and restart (#436: one 60 MB line = 120.6 MB of line buffer plus two 62.9 MB parse copies). 4 MiB is above the longest line in 1.38 million lines of 5,613 local transcripts (2.95 MB; none over 1 MiB carried an agent launch or notice) and 15 times below the 60 MB line. 0 turns the bound off: every line is held and parsed whole, as before."
+value = 4194304
+min = 0
+unit = "bytes"
 
 [agent_scan.window_slack_pct]
 doc = "How far, as a percent of the scan window, the kept walk of a transcript longer than the window may begin before the window start; past that it is rebuilt from the window start. The walk is used only while it provably gives the answer of a fresh scan of the exact window (nothing older than the window start touched a launch, a stop or a teammate event, and no call older than it has its answer inside it), so this only bounds what the walk holds. 0 reads every window afresh."
@@ -684,3 +785,114 @@ unit = "bytes"
 doc = "Bytes at the start of a transcript, and bytes just before the kept offset, hashed to notice a rewritten or rotated file; a kept walk whose file no longer matches is rebuilt from the start."
 value = 4096
 unit = "bytes"
+
+[ask_guard.child_deny_setting]
+doc = "Refuse child workspace questions. Where the child-workspace deny switch is read from (guards.denyChildQuestions, default on): a DevSwarm child workspace never opens AskUserQuestion; the call is refused with a pointer to the mesh (GH #694). The DESTRUCTIVE:/CREDENTIAL: marker does not exempt a child."
+value = { section = "guards", key = "denyChildQuestions", env = "ANTIHALL_DENY_CHILD_QUESTIONS", aliases = [], option = "", default = true }
+
+[ask_guard.primary_deny_setting]
+doc = "Refuse Primary questions. Where the Primary deny switch is read from (guards.denyPrimaryQuestions, default on): the Primary session of a DevSwarm repo (ask_guard.primary_env set, ask_guard.child_env blank) never opens AskUserQuestion either; the owner is reached through the progress file (GH #694)."
+value = { section = "guards", key = "denyPrimaryQuestions", env = "ANTIHALL_DENY_PRIMARY_QUESTIONS", aliases = [], option = "", default = true }
+
+[ask_guard.primary_env]
+doc = "Environment variable whose non-blank value marks a session running under DevSwarm; with ask_guard.child_env blank it is the Primary."
+value = "DEVSWARM_REPO_ID"
+
+[ask_guard.child_deny_what]
+doc = "Headline of the child deny message."
+value = "a workspace agent never asks the user."
+
+[ask_guard.child_deny_instead]
+doc = "What a denied child does instead."
+value = "ask the Primary with `ah-engine mesh send --to-primary --question ...` and keep working on the rest."
+
+[ask_guard.primary_deny_what]
+doc = "Headline of the Primary deny message."
+value = "the Primary never blocks on a question."
+
+[ask_guard.primary_deny_instead]
+doc = "What a denied Primary does instead."
+value = "ask the owner in plain text in your reply, note NEEDS OWNER: <question> in the progress file, keep working."
+
+[ask_guard.deny_kind_child]
+doc = "Label of the ask_guard_denied counter for a denied child workspace."
+value = "child"
+
+[ask_guard.deny_kind_primary]
+doc = "Label of the ask_guard_denied counter for a denied Primary."
+value = "primary"
+
+[silent_nudge.rt_reconcile_setting]
+doc = "Reconcile stale runtime Stop snapshots. Reconcile runtime escalation snapshots against current agent completion and all recorded owner actions at Stop; keep verdicts in a separate session overlay without writing the publisher snapshot (guards.runtimeStopReconcile, default on). Both hosts share this logic."
+value = { section = "guards", key = "runtimeStopReconcile", env = "ANTIHALL_RUNTIME_STOP_RECONCILE", aliases = [], option = "", default = true }
+
+[silent_nudge.rt_progress_window_ms]
+doc = "A runtime-escalation child whose last outcome (its progress last changed) is newer than this many milliseconds is making progress: the coordinator's Stop is not blocked on it until the window ends. A silent child (no outcome inside the window) still blocks. 0 turns it off. The Stop reads this, never the nudge text."
+value = 900000
+unit = "ms"
+
+[silent_nudge.rt_repair]
+doc = "Logic-owned per-session runtime Stop overlay under paths.state_dir, written atomically without changing publisher rows. All audit rows are retained; verdicts expire after ttl_ms (milliseconds), live evidence overrides completion. Owner verbs/windows come from agent_nudge.answers/limits. Both Claude/OMC and Codex/OMX share the overlay logic."
+value = { marker = "retired", file_prefix = "runtime-stop-overlay-", file_ext = ".json", ttl_ms = 14400000 }
+
+[stop_reblock.setting]
+doc = "Bound unchanged coordination Stop repeats. Bound unchanged coordination Stop repeats on both hosts (guards.stopReblock, default on). Safety and destructive-action checks are excluded; changed reasons or meaningful guard state reset the budget."
+value = { section = "guards", key = "stopReblock", env = "ANTIHALL_STOP_REBLOCK", aliases = [], option = "", default = true }
+
+[stop_reblock.max_setting]
+doc = "Allowed unchanged Stop repeats. Maximum repeats after the first identical Stop block on unchanged state (guards.stopReblockMax, default 2); zero releases the first repeat. The budget is persisted immediately, independent of assistant replies."
+value = { section = "guards", key = "stopReblockMax", env = "ANTIHALL_STOP_REBLOCK_MAX", aliases = [], default = 2 }
+
+[stop_reblock.guards]
+doc = "Coordination Stop checks explicitly participating in the JS breaker. The idle-tasks branch alone opts in for task-guard; a new check is excluded until reviewed."
+value = ["devswarm-child-gate", "task-guard", "auto-handover-pause-nag", "silent-agent-nudge"]
+
+[stop_reblock.excluded]
+doc = "Safety/evidence and destructive-action checks never use the coordination Stop breaker, even if accidentally added to its participant list. PreToolUse paths do not call the breaker."
+value = ["git-guard", "edit-guard", "claim-evidence", "claim-evidence-guard", "command-guard", "api-guard", "broad-kill", "merge-gate", "ship-it-guard", "swarm-guard", "handover-commit-guard"]
+
+[stop_reblock.normalise]
+doc = "Elapsed runtime fragments ignored when identifying the same Stop reason. Subject IDs, task counts and action text remain significant."
+value = ['\b\d+(?:\.\d+)?\s*(?:hours?|hrs?|h|minutes?|mins?|min|seconds?|secs?|sec|ms)\b']
+
+[stop_reblock.path]
+doc = "Per-session immediate breaker record under the anti-hall directory, keyed by a hash of the session ID."
+value = { dir = "stop-reblock", ext = ".json" }
+
+[stop_reblock.category]
+doc = "Category of waste_events_total counted for each unchanged Stop block released by the breaker; the counter registry remains in telemetry.toml."
+value = "reblock_loop"
+
+[stop_reblock.released]
+doc = "One short line when an unchanged coordination Stop block first exhausts its repeat budget; later identical releases stay quiet."
+value = "Unchanged Stop block released: {guard}.\n"
+
+[stop_reblock.pause_guard]
+doc = "Stop check ID of the handover pause reminder; its message and skip name are shared with auto-handover, but its repeat budget is independent."
+value = "auto-handover-pause-nag"
+
+[stop_reblock.lock]
+doc = "Retained per-session flock file and bounded wait for the immediate repeat-budget read/modify/write; group supplies the existing lock timings. Lock failure preserves the original block."
+value = { suffix = ".flock", group = "advisor", wait_ms = 250 }
+
+[silent_nudge.rt_reconcile_bytes]
+doc = "Combined input byte budget for runtime Stop tracker state and session overlay, shared by Claude/OMC and Codex/OMX. Check metadata before reading and cap each read, including growth races; never parse a truncated document. Unavailable tracker state is counted but independent owner answers and live tracked agents still reconcile the publisher rows. 256 KiB leaves room for parse expansion within the 16 MiB QuickJS call heap; this is independent of the much larger tracker state budget."
+value = 262144
+min = 1024
+max = 262144
+unit = "bytes"
+
+[metric.runtime_escalation_reconcile_skipped]
+doc = "Runtime Stop reconciliation inputs skipped or truncated at their byte bounds, or changed during a read. Independent readable answers and live tracked agents still apply; without newer evidence the publisher-row Stop decision still runs."
+value = { kind = "counter", unit = "stops", labels = [] }
+
+[silent_nudge.rt_answers_bytes]
+doc = "Independent byte window of newest owner-answer NDJSON rows used for runtime Stop reconciliation on Claude/OMC and Codex/OMX. Native bounded line reads discard a partial first line; oversized or missing tracker state cannot consume this window. Newest timestamp per child wins. Publisher rows omit escalation timestamps; bounded plugin-owned first-seen anchors reject answers predating the current observation even when tracker state is unavailable. Does not increase rt_reconcile_bytes."
+value = 65536
+min = 1024
+max = 262144
+unit = "bytes"
+
+[silent_nudge.rt_first_seen]
+doc = "Bounded plugin-owned publisher observation clocks under the tracker directory, keyed by session and child, shared by Claude/OMC and Codex/OMX. The kernel flock uses stop_reblock.lock timings and suffix, on this independent file; locked authoritative publisher re-reads prevent stale snapshots pruning or rolling back newer anchors. Keep at most max_rows and max_bytes UTF-8 bytes; prune absent rows and replace anchors after ttl_ms or a reminder counter or block-tier change. Ordinary dur_ms tick changes preserve the generation. The publisher exposes no nudge identity, so an unobserved disappearance cannot be distinguished. Anchors beyond now plus future_allowance_ms are invalid and re-anchor at now rather than preserving a future maximum; valid anchors never roll back. Overflow, unavailable locks or failed writes cannot release a block. Answers must be at least first_seen; legacy skew_ms and initial_window_ms are ignored because clock tolerance must never admit older answers. A new generation (first sight or a reminder/send newer than the previous anchor) anchors at the tracker's last_sent for that child only when readable and the tracker's reminder count equals the row's (a stale tracker save is another generation; otherwise it anchors at now), never earlier than the previous anchor or now minus backdate_max_ms, so an answer given between the escalation and the Stop's first sight counts while an answer from before it never does (#751). Otherwise an unseen row starts now, never at zero. Stop/acted answers expire at their timestamp plus the smaller of rt_repair.ttl_ms and agent_nudge.limits.window_ms; evaluation never renews them."
+value = { file = "runtime-stop-first-seen.json", max_bytes = 32768, max_rows = 256, ttl_ms = 86400000, skew_ms = 2000, initial_window_ms = 5000, future_allowance_ms = 2000, backdate_max_ms = 60000 }

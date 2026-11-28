@@ -71,6 +71,24 @@ value = { section = "devswarm", key = "supervisorMode", env = "ANTIHALL_DEVSWARM
 doc = "Setting devswarm.wakeCron: the cron schedule of the mailbox-wake job, untrusted text that is validated before it is injected."
 value = { section = "devswarm", key = "wakeCron", env = "ANTIHALL_DEVSWARM_WAKE_CRON", default = "7,37 * * * *" }
 
+[devswarm_role.sw_wake_cron_child_only]
+doc = "Switch devswarm.wakeCronOnlyWithChild (default on): a Primary arms the mailbox-wake cron only while at least one child workspace is alive. The SessionStart directive arms the Monitor wake-watch alone, one order deletes the cron when the last child is gone, and the NO MAILBOX TICK / NO MAILBOX WAKE PATH line asks for it back at the next live child. Off restores the always-armed cron."
+value = { section = "devswarm", key = "wakeCronOnlyWithChild", env = "ANTIHALL_DEVSWARM_WAKE_CRON_ONLY_WITH_CHILD", default = true }
+
+[devswarm_role.msg_wake_claude_parent_nocron]
+doc = "The mailbox-wake text of a claude Primary while devswarm.wakeCronOnlyWithChild is on (placeholders {watcher}, {expiry}): the Monitor wake-watch alone. The cron comes only with a live child, ordered by the wake line."
+value = '''
+ MAILBOX WAKE (do this NOW, on your FIRST turn): arm the `Monitor` tool as your wake path: first check whether a mailbox-wake Monitor is already armed so you never arm a second one (double-arming causes duplicate wakes; the watcher script also self-guards with a lock, but do not rely on that alone). If none is armed, call `Monitor` with command `{watcher}` and a description like "devswarm mailbox wake watcher": max `timeout_ms`{expiry}. Every line it prints on stdout becomes a transcript event, waking this session even while fully idle. A first line starting `[wake-watch] REFUSED TO ARM` means you do NOT have this coverage — do not assume you do. Do NOT create a mailbox cron (`CronCreate` running `inbox tick`) now: with no child workspace alive each tick is a full model turn that finds nothing. When a child workspace is alive, a NO MAILBOX TICK or NO MAILBOX WAKE PATH line tells you to create it; when none is alive any more, one line tells you to delete it.'''
+
+[devswarm_role.msg_expiry_nocron]
+doc = "The monitor-expiry clause while devswarm.wakeCronOnlyWithChild is on: no cron tick exists to re-arm it, and an inline re-arm would wake an empty session every 30 minutes."
+value = '''
+. Do NOT re-arm inline when it emits its final/expired event while no child workspace is alive — reply in one line and stop; the NO MAILBOX WAKE PATH line re-arms it once a child is alive'''
+
+[devswarm_role.cron_ctl_fresh_sources]
+doc = "The SessionStart `source` values of a session that starts with no mailbox cron (a new session; a resumed, cleared or compacted one lives in a process that may still hold a cron armed earlier, since cron jobs are session-process-only). Such a session is recorded as cron-less, so it is not ordered to delete a cron it never had."
+value = ["startup"]
+
 [devswarm_role.cron_charset]
 doc = "The only characters a cron field may contain (anything else would let the setting inject text into the directive)."
 value = "0123456789*/,-"
@@ -104,7 +122,7 @@ value = '}}'
 [devswarm_role.msg_base]
 doc = "The mesh-only messaging directive of a child workspace (placeholder {cli}: the DevSwarm CLI path)."
 value = '''
-💡 anti-hall · devswarm-comms: anti-hall's shared mesh store is this workspace's ONLY messaging channel for DevSwarm coordination — native hivecontrol send commands (`workspace message-*`) are BLOCKED. Report status: `{cli} heartbeat <id> --summary "<text>"`. Direct-message: `{cli} send --to-primary --message-file <path>` (or `--to <meshId>`). Check in: `{cli} roster`, `mesh read` (CONSUMES broadcasts — use `--peek` to check in without consuming), `inbox read-primary <id>` (read-only — then run the `ackCommand` it returns). RESTING state = keep polling the mesh — do not idle silently. Scope: COMMUNICATION ONLY; this never changes your assigned task. BLOCKED ON A DECISION? Never ask the human directly, never halt all work — a question parks ONE sub-task; keep working every other unblocked item. Send via `send --to-primary --question` (message = blocked/options/recommendation/DEFAULT you'll take/deadline). DEFAULT-AND-PROCEED: no reply by deadline -> take that default, proceed, and flag it LOUDLY as an explicit assumption in your report — never silently. Hard-stop ONLY for a destructive/irreversible action: park + report, do not guess a default. Ladder: child -> parent -> human, never child -> human. WHEN MERGED run `{cli} done --summary "..."` once; auto-archived after. If you have been idle with no active task for a while, proactively run `{cli} heartbeat <id> --summary "idle — reassign me a task or archive me"` so the parent orchestrator's task list stays honest instead of you sitting idle unnoticed.'''
+💡 anti-hall · devswarm-comms: anti-hall's shared mesh store is this workspace's ONLY messaging channel for DevSwarm coordination — native hivecontrol send commands (`workspace message-*`) are BLOCKED. Report status: `{cli} heartbeat <id> --summary "<text>"`. Direct-message: `{cli} send --to-primary --message-file <path>` (or `--to <meshId>`). Check in: `{cli} roster`, `mesh read` (CONSUMES broadcasts — use `--peek` to check in without consuming), `inbox read-primary <id>` (read-only — then run the `ackCommand` it returns). RESTING state = keep polling the mesh — do not idle silently. Scope: COMMUNICATION ONLY; this never changes your assigned task. BLOCKED ON A DECISION? Never ask the human directly, never halt all work — a question parks ONE sub-task; keep working every other unblocked item. Send via `send --to-primary --question` (message = blocked/options/recommendation/DEFAULT you'll take/deadline). DEFAULT-AND-PROCEED: no reply by deadline -> take that default, proceed, and flag it LOUDLY as an explicit assumption in your report — never silently. Hard-stop ONLY for a destructive/irreversible action: park + report, do not guess a default. Ladder: child -> parent -> human, never child -> human. WHEN MERGED run `{cli} done --summary "..."` once; auto-archived after. If you have been idle with no active task for a while, proactively run `{cli} heartbeat <id> --summary "idle — reassign me a task or archive me"` so the parent orchestrator's task list stays honest instead of you sitting idle unnoticed. MESH STYLE: mesh messages are read by a human in a chat room. Write like a teammate, not a log: first line = the point, in **bold**; then 2-4 short bullets (options as **A)** / **B)**); no hashes, paths or raw counts unless asked: reference `file:line` or #PR instead of pasting; tag #question / #blocker; --urgency high only when it matters; reply to one-word asks with one word; no ack-only replies.'''
 
 [devswarm_role.msg_wake_other]
 doc = "The mailbox-wake text of a workspace whose agent is not claude (placeholders {cli}, {id}, {agent})."
@@ -114,12 +132,12 @@ value = '''
 [devswarm_role.msg_wake_claude]
 doc = "The mailbox-wake text of a claude workspace (placeholders {cli}, {watcher}, {id}, {cron}, {expiry})."
 value = '''
- MAILBOX WAKE (do this NOW, on your FIRST turn): call `CronList`. If ANY existing job already runs `inbox tick` for this workspace — any schedule, id, or partition UUID — that counts as present; do nothing, never create a second one. Only if ABSENT — never created, or auto-expired (recurring tasks self-delete 7 days after creation) — call `CronCreate` with schedule `{cron}` and a prompt that runs run `{cli} inbox tick {id} --child --quiet` (run plain: no pipes/filters) (with `--child` it first imports anything waiting in your native queue, then prints one line with the SAME unread/meshGap/known signal `inbox count` reports, and writes a liveness marker + refreshes your heartbeat — one command instead of pull+count); If its `watcherArmed` reads `false` (your Monitor lapsed at its 30-min cap; not `idle-skip`/`limit-skip`), re-arm: `Monitor` with `{watcher}` and timeout_ms 1800000 (without it the Monitor expires after the 5-minute default; add persistent: true if supported). if the printed line reads `unread 0` AND `meshGap false` AND `known` is NOT `false`, say so and stop — do NOT spawn a subagent; otherwise (either `unread` is greater than 0, or `meshGap` is `true`, or `known` is `false`), run `{cli} inbox read-primary {id}` (read-only; after handling, run the `ackCommand` it returns) (delegate to a subagent only if the payload is large — this is the cursor-advancing verb, matching devswarm-child-turn.js's own mesh-direct instruction; `inbox read` is a non-mutating peek and cannot clear the withheld gap) — if that reports `ok:false`, report the `reason` (and `storeUnavailableReason`/`storeUnavailableDetail` when present) in one line and stop (do not loop, do not spawn a subagent) and acts on anything unread. Cron jobs fire while this session is IDLE (each tick is a full turn) — this cron is now a 30-MINUTE FALLBACK cadence (cheaper than the pre-D13 5-minute default), NEVER disarmed — it is the only thing that will wake you to drain your mailbox once you go idle; a message that lands after you stop is otherwise never seen. ALSO arm the `Monitor` tool as your PRIMARY wake path (Cron above is the 30-minute FALLBACK — it still fires independently; Monitor is IN ADDITION, never instead): first check whether a mailbox-wake Monitor is already armed so you never arm a second one (double-arming causes duplicate wakes; the watcher script also self-guards with a lock, but do not rely on that alone). If none is armed, call `Monitor` with command `{watcher}` and a description like "devswarm mailbox wake watcher": use `persistent: true` if your Monitor tool supports it, else max `timeout_ms`{expiry} — never two watchers at once. Every line it prints on stdout becomes a transcript event, waking this session even while fully idle, with far lower latency than the cron tick above. A first line starting `[wake-watch] REFUSED TO ARM` means you do NOT have this coverage — do not assume you do; the cron job above is still your only wake path.'''
+ MAILBOX WAKE (do this NOW, on your FIRST turn): call `CronList`. If ANY existing job already runs `inbox tick` for this workspace — any schedule, id, or partition UUID — that counts as present; do nothing, never create a second one. Only if ABSENT — never created, or auto-expired (recurring tasks self-delete 7 days after creation) — call `CronCreate` with schedule `{cron}` and a prompt that runs run `{cli} inbox tick {id} --child --quiet` (run plain: no pipes/filters) (with `--child` it first imports anything waiting in your native queue, then prints one line with the SAME unread/meshGap/known signal `inbox count` reports, and writes a liveness marker + refreshes your heartbeat — one command instead of pull+count); If its `watcherArmed` reads `false` (your Monitor lapsed at its 30-min cap; not `idle-skip`/`limit-skip`), re-arm: `Monitor` with `{watcher}` and timeout_ms 1800000 (without it the Monitor expires after the 5-minute default). if the printed line shows a mail count of 0 (its `wake` value when the line shows one, else its `unread` value) AND `meshGap false` AND `known` is NOT `false`, say so and stop — do NOT spawn a subagent; otherwise (either that mail count is greater than 0, or `meshGap` is `true`, or `known` is `false`), run `{cli} inbox read-primary {id}` (read-only; after handling, run the `ackCommand` it returns) (delegate to a subagent only if the payload is large — this is the cursor-advancing verb, matching devswarm-child-turn.js's own mesh-direct instruction; `inbox read` is a non-mutating peek and cannot clear the withheld gap) — if that reports `ok:false`, report the `reason` (and `storeUnavailableReason`/`storeUnavailableDetail` when present) in one line and stop (do not loop, do not spawn a subagent) and acts on anything unread. Cron jobs fire while this session is IDLE (each tick is a full turn) — this cron is now a 30-MINUTE FALLBACK cadence (cheaper than the pre-D13 5-minute default), NEVER disarmed — it is the only thing that will wake you to drain your mailbox once you go idle; a message that lands after you stop is otherwise never seen. ALSO arm the `Monitor` tool as your PRIMARY wake path (Cron above is the 30-minute FALLBACK — it still fires independently; Monitor is IN ADDITION, never instead): first check whether a mailbox-wake Monitor is already armed so you never arm a second one (double-arming causes duplicate wakes; the watcher script also self-guards with a lock, but do not rely on that alone). If none is armed, call `Monitor` with command `{watcher}` and a description like "devswarm mailbox wake watcher": max `timeout_ms`{expiry} — never two watchers at once. Every line it prints on stdout becomes a transcript event, waking this session even while fully idle, with far lower latency than the cron tick above. A first line starting `[wake-watch] REFUSED TO ARM` means you do NOT have this coverage — do not assume you do; the cron job above is still your only wake path.'''
 
 [devswarm_role.msg_base_parent]
 doc = "The mesh-only messaging directive of a Primary (placeholder {cli}: the DevSwarm CLI path)."
 value = '''
-💡 anti-hall · devswarm-comms: anti-hall's shared mesh store is this workspace's ONLY messaging channel for DevSwarm coordination — native hivecontrol send commands (`workspace message-*`) are BLOCKED. Report status: `{cli} heartbeat <id> --summary "<text>"`. Direct-message: `{cli} send --to-primary --message-file <path>` (or `--to <meshId>`). Check in: `{cli} roster`, `mesh read` (CONSUMES broadcasts — use `--peek` to check in without consuming), `inbox read-primary <id>` (read-only — then run the `ackCommand` it returns). RESTING state = keep polling the mesh — do not idle silently. Scope: COMMUNICATION ONLY; this never changes your assigned task. BLOCKED-QUESTION REPLIES: a child's question means YOU decide from the plan context, replying via `send --to <meshId>`; escalate to the human only for a genuine human call (destructive/irreversible, scope-changing, unsafe to assume). Ladder: child -> parent -> human, never child -> human. Full verb list: `{cli} help --short`.'''
+💡 anti-hall · devswarm-comms: anti-hall's shared mesh store is this workspace's ONLY messaging channel for DevSwarm coordination — native hivecontrol send commands (`workspace message-*`) are BLOCKED. Report status: `{cli} heartbeat <id> --summary "<text>"`. Direct-message: `{cli} send --to-primary --message-file <path>` (or `--to <meshId>`). Check in: `{cli} roster`, `mesh read` (CONSUMES broadcasts — use `--peek` to check in without consuming), `inbox read-primary <id>` (read-only — then run the `ackCommand` it returns). RESTING state = keep polling the mesh — do not idle silently. Scope: COMMUNICATION ONLY; this never changes your assigned task. BLOCKED-QUESTION REPLIES: a child's question means YOU decide from the plan context, replying via `send --to <meshId>`; escalate to the human only for a genuine human call (destructive/irreversible, scope-changing, unsafe to assume). Ladder: child -> parent -> human, never child -> human. Full verb list: `{cli} help --short`. MESH STYLE: mesh messages are read by a human in a chat room. Write like a teammate, not a log: first line = the point, in **bold**; then 2-4 short bullets (options as **A)** / **B)**); no hashes, paths or raw counts unless asked: reference `file:line` or #PR instead of pasting; tag #question / #blocker; --urgency high only when it matters; reply to one-word asks with one word; no ack-only replies.'''
 
 [devswarm_role.msg_wake_other_parent]
 doc = "The mailbox-wake text of a Primary whose agent is not claude (placeholders {cli}, {id}, {agent})."
@@ -129,7 +147,7 @@ value = '''
 [devswarm_role.msg_wake_claude_parent]
 doc = "The mailbox-wake text of a claude Primary (placeholders {cli}, {watcher}, {id}, {cron}, {expiry})."
 value = '''
- MAILBOX WAKE (do this NOW, on your FIRST turn): call `CronList`. If ANY existing job already runs `inbox tick` for this workspace — any schedule, id, or partition UUID — that counts as present; do nothing, never create a second one. Only if ABSENT — never created, or auto-expired (recurring tasks self-delete 7 days after creation) — call `CronCreate` with schedule `{cron}` and a prompt that runs run `{cli} inbox tick {id} --quiet` (run plain: no pipes/filters) (with `--child` it first imports anything waiting in your native queue, then prints a status line with the SAME unread/meshGap/known signal `inbox count` reports, and writes a liveness marker + refreshes your heartbeat — one command instead of pull+count); If its `watcherArmed` reads `false` (your Monitor lapsed at its 30-min cap; not `idle-skip`/`limit-skip`), re-arm: `Monitor` with `{watcher}` and timeout_ms 1800000 (without it the Monitor expires after the 5-minute default; add persistent: true if supported). if the FIRST printed line (any lines after it are an informational roster: ignore them here) reads `unread 0` AND `meshGap false` AND `known` is NOT `false`, say so and stop — do NOT spawn a subagent; otherwise (either `unread` is greater than 0, or `meshGap` is `true`, or `known` is `false`), run `{cli} inbox read-primary {id}` (read-only; after handling, run the `ackCommand` it returns) (delegate to a subagent only if the payload is large) — if that reports `ok:false`, report the `reason` (and `storeUnavailableReason`/`storeUnavailableDetail` when present) in one line and stop (do not loop, do not spawn a subagent) and acts on anything unread. Cron jobs fire while this session is IDLE (each tick is a full turn) — this cron is now a 30-MINUTE FALLBACK cadence (cheaper than the pre-D13 5-minute default), NEVER disarmed — it is the only thing that will wake you to drain your mailbox once you go idle; a message that lands after you stop is otherwise never seen. ALSO arm the `Monitor` tool as your PRIMARY wake path (Cron above is the 30-minute FALLBACK — it still fires independently; Monitor is IN ADDITION, never instead): first check whether a mailbox-wake Monitor is already armed so you never arm a second one (double-arming causes duplicate wakes; the watcher script also self-guards with a lock, but do not rely on that alone). If none is armed, call `Monitor` with command `{watcher}` and a description like "devswarm mailbox wake watcher": use `persistent: true` if your Monitor tool supports it, else max `timeout_ms`{expiry} — never two watchers at once. Every line it prints on stdout becomes a transcript event, waking this session even while fully idle, with far lower latency than the cron tick above. A first line starting `[wake-watch] REFUSED TO ARM` means you do NOT have this coverage — do not assume you do; the cron job above is still your only wake path.'''
+ MAILBOX WAKE (do this NOW, on your FIRST turn): call `CronList`. If ANY existing job already runs `inbox tick` for this workspace — any schedule, id, or partition UUID — that counts as present; do nothing, never create a second one. Only if ABSENT — never created, or auto-expired (recurring tasks self-delete 7 days after creation) — call `CronCreate` with schedule `{cron}` and a prompt that runs run `{cli} inbox tick {id} --quiet` (run plain: no pipes/filters) (with `--child` it first imports anything waiting in your native queue, then prints a status line with the SAME unread/meshGap/known signal `inbox count` reports, and writes a liveness marker + refreshes your heartbeat — one command instead of pull+count); If its `watcherArmed` reads `false` (your Monitor lapsed at its 30-min cap; not `idle-skip`/`limit-skip`), re-arm: `Monitor` with `{watcher}` and timeout_ms 1800000 (without it the Monitor expires after the 5-minute default). if the FIRST printed line (any lines after it are an informational roster: ignore them here) shows a mail count of 0 (its `wake` value when the line shows one, else its `unread` value) AND `meshGap false` AND `known` is NOT `false`, say so and stop — do NOT spawn a subagent; otherwise (either that mail count is greater than 0, or `meshGap` is `true`, or `known` is `false`), run `{cli} inbox read-primary {id}` (read-only; after handling, run the `ackCommand` it returns) (delegate to a subagent only if the payload is large) — if that reports `ok:false`, report the `reason` (and `storeUnavailableReason`/`storeUnavailableDetail` when present) in one line and stop (do not loop, do not spawn a subagent) and acts on anything unread. Cron jobs fire while this session is IDLE (each tick is a full turn) — this cron is now a 30-MINUTE FALLBACK cadence (cheaper than the pre-D13 5-minute default), NEVER disarmed — it is the only thing that will wake you to drain your mailbox once you go idle; a message that lands after you stop is otherwise never seen. ALSO arm the `Monitor` tool as your PRIMARY wake path (Cron above is the 30-minute FALLBACK — it still fires independently; Monitor is IN ADDITION, never instead): first check whether a mailbox-wake Monitor is already armed so you never arm a second one (double-arming causes duplicate wakes; the watcher script also self-guards with a lock, but do not rely on that alone). If none is armed, call `Monitor` with command `{watcher}` and a description like "devswarm mailbox wake watcher": max `timeout_ms`{expiry} — never two watchers at once. Every line it prints on stdout becomes a transcript event, waking this session even while fully idle, with far lower latency than the cron tick above. A first line starting `[wake-watch] REFUSED TO ARM` means you do NOT have this coverage — do not assume you do; the cron job above is still your only wake path.'''
 
 [devswarm_role.msg_expiry_tick]
 doc = "The monitor-expiry clause when re-arming happens only from the cron tick."
@@ -141,13 +159,17 @@ doc = "The monitor-expiry clause when the monitor is also re-armed inline on its
 value = '''
  + re-arm on its final/expired event'''
 
-[devswarm_role.engine_cli]
-doc = "The command agents run for every DevSwarm CLI verb ({cli} in the texts): the engine binary's `mesh` verb (no launcher file is written). Placeholder: {home}, the absolute home directory."
-value = "{home}/.anti-hall/ah-engine/bin/ah-engine mesh"
+[devswarm_role.engine_bin]
+doc = "The engine binary path agents run (the {bin} part of every DevSwarm command; callers shell-quote it, so a path with a space still runs). The {cli} text is the shell-quoted binary path then engine_verb. Placeholder: {home}."
+value = "{home}/.anti-hall/ah-engine/bin/ah-engine"
 
-[devswarm_role.engine_watcher]
-doc = "The command agents arm with `Monitor` for the mailbox watcher ({watcher} in the texts): the engine binary's `devswarm wake-watch` verb (run it with `Monitor` and timeout_ms 1800000). Placeholder: {home}."
-value = "{home}/.anti-hall/ah-engine/bin/ah-engine devswarm wake-watch --auto"
+[devswarm_role.engine_verb]
+doc = "The verb after the engine binary for every DevSwarm CLI command (the {verb} part, kept OUTSIDE the quotes around the binary path)."
+value = "mesh"
+
+[devswarm_role.watcher_verb]
+doc = "The verbs after the engine binary for the mailbox watcher (the {wverb} part; the {watcher} text is the shell-quoted binary path then these verbs)."
+value = "devswarm wake-watch --auto"
 
 
 # ---- devswarm-parent-gate past its early exits (checks/devswarm_role/pgate.rs; hooks/devswarm-parent-gate.js main) ----
@@ -264,6 +286,22 @@ value = "⚠️ anti-hall · devswarm-escalations: not delivered ({n}): the supe
 doc = "What separates the escalated children in the parked-escalation text."
 value = ", "
 
+[devswarm_role.pg_kind_flagged]
+doc = "The block kind of children the last roster flagged (#844 item 4: straying, stale progress, long-unpushed commits; devswarm_parent.dir_flags)."
+value = "flagged"
+
+[devswarm_role.pg_flagged_text]
+doc = "The parent Stop-gate text for flagged children. Placeholders: {n}, {list} (devswarm_parent.flag_item entries)."
+value = "⚠️ {n} workspace(s) flagged in the roster: {list}. Ask each one (mesh send) what blocks it, then decide: continue, split, push or archive."
+
+[devswarm_role.pg_flagged_seen_prefix]
+doc = "File-name prefix of the per-session record of the flagged set the parent Stop gate already blocked on (devswarm_parent.dir_flags/<prefix><session hash>.json): the same set blocks once per session, then is a notice."
+value = "gate-seen-"
+
+[devswarm_role.pg_flagged_notice]
+doc = "The stderr notice of a flagged set the parent Stop gate already blocked on this session. Placeholder: {n}."
+value = "anti-hall: {n} workspace(s) still flagged in the roster (already raised this session; they clear when the child reports or pushes)."
+
 [devswarm_role.pg_parked_joiner]
 doc = "What joins the parked-escalation text to the block reason."
 value = "\n\n"
@@ -289,24 +327,24 @@ doc = "The Stop decision word of a block."
 value = "block"
 
 [devswarm_role.pg_skip_cmd]
-doc = "The override command: {cli} (shell-quoted plugin CLI path) and {guard}."
-value = "{cli} skip {guard}"
+doc = "The override command: {cli} (the shell-quoted engine binary path only), {verb}, {guard}."
+value = "{cli} {verb} skip {guard}"
 
 [devswarm_role.pg_skip_ttl]
 doc = "Appended to the override command."
 value = " (15-min TTL)"
 
 [devswarm_role.pg_wake_tick]
-doc = "The tick command of the wake re-verify line: {id}."
-value = "`\"$CLI\" inbox tick {id} --quiet`"
+doc = "The tick command of the wake re-verify line: {id}, {verb}. $CLI holds the quoted binary path only; the verb follows it."
+value = "`\"$CLI\" {verb} inbox tick {id} --quiet`"
 
 [devswarm_role.pg_wake_watch]
-doc = "The watcher part of the wake re-verify line: {watcher} (double-quoted)."
-value = "; WATCH={watcher}, `Monitor` on `\"$WATCH\"` armed with timeout_ms 1800000 (never two)"
+doc = "The watcher part of the wake re-verify line: {watcher} (the double-quoted binary path only), {wverb}. The Monitor command names the path itself, not a shell variable, so cache-ttl-wait-guard sees the engine's own watcher (GH #965)."
+value = "; `Monitor` on `{watcher} {wverb}` armed with timeout_ms 1800000 (never two)"
 
 [devswarm_role.pg_wake_line]
 doc = "The mailbox-wake re-verify line: {cli}, {cron}, {tick}, {watch}, {id}."
-value = " MAILBOX WAKE CHECK (CLI={cli}): CronList must show `{cron}` running {tick}{watch}. If missing, re-run `\"$CLI\" wake-directive {id}`."
+value = " MAILBOX WAKE CHECK (CLI={cli}): CronList must show `{cron}` running {tick}{watch}. If missing, re-run `\"$CLI\" {verb} wake-directive {id}`."
 
 [devswarm_role.pg_frame_head]
 doc = "First line of the framed block (block-message.js frame): {guard}, {headline}."
@@ -366,7 +404,7 @@ value = " (and {n} more)"
 
 [devswarm_role.pg_escalation]
 doc = "The escalation text: {shown}, {times}, {intent}, {archive}."
-value = "Escalation: this neglect signature ({shown}) has been forced-acknowledged {times} times with no observed resolution{intent} — a human should look. This will not repeat automatically after this message. {archive}Escape hatch: the user may direct a skip via ~/.anti-hall/skip.json (\"devswarm-parent-gate\")."
+value = "Escalation: this neglect signature ({shown}) has been forced-acknowledged {times} times with no observed resolution{intent} — a human should look. This will not repeat automatically after this message. {archive}Next step: run `~/.anti-hall/ah-engine/bin/ah-engine mesh inbox peek-primary <id>` for each flagged id; if it shows unreadCount 0, the gate's count disagrees with the inbox: report it (`~/.anti-hall/ah-engine/bin/ah-engine defect`) with both numbers instead of acknowledging again. Escape hatch: the user may direct a skip via ~/.anti-hall/skip.json (\"devswarm-parent-gate\")."
 
 [devswarm_role.pg_escalation_intent]
 doc = "Escalation note when a stated intent was on file."
@@ -570,23 +608,23 @@ doc = "Setting devswarm.heldPartitions: owner-held partition ids. The engine ans
 value = { section = "devswarm", key = "heldPartitions", env = "ANTIHALL_DEVSWARM_HELD_PARTITIONS", option = "", default = "" }
 
 [devswarm_role.pg_set_cap]
-doc = "Setting devswarm.parentGateCap: forced acknowledgements per blocking signature before the one escalation (Node clamps it to 2..5). The engine answers only while it is unset, with this default."
+doc = "forced acknowledgements per blocking signature before the one escalation (Node clamps it to 2..5). The engine answers only while it is unset, with this default."
 value = { section = "devswarm", key = "parentGateCap", env = "ANTIHALL_DEVSWARM_PARENT_GATE_CAP", option = "", default = 3 }
 
 [devswarm_role.pg_set_busy_fresh]
-doc = "Setting devswarm.parentGateBusyFreshMin: minutes a child's transcript counts as fresh for the busy test. The engine answers only while it is unset, with this default."
+doc = "minutes a child's transcript counts as fresh for the busy test. The engine answers only while it is unset, with this default."
 value = { section = "devswarm", key = "parentGateBusyFreshMin", env = "ANTIHALL_DEVSWARM_PARENT_GATE_BUSY_FRESH_MIN", option = "", default = 5 }
 
 [devswarm_role.pg_set_busy_max_age]
-doc = "Setting devswarm.parentGateBusyMaxAgeMin: minutes of the oldest unread past which even a busy child blocks. The engine answers only while it is unset, with this default."
+doc = "minutes of the oldest unread past which even a busy child blocks. The engine answers only while it is unset, with this default."
 value = { section = "devswarm", key = "parentGateBusyMaxAgeMin", env = "ANTIHALL_DEVSWARM_PARENT_GATE_BUSY_MAX_AGE_MIN", option = "", default = 60 }
 
 [devswarm_role.pg_set_grace]
-doc = "Setting devswarm.parentGateNeglectGraceMin: minutes a fresh unread message is still in flight and not neglect. The engine answers only while it is unset, with this default."
+doc = "minutes a fresh unread message is still in flight and not neglect. The engine answers only while it is unset, with this default."
 value = { section = "devswarm", key = "parentGateNeglectGraceMin", env = "ANTIHALL_DEVSWARM_PARENT_GATE_NEGLECT_GRACE_MIN", option = "", default = 1 }
 
 [devswarm_role.pg_set_neglect_min]
-doc = "Setting devswarm.parentGateNeglectMinUnread: unread messages a not-busy child may hold without a block. The engine answers only while it is unset, with this default."
+doc = "unread messages a not-busy child may hold without a block. The engine answers only while it is unset, with this default."
 value = { section = "devswarm", key = "parentGateNeglectMinUnread", env = "ANTIHALL_DEVSWARM_PARENT_GATE_NEGLECT_MIN_UNREAD", option = "", default = 0 }
 
 [devswarm_role.pg_ms_per_min]
@@ -717,7 +755,7 @@ value = "wakepath"
 
 [devswarm_role.pg_own_unread]
 doc = "The reason segment for the Primary's own unread mail. Placeholders: {n}, {id}."
-value = "YOU (the Primary) have {n} unread parent/peer message(s) — STOP and read them FIRST via `~/.anti-hall/ah-engine/bin/ah-engine mesh inbox read-primary {id}` (read-only; after handling, run the `ackCommand` it returns). "
+value = "YOU (the Primary) have {n} unread parent/peer message(s) — STOP and read them FIRST via `~/.anti-hall/ah-engine/bin/ah-engine mesh inbox read-primary {id}` (read-only; after handling, run the `ackCommand` it returns). If `mesh inbox peek-primary {id}` shows unreadCount 0, the counts disagree: report it (`~/.anti-hall/ah-engine/bin/ah-engine defect`) rather than re-reading. "
 
 [devswarm_role.pg_live_resolved]
 doc = "Marks an own count the gate re-read live from this reader's own position in the store."
@@ -829,3 +867,55 @@ value = "workspace status needs attention."
 [devswarm_role.pg_warning_instead]
 doc = "One action for the parent gate's detailed status advisories."
 value = "review the workspace status instructions."
+
+[devswarm_role.pg_sw_shared_count]
+doc = "Switch devswarm.parentGateSharedCount (default on): the parent gate counts the Primary's own unread mail with the ONE shared count `mesh inbox peek-primary` reports (own-family sends and wake rows left out, re-checked live even with no own reader row), and leaves a partition's own-family sends out of the descriptor count (GH #384). Off restores the old `max(countFor, messageCount - own)` projection, which can block on a stale count peek shows as 0."
+value = { section = "devswarm", key = "parentGateSharedCount", type = "boolean", env = "ANTIHALL_DEVSWARM_PARENT_GATE_SHARED_COUNT", option = "", default = true }
+
+[devswarm_role.pg_sw_provenance]
+doc = "Switch devswarm.noiseProvenance (default on): a `[Primary poke]` row is told apart by provenance, not by its text (GH #429). A store row is a poke mirror only when it carries no `mtype` (the native ingest writes none; every mesh send has one), an inbox-file line only when its resolved sender is a Primary id or none, so a child's message that merely starts with the same words counts as unread mail. Off restores the text-prefix rule."
+value = { section = "devswarm", key = "noiseProvenance", type = "boolean", env = "ANTIHALL_DEVSWARM_NOISE_PROVENANCE", option = "", default = true }
+
+[devswarm_role.pg_sw_pos_guard]
+doc = "Switch devswarm.unreadPositionGuard (default on): a saved store read position past the partition's message count is unknown (the gate keeps its cached count and does not pass a Stop on it), never 0 unread or an empty list (GH #429). Off restores the old read."
+value = { section = "devswarm", key = "unreadPositionGuard", type = "boolean", env = "ANTIHALL_DEVSWARM_UNREAD_POSITION_GUARD", option = "", default = true }
+
+[metric.mesh_unread_position_unknown]
+doc = "Unread counts reported unknown because the saved store read position was past the partition's message count, by site (count_for, union_of, shared_unread)."
+value = { kind = "counter", unit = "counts", labels = ["site"] }
+
+[metric.mesh_noise_lookalike_kept]
+doc = "Rows or lines that start with a system prefix (poke, wake) but carry a mail provenance (an mtype, or a non-Primary sender), so they were counted as unread mail, by kind."
+value = { kind = "counter", unit = "rows", labels = ["kind"] }
+
+[devswarm_role.pg_repeat_step]
+doc = "The concrete next step the repeated-block hint adds once to a repeated parent-gate block (repeat.allowed_keys)."
+value = "`~/.anti-hall/ah-engine/bin/ah-engine mesh inbox peek-primary <id>`; if it shows unreadCount 0 the gate's count disagrees: report it (`~/.anti-hall/ah-engine/bin/ah-engine defect`) instead of re-reading."
+
+[metric.devswarm_parent_gate_fired]
+doc = "Stop blocks the DevSwarm parent gate answered, by kind (block, escalation)."
+value = { kind = "counter", unit = "blocks", labels = ["kind"] }
+
+[metric.devswarm_parent_gate_suppressed]
+doc = "Parent-gate passes that did not block or dropped a count, by reason (escalated_quiet, drain, guard_held, version_stale, own_send, wake: an engine wake prompt in a child inbox, shared_count: a child count capped by the shared peek-primary count)."
+value = { kind = "counter", unit = "passes", labels = ["reason"] }
+
+[metric.devswarm_parent_gate_count_mismatch]
+doc = "Parent-gate mailbox counts where the old projection (messageCount - own cursor) was higher than the shared peek-primary count; the shared count was used (GH #384); also a child count the gate walk read above the shared count (defect 91ab5e1317e2)."
+value = { kind = "counter", unit = "counts", labels = [] }
+
+[devswarm_role.msg_wake_live]
+doc = "SessionStart text when the session heartbeat proves the agent-wake half is live. It does not prove mailbox coverage, which requires a live workspace watcher lock. Placeholders: {cron_part}. No duplicate agent-wake Monitor is requested."
+value = " AGENT WAKE: this session's agent-wake half is live. Keep it running. This heartbeat alone does not prove mailbox coverage; that requires a live workspace watcher lock. {cron_part}"
+
+[devswarm_role.msg_wake_live_nocron]
+doc = "Cron part of the live-watcher SessionStart text for a Primary whose mailbox cron is only needed while a child is alive."
+value = "Do NOT create a mailbox cron now; a NO MAILBOX TICK line asks for it when a live workspace needs it."
+
+[devswarm_role.msg_wake_live_cron]
+doc = "Cron fallback part of the live-watcher SessionStart text. Placeholders: {cron}, {cli}, {id}, {child}."
+value = "Use CronList; if no inbox tick job exists for this workspace, create schedule {cron} running `{cli} inbox tick {id}{child} --quiet`."
+
+[devswarm_role.wake_child_flag]
+doc = "The child-mode suffix of the inbox tick command in live-watcher SessionStart instructions."
+value = " --child"

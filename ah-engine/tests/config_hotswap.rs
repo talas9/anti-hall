@@ -65,10 +65,10 @@ fn layered_config_hot_swaps_without_dropping_requests() {
         // FIXME: Audit that the environment access only happens in single-threaded code.
         unsafe { std::env::set_var(k, v) };
     }
-    let daemon = Command::new(BIN).arg("serve").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap();
+    let daemon = crate::common::Daemon::new(Command::new(BIN).arg("serve").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().unwrap());
     /// Stops the daemon and collects it (a dead child stays a zombie until waited for, which `reap` would read as alive),
     /// even when an assertion panics.
-    struct Reap(PathBuf, std::process::Child);
+    struct Reap(PathBuf, crate::common::Daemon);
     impl Drop for Reap {
         fn drop(&mut self) {
             let _ = client::ctl("stop");

@@ -530,6 +530,63 @@ pub fn explain_setting_here(key: &str, layers: &Layers, project: &BTreeMap<Strin
     explain_setting(key, layers, project, &|n| std::env::var(n).ok())
 }
 
+/// GH #981: `config explain <section.key>` for a switch the checks read through a setting descriptor (a defaults entry whose value is
+/// a table naming `section` and `key`, e.g. `ask_guard.child_deny_setting` = guards.denyChildQuestions): the value the checks see (the
+/// request settings chain: environment, settings.json, plugin option, default) and the environment, settings.json and default layers.
+/// `None` when no descriptor names that key.
+pub fn explain_descriptor(key: &str, env: &crate::reqenv::RequestEnv) -> Option<Json> {
+    let (section, name) = key.split_once('.')?;
+    let all = defaults::all();
+    let e = all.iter().find(|e| e.value.str_field("section") == section && e.value.str_field("key") == name && e.value.get("default").is_some())?;
+    let st = crate::checks::git::util::Settings::from_env(env);
+    let root = crate::checks::guardkit::settings::plugin_root(&Json::Null, env);
+    // a switch is read the way the checks read it (get_bool); any other kind through the typed chain
+    let eff = match e.value.get("default") {
+        Some(V::Bool(_)) => json!(crate::checks::guardkit::settings::get_bool(&st, &e.value)),
+        _ => crate::checks::guardkit::settings::get_setting(&st, &e.value, None, &root).ok().flatten().unwrap_or(Json::Null),
+    };
+    let env_name = e.value.str_field("env");
+    let from_env = (!env_name.is_empty()).then(|| st.env.get(env_name).map(|v| json!(v))).flatten();
+    let from_settings = crate::checks::guardkit::settings::read_object(&st, defaults::text("guardkit.settings_file"))
+        .and_then(|o| o.get(section).and_then(Json::as_object).and_then(|s| s.get(name)).cloned());
+    let default = e.value.get("default").map(V::to_json);
+    let names = defaults::list("layers.descriptor_layer_names");
+    let states = defaults::list("layers.state_names");
+    let state_name = |i: usize| states.get(i).copied().unwrap_or_default();
+    let held = [from_env, from_settings, default];
+    let mut applied = false;
+    let rows: Vec<Json> = names
+        .iter()
+        .zip(held)
+        .map(|(layer, v)| {
+            let state = match &v {
+                None => state_name(3),
+                Some(x) if !applied && same_setting_value(x, &eff) => {
+                    applied = true;
+                    state_name(0)
+                }
+                Some(_) => state_name(1),
+            };
+            json!({"layer": layer, "state": state, "value": v})
+        })
+        .collect();
+    let source = rows.iter().find(|r| r.get("state") == Some(&json!(state_name(0)))).and_then(|r| r.get("layer")).and_then(Json::as_str).unwrap_or(defaults::text("layers.descriptor_source_other")).to_string();
+    Some(json!({"key": key, "value": eff, "source": source, "descriptor": e.key, "layers": rows, "refused": Json::Null}))
+}
+
+/// A layer's raw value equals the effective one: the same JSON, or the same value once read as the effective one's type (an environment
+/// `0` against an effective `false`, by the boolean words of guardkit.true_tokens / false_tokens).
+fn same_setting_value(raw: &Json, eff: &Json) -> bool {
+    if raw == eff {
+        return true;
+    }
+    match (raw, eff) {
+        (Json::String(s), Json::Bool(b)) => crate::checks::guardkit::settings::token(s) == Some(*b),
+        (Json::String(s), Json::String(t)) => s.trim().eq_ignore_ascii_case(t),
+        _ => false,
+    }
+}
+
 /// `config explain <key>`: the effective value of a setting and what every layer holds for it (`applied`, `shadowed` by a higher
 /// layer, `refused`, or absent), highest precedence first. `None` for a key that is not a setting.
 pub fn explain_setting(key: &str, layers: &Layers, project: &BTreeMap<String, Json>, env: &dyn Fn(&str) -> Option<String>) -> Option<Json> {
@@ -680,6 +737,8 @@ pub(crate) fn flatten(path: &Path, prefix: &str, t: &toml::Table, out: &mut BTre
             out.insert(full, j);
         } else if let toml::Value::Table(sub) = v {
             flatten(path, &full, sub, out)?;
+        } else if defaults::list("config.retired_keys").contains(&full.as_str()) {
+            continue; // a setting a release retired: the file still loads, the key does nothing
         } else {
             return Err(ConfigError::UnknownKey { path: path.to_path_buf(), key: full });
         }
@@ -714,10 +773,14 @@ fn load_user(p: &Paths) -> Result<(BTreeMap<String, Json>, crate::hookcfg::Layer
 fn load_settings(p: &Paths) -> Result<Json, ConfigError> {
     let Some(path) = p.settings.as_deref() else { return Ok(Json::Null) };
     match read_text(path)? {
-        Some(t) => match serde_json::from_str::<Json>(&t) {
-            Ok(j @ Json::Object(_)) => Ok(j),
-            Ok(_) => Err(ConfigError::NotObject(path.to_path_buf())),
-            Err(e) => Err(ConfigError::Parse { path: path.to_path_buf(), message: e.to_string() }),
+        // read the way JavaScript reads it: a number outside the f64 range (1e400) is `null` (that one key is unset, #569), not a bad file
+        Some(t) => match crate::checks::guardkit::jsdiff::parse_settings_as_js(&t) {
+            Some((j @ Json::Object(_), _)) => Ok(j),
+            Some(_) => Err(ConfigError::NotObject(path.to_path_buf())),
+            None => Err(ConfigError::Parse {
+                path: path.to_path_buf(),
+                message: serde_json::from_str::<Json>(&t).err().map_or_else(|| "unreadable".to_string(), |e| e.to_string()),
+            }),
         },
         None => Ok(Json::Null),
     }
@@ -848,6 +911,9 @@ pub struct ConfigStore {
     offered: Mutex<Option<PathBuf>>,
     /// True for the process's own store (the daemon's): each swapped-in snapshot is also installed as the `defaults::*` overlay.
     publish: AtomicBool,
+    /// The name of the thread each file reload ran on (tests: the daemon's accept loop must never run one, #908).
+    #[cfg(test)]
+    pub(crate) reloaded_on: Mutex<Vec<String>>,
 }
 
 fn lk<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
@@ -872,6 +938,8 @@ impl ConfigStore {
             watch: Mutex::new(Watch { seen: Fingerprint { files: vec![], defaults: vec![] }, pending: None, last_poll: Instant::now() }),
             offered: Mutex::new(None),
             publish: AtomicBool::new(false),
+            #[cfg(test)]
+            reloaded_on: Mutex::new(Vec::new()),
         }
     }
 
@@ -915,6 +983,8 @@ impl ConfigStore {
             watch: Mutex::new(Watch { seen, pending: None, last_poll: Instant::now() }),
             offered: Mutex::new(None),
             publish: AtomicBool::new(false),
+            #[cfg(test)]
+            reloaded_on: Mutex::new(Vec::new()),
         }
     }
 
@@ -957,6 +1027,8 @@ impl ConfigStore {
     /// defaults are read and validated first; an invalid set keeps EVERYTHING as it was (one snapshot, never a mixture).
     pub fn reload(&self) -> Reload {
         let Some(paths) = &self.paths else { return Reload::Unchanged };
+        #[cfg(test)]
+        lk(&self.reloaded_on).push(std::thread::current().name().unwrap_or_default().to_string());
         let root = self.target_root();
         lk(&self.watch).seen = fingerprint(paths, root.as_deref());
         let prev = self.snapshot();
@@ -1011,37 +1083,44 @@ impl ConfigStore {
         }
     }
 
-    /// Called from the daemon's accept loop: every `config.watch_ms`, look at the files; once a change has stayed the
-    /// same for `config.debounce_ms`, reload. Returns what a reload did, if one ran.
+    /// Every `config.watch_ms`, look at the files; once a change has stayed the same for `config.debounce_ms`, reload. Returns
+    /// what a reload did, if one ran. The daemon's accept loop calls [`ConfigStore::due`] instead and reloads on a thread of its
+    /// own (#908).
     pub fn poll(&self) -> Option<Reload> {
-        let paths = self.paths.as_ref()?;
+        self.due().then(|| self.reload())
+    }
+
+    /// The cheap half of [`ConfigStore::poll`], for the daemon's accept loop: every `config.watch_ms`, look at the files (a stat
+    /// each); true once a change has stayed the same for `config.debounce_ms`. The caller must then reload ([`ConfigStore::reload`]),
+    /// which re-reads every defaults file: too slow for the accept loop (#908).
+    pub fn due(&self) -> bool {
+        let Some(paths) = self.paths.as_ref() else { return false };
         let mut w = lk(&self.watch);
         if w.last_poll.elapsed() < defaults::millis("config.watch_ms") {
-            return None;
+            return false;
         }
         w.last_poll = Instant::now();
         let root = self.target_root();
         let now = fingerprint(paths, root.as_deref());
         if now == w.seen {
             w.pending = None;
-            return None;
+            return false;
         }
         match &w.pending {
             Some((fp, since)) if *fp == now => {
                 if since.elapsed() < defaults::millis("config.debounce_ms") {
-                    return None;
+                    return false;
                 }
             }
             _ => {
                 w.pending = Some((now, Instant::now()));
                 if !defaults::millis("config.debounce_ms").is_zero() {
-                    return None;
+                    return false;
                 }
             }
         }
         w.pending = None;
-        drop(w);
-        Some(self.reload())
+        true
     }
 
     /// `config --json`: the active snapshot, with the files it is read from.
@@ -1113,6 +1192,7 @@ mod tests {
             "dispatch.in_process",
             "dispatch.max_timeout_s",
             "dispatch.spill_over_cap", // the over-cap SessionStart spill switch: one value for the whole daemon
+            "dispatch.priority_order", // the priority-order combine switch (#311): one value for the whole daemon, not per request
             "session.gitignore_probe_ms",
             "statusline.total_deadline_ms", // the status line command is its own process: its overall deadline is read once per run
             "realtime.",                    // the file-watch facility's debounce and poll intervals: daemon-wide, not per request
@@ -1189,6 +1269,23 @@ mod tests {
         }
     }
 
+    /// The git scan caps carry a plugin `min` equal to their pre-config literal: a user file under it is rejected (the shipped value
+    /// runs), a settings/env value under it is clamped UP to it, and a larger value is kept.
+    #[test]
+    fn a_git_scan_cap_below_its_minimum_lands_on_the_shipped_value() {
+        let p = Path::new("t.toml");
+        for (key, shipped) in [("inline_depth", 3), ("heredoc_levels", 6), ("var_hops", 4)] {
+            let full = format!("git.{key}");
+            assert_eq!(parse_user(p, &format!("[git]\n{key} = 0\n")).unwrap_err().code(), "range", "{key} = 0 in the user file");
+            assert!(parse_user(p, &format!("[git]\n{key} = {}\n", shipped + 2)).is_ok(), "{key} raised");
+            let at = |v: i64| {
+                Effective::resolve(&Layers { settings: json!({ "git": { key: v } }), ..Default::default() }, &no_env).get(&full).unwrap().value.clone()
+            };
+            assert_eq!(at(0), json!(shipped), "{key} = 0 in settings clamps up to the shipped value");
+            assert_eq!(at(shipped + 2), json!(shipped + 2), "{key} raised in settings is kept");
+        }
+    }
+
     #[test]
     fn the_user_file_is_strict() {
         let p = Path::new("t.toml");
@@ -1241,12 +1338,27 @@ mod tests {
     #[test]
     fn no_shipped_key_is_a_path_the_node_settings_store_owns() {
         let mut paths = std::collections::BTreeSet::new();
+        // One setting registered on both sides is not a collision: the Node store documents the engine's own key at its own path
+        // (same `section.key`, same type, same default), so the owner's `settings.json` value IS the engine setting (e.g. the task
+        // snapshot kill switch). A collision is a path the engine ships with a different meaning, told apart by its default.
+        let mut shared = std::collections::BTreeSet::new();
         for e in crate::migrate::settings::entries() {
             paths_of(&e.section, &json!({ e.key.as_str(): {} }), &mut paths);
+            let path = format!("{}.{}", e.section, e.key);
+            let node_default = match &e.default {
+                Some(crate::checks::jsport::json::J::Bool(b)) => Some(json!(b)),
+                Some(crate::checks::jsport::json::J::Num(n)) => serde_json::Number::from_f64(*n).map(Json::Number),
+                Some(crate::checks::jsport::json::J::Str(s)) => Some(json!(s)),
+                _ => None,
+            };
+            if node_default.is_some() && defaults::get(&path).map(|s| s.value.to_json()) == node_default {
+                shared.insert(path);
+            }
         }
+        assert!(shared.contains("taskstate.snapshot_enabled"), "the shared-setting case this exemption exists for is gone: {shared:?}");
         let old = format!("{}.{}", defaults::text("migrate.settings_section_jev"), defaults::text("migrate.integrations_key_prefix").trim_end_matches('.'));
         paths.insert(old);
-        let hit: Vec<&String> = paths.iter().filter(|p| defaults::get(p).is_some()).collect();
+        let hit: Vec<&String> = paths.iter().filter(|p| !shared.contains(*p) && defaults::get(p).is_some()).collect();
         assert!(hit.is_empty(), "shipped keys named like Node settings.json paths: {hit:?}");
         // the behaviour behind it: the old per-integration form changes nothing the engine resolves
         let l = layers(json!({"jev": {"integrations": {"newRequest": "on"}}}), "");
@@ -1291,7 +1403,7 @@ mod tests {
     }
 
     fn tmp(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("ah-cfg-{tag}-{}", std::process::id()));
+        let d = crate::testtmp::path(format!("ah-cfg-{tag}-{}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&d)); // keep: cleanup that raced; an absent file is the goal state
         std::fs::create_dir_all(&d).unwrap();
         d
@@ -1381,6 +1493,18 @@ mod tests {
         let s = store.snapshot();
         assert_eq!(s.queue, Config::from_env().queue);
         assert!(s.last_error.as_deref().unwrap().starts_with("parse"));
+        crate::discard::harmless(std::fs::remove_dir_all(&d)); // keep: cleanup that raced; an absent file is the goal state
+    }
+
+    #[test]
+    fn a_user_file_with_the_retired_engine_cli_and_watcher_keys_still_loads_the_rest() {
+        // #753: those two keys were dropped from the shipped schema once; a user override that still holds them must not discard the file
+        let d = tmp("retired-keys");
+        let paths = Paths { user: d.join("config.toml"), settings: None };
+        std::fs::write(&paths.user, "[daemon]\nqueue = 31\n[devswarm_role]\nengine_cli = \"x mesh\"\nengine_watcher = \"x wake\"\n").unwrap();
+        let s = ConfigStore::load_from(paths).snapshot();
+        assert_eq!(s.queue, 31, "the other settings of the file still apply");
+        assert!(s.last_error.is_none(), "the old keys are not an error: {:?}", s.last_error);
         crate::discard::harmless(std::fs::remove_dir_all(&d)); // keep: cleanup that raced; an absent file is the goal state
     }
 

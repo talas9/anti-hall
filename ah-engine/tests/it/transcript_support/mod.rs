@@ -13,7 +13,7 @@ pub struct Tmp(pub PathBuf);
 impl Tmp {
     pub fn new(tag: &str) -> Tmp {
         static N: AtomicU64 = AtomicU64::new(0);
-        let p = std::env::temp_dir().join(format!("ah-{tag}-{}-{}", std::process::id(), N.fetch_add(1, SeqCst)));
+        let p = crate::common::testtmp::path(format!("ah-{tag}-{}-{}", std::process::id(), N.fetch_add(1, SeqCst)));
         std::fs::create_dir_all(&p).unwrap();
         Tmp(p)
     }

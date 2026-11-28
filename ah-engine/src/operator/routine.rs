@@ -206,6 +206,8 @@ struct Target {
     engine: PathBuf,
     hook: PathBuf,
     roots: Vec<PathBuf>,
+    /// Live-hook plugin roots the check could not validate (unresolvable, missing, or without the plugin tree): reported, never dropped.
+    unresolved: Vec<String>,
 }
 
 fn fill_home(s: &str, home: &str) -> String {
@@ -225,6 +227,135 @@ fn roots_of_installed(home: &str) -> Vec<PathBuf> {
         .collect()
 }
 
+/// `w` with each home-variable spelling (`routine.live_hook_home_vars`) replaced by `home`, whole words only: `$HOME_OLD` is
+/// another variable and stays as written (it then fails to resolve and is reported).
+fn expand_home(w: &str, home: &str) -> String {
+    let vars = defaults::list("routine.live_hook_home_vars");
+    let (mut out, mut i) = (String::new(), 0);
+    while i < w.len() {
+        let rest = w.get(i..).unwrap_or_default();
+        let hit = vars
+            .iter()
+            .find(|v| rest.strip_prefix(**v).is_some_and(|after| v.ends_with('}') || !after.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_')));
+        match hit {
+            Some(v) => {
+                out.push_str(home);
+                i += v.len();
+            }
+            None => {
+                let c = rest.chars().next().unwrap_or_default();
+                out.push(c);
+                i += c.len_utf8().max(1);
+            }
+        }
+    }
+    out
+}
+
+/// Split a command into shell words: whitespace separates, single and double quotes group, a backslash escapes the next
+/// character outside single quotes. `None` for an unclosed quote or a trailing backslash. Not a shell: no expansion.
+fn split_words(cmd: &str) -> Option<Vec<String>> {
+    let (mut words, mut cur, mut open) = (Vec::new(), String::new(), false);
+    let (mut quote, mut chars) = (None::<char>, cmd.chars());
+    while let Some(c) = chars.next() {
+        match (quote, c) {
+            (Some(q), _) if c == q => quote = None,
+            (Some('\''), _) => cur.push(c),
+            (_, '\\') => cur.push(chars.next()?),
+            (Some(_), _) => cur.push(c),
+            (None, '\'' | '"') => {
+                quote = Some(c);
+                open = true;
+            }
+            (None, _) if c.is_whitespace() => {
+                if open || !cur.is_empty() {
+                    words.push(std::mem::take(&mut cur));
+                    open = false;
+                }
+            }
+            (None, _) => cur.push(c),
+        }
+    }
+    if quote.is_some() {
+        return None;
+    }
+    if open || !cur.is_empty() {
+        words.push(cur);
+    }
+    Some(words)
+}
+
+/// The plugin directory a hook command runs from: the command is split into shell words (quotes and escapes decoded), `$HOME` /
+/// `${HOME}` / `~` expanded (`routine.live_hook_home_vars`, `routine.live_hook_tilde`), and the word that matches
+/// `routine.live_hook_root_rx` gives the root (group 1). A word that holds a whole nested command (`sh -c '...'`) is searched too.
+/// A candidate that cannot become an absolute path (an unknown variable, a relative path, broken quoting) goes to `unresolved`.
+fn live_candidates(cmd: &str, home: &str, re: &regex::Regex, depth: u8, roots: &mut Vec<PathBuf>, unresolved: &mut Vec<String>) {
+    let Some(words) = split_words(cmd) else {
+        if cmd.contains(t("routine.live_hook_marker")) {
+            unresolved.push(cmd.to_string());
+        }
+        return;
+    };
+    let tilde = t("routine.live_hook_tilde");
+    for w in words {
+        let mut w = expand_home(&w, home);
+        if let Some(tail) = w.strip_prefix(tilde).filter(|t| t.is_empty() || t.starts_with('/')) {
+            w = format!("{home}{tail}");
+        }
+        if let Some(root) = re.captures(&w).and_then(|c| c.get(1)).map(|m| m.as_str().to_string()) {
+            if root.starts_with('/') && !root.contains(['$', '`']) {
+                roots.push(PathBuf::from(root));
+            } else {
+                unresolved.push(root);
+            }
+        } else if depth > 0 && w.contains(char::is_whitespace) {
+            live_candidates(&w, home, re, depth - 1, roots, unresolved);
+        }
+    }
+}
+
+/// The plugin roots the LIVE hook commands run from, and the candidates that could not be resolved to a path: every `command`
+/// string in the hook registrations of `routine.live_hook_files` (the Codex `hooks.json`, global and project-local). Nothing is
+/// assumed about where the plugin is installed.
+fn roots_of_live_hooks(home: &str) -> (Vec<PathBuf>, Vec<String>) {
+    let Ok(re) = regex::Regex::new(t("routine.live_hook_root_rx")) else { return (Vec::new(), Vec::new()) };
+    let (mut roots, mut unresolved) = (Vec::new(), Vec::new());
+    for f in defaults::list("routine.live_hook_files") {
+        let Some(v) = std::fs::read_to_string(fill_home(f, home)).ok().and_then(|s| serde_json::from_str::<Value>(&s).ok()) else { continue };
+        let mut stack = vec![&v];
+        while let Some(n) = stack.pop() {
+            match n {
+                Value::Object(o) => {
+                    for (k, c) in o {
+                        match c.as_str() {
+                            Some(cmd) if k == t("routine.live_hook_command_key") => {
+                                live_candidates(cmd, home, &re, defaults::num("routine.live_hook_depth") as u8, &mut roots, &mut unresolved);
+                            }
+                            _ => stack.push(c),
+                        }
+                    }
+                }
+                Value::Array(a) => stack.extend(a),
+                _ => {}
+            }
+        }
+    }
+    (roots, unresolved)
+}
+
+/// The live-hook plugin roots (resolved or not, as text) that are NOT `deployed`: what `doctor` reports when a host runs hooks
+/// from another plugin directory than the one deployed here.
+pub fn live_root_mismatches(home: &str, deployed: &Path) -> Vec<String> {
+    let canon = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
+    let want = canon(deployed);
+    let (roots, unresolved) = roots_of_live_hooks(home);
+    let mut out: Vec<String> = roots.iter().filter(|r| canon(r) != want).map(|r| r.display().to_string()).collect();
+    out.extend(unresolved);
+    out.sort();
+    out.dedup();
+    out
+}
+
 /// The plugin roots the install routine keeps in step (the engine's own, the registered installs, `routine.default_roots`).
 pub fn plugin_roots() -> Vec<PathBuf> {
     resolve_target().roots
@@ -239,7 +370,17 @@ fn resolve_target() -> Target {
         .filter(|s| !s.is_empty())
         .map(|s| s.split(':').filter(|p| !p.is_empty()).map(PathBuf::from).collect())
         .unwrap_or_default();
+    let mut unresolved = Vec::new();
     if roots.is_empty() {
+        let (live, bad) = roots_of_live_hooks(&home);
+        unresolved = bad;
+        for r in live {
+            if r.join(t("routine.tree_marker")).is_file() {
+                roots.push(r);
+            } else {
+                unresolved.push(r.display().to_string());
+            }
+        }
         roots.extend(defaults::root());
         roots.extend(roots_of_installed(&home));
         roots.extend(
@@ -253,7 +394,7 @@ fn resolve_target() -> Target {
         seen.push(key);
         fresh && r.join(t("routine.tree_marker")).is_file()
     });
-    Target { engine: bin_dir.join(t("rollback.bin_name")), hook: bin_dir.join(t("rollback.client")), state, bin_dir, roots }
+    Target { engine: bin_dir.join(t("rollback.bin_name")), hook: bin_dir.join(t("rollback.client")), state, bin_dir, roots, unresolved }
 }
 
 fn sha_of(p: &Path) -> Option<String> {
@@ -647,6 +788,9 @@ fn precheck(o: &Opts, src: &Source, tg: &Target, scratch: &Path, log: &mut Log) 
                 ],
             ));
         }
+    }
+    for u in &tg.unresolved {
+        pre.problems.push(defaults::render("routine.problem_live_root", &[("root", u)]));
     }
     if tg.roots.is_empty() && src.tree.is_none() {
         log.say(t("routine.line_no_roots").to_string());
@@ -1211,4 +1355,33 @@ pub fn engine_facts() -> Value {
         "build_version": cur.version, "sha": cur.sha, "source": cur.source, "release_newer": release_newer,
         "installed_at": rec["time"], "previous": rec["previous"], "latest_release": latest,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn run(cmd: &str) -> (Vec<PathBuf>, Vec<String>) {
+        let re = regex::Regex::new(t("routine.live_hook_root_rx")).unwrap();
+        let (mut roots, mut bad) = (Vec::new(), Vec::new());
+        live_candidates(cmd, "/h", &re, 2, &mut roots, &mut bad);
+        (roots, bad)
+    }
+
+    /// #481 review: `$HOME` is a whole word; `$HOME_OLD` is another variable and must not become `/h_OLD`.
+    #[test]
+    fn home_is_expanded_as_a_whole_word_only() {
+        let (roots, bad) = run("sh \"$HOME_OLD/p/hooks/install.sh\" Stop");
+        assert!(roots.is_empty(), "a longer variable name must not be expanded: {roots:?}");
+        assert_eq!(bad, vec!["$HOME_OLD/p".to_string()]);
+        let (roots, bad) = run("sh \"$HOME/p/hooks/install.sh\" a; sh \"${HOME}/q/hooks/install.sh\" b");
+        assert_eq!((roots, bad), (vec![PathBuf::from("/h/p"), PathBuf::from("/h/q")], vec![]));
+    }
+
+    /// #481 review: the word splitter decodes quotes and escapes without an extra dependency.
+    #[test]
+    fn words_are_split_with_quotes_and_escapes() {
+        assert_eq!(split_words(r#"a "b c" 'd e' f\ g"#), Some(vec!["a".into(), "b c".into(), "d e".into(), "f g".into()]));
+        assert_eq!(split_words("a \"b"), None);
+    }
 }

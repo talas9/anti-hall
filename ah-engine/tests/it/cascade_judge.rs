@@ -15,7 +15,7 @@ static N: AtomicUsize = AtomicUsize::new(0);
 static SERIAL: Mutex<()> = Mutex::new(());
 
 fn scratch(tag: &str) -> PathBuf {
-    let d = std::env::temp_dir().join(format!("ah-cascade-it-{tag}-{}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
+    let d = crate::common::testtmp::path(format!("ah-cascade-it-{tag}-{}-{}", std::process::id(), N.fetch_add(1, Ordering::Relaxed)));
     ah_engine::discard::harmless(std::fs::remove_dir_all(&d));
     std::fs::create_dir_all(&d).unwrap();
     d.canonicalize().unwrap()
@@ -81,6 +81,7 @@ fn ask(noul: f64, model_reply: &str, extra: &[(&str, &str)]) -> Run {
         .env_clear()
         .env("PATH", format!("{}:{}", home.join("bin").display(), std::env::var("PATH").unwrap_or_default()))
         .env("HOME", &home)
+        .env("AH_ENGINE_PLUGIN_ROOT", crate::common::plugin_root())
         .env("USERPROFILE", &home)
         .env("TMPDIR", home.join("tmp"))
         .env("AH_ENGINE_DIR", home.join("engine-state"))
@@ -203,6 +204,7 @@ fn triage_with_the_cascade_backend_rejudges_a_label_jev_was_unsure_of() {
         .env_clear()
         .env("PATH", format!("{}:{}", home.join("bin").display(), std::env::var("PATH").unwrap_or_default()))
         .env("HOME", &home)
+        .env("AH_ENGINE_PLUGIN_ROOT", crate::common::plugin_root())
         .env("USERPROFILE", &home)
         .env("TMPDIR", home.join("tmp"))
         .env("AH_ENGINE_DIR", home.join("engine-state"))

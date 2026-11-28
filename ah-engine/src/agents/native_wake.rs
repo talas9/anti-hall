@@ -18,6 +18,11 @@ fn num(k: &str) -> u64 {
     defaults::raw("agent_tracker.native_wake").get(k).and_then(V::as_integer).unwrap_or(0).max(0) as u64
 }
 
+/// The hivecontrol arguments of one step (`info_args`, `reactivate_args`), from the plugin's agent_tracker.native_wake table.
+fn args(k: &str) -> Vec<&'static str> {
+    defaults::raw("agent_tracker.native_wake").get(k).map(V::strings).unwrap_or_default()
+}
+
 fn stamp_file(env: &Env, id: &str) -> PathBuf {
     let cfg = defaults::raw("agent_tracker.native_wake");
     env.base().join(cfg.str_field("dir")).join(format!("{id}{}", super::pth("json_ext")))
@@ -39,6 +44,13 @@ fn why(f: &hivecontrol::Full) -> String {
 /// answers `reactivate-child` only for the parent of the workspace, and the CLI finds the caller from its environment. `None`: nothing to
 /// do (not a workspace the tracker knows, still working, woken lately, or the switch is off). `Some`: what was attempted.
 pub(crate) fn wake(home: &std::path::Path, who: &str, preview: &str, env: &HashMap<String, String>, cwd: Option<&str>) -> Option<Value> {
+    // A Primary seat is the parent session itself, not a hivecontrol workspace: `workspace info` answers "Workspace not found for branch"
+    // for its label every time, and a sender read that error as a failed delivery although the mail was stored and verified (#900). It
+    // is not woken here (nothing to reactivate), so no `nativeWake` answer is made up for it.
+    if crate::meshw::heartbeat::is_primary_label(who) {
+        crate::metrics::bump("native_wake_skipped", &[("reason", defaults::text("agent_tracker.native_wake_skip_primary"))]);
+        return None;
+    }
     let mut tr = Env::current()?;
     tr.home = home.to_path_buf();
     if !tr.switch("agent_tracker.wake_setting") {
@@ -60,8 +72,9 @@ pub(crate) fn wake(home: &std::path::Path, who: &str, preview: &str, env: &HashM
     if no_mail && super::sinks::Sink::backlog(&super::sinks::SessionQueue, &tr, &desc.session) == 0 {
         return None;
     }
-    let call = |args: &[&str]| hivecontrol::call_full(args, env, cwd, Duration::from_millis(num("timeout_ms")));
-    let info = call(&["workspace", "info", &desc.id]);
+    // GH #845 phase 0: the subprocesses are timed as their own send stage (nothing is recorded outside a timed mesh send)
+    let call = |argv: &[&str]| crate::meshw::stages::time("hivecontrol", || hivecontrol::call_full(argv, env, cwd, Duration::from_millis(num("timeout_ms"))));
+    let info = call(&[args("info_args").as_slice(), &[desc.id.as_str()]].concat());
     let branch = serde_json::from_str::<Value>(&info.call.raw).ok().and_then(|v| v["branch"].as_str().map(str::to_string)).filter(|b| !b.is_empty());
     let Some(branch) = branch else {
         return Some(json!({"workspace": desc.id, "woken": false, "step": "info", "error": why(&info)}));
@@ -70,7 +83,7 @@ pub(crate) fn wake(home: &std::path::Path, who: &str, preview: &str, env: &HashM
         "msg.native_wake_prompt",
         &[("prefix", &defaults::text("agent_tracker.wake_prefix")), ("id", &desc.id), ("text", &super::cap(preview, num("text_cap")))],
     );
-    let done = call(&["workspace", "reactivate-child", &branch, &prompt]);
+    let done = call(&[args("reactivate_args").as_slice(), &[branch.as_str(), prompt.as_str()]].concat());
     let woken = done.call.ok;
     if woken {
         let stamp = json!({"ts": tr.now_ms}).to_string();
@@ -87,4 +100,32 @@ pub(crate) fn wake(home: &std::path::Path, who: &str, preview: &str, env: &HashM
         out["error"] = json!(why(&done));
     }
     Some(out)
+}
+
+#[cfg(test)]
+mod argv_tests {
+    /// The hivecontrol arguments are the plugin's agent_tracker.native_wake fields, not words compiled into the engine.
+    #[test]
+    fn the_hivecontrol_arguments_come_from_the_plugin_table() {
+        let t = crate::defaults::raw("agent_tracker.native_wake");
+        assert_eq!(super::args("info_args"), t.get("info_args").unwrap().strings());
+        assert_eq!(super::args("reactivate_args"), t.get("reactivate_args").unwrap().strings());
+        assert!(!super::args("info_args").is_empty() && !super::args("reactivate_args").is_empty());
+    }
+
+    /// #900: a send to a Primary seat never asks hivecontrol for a workspace the seat does not have (its `workspace info` error read as a
+    /// failed delivery), and the skip is counted; a child workspace label is not skipped by this rule.
+    #[test]
+    fn a_primary_seat_is_not_woken_natively_and_the_skip_is_counted() {
+        let home = std::env::temp_dir().join("ah-native-wake-primary-900");
+        let env = std::collections::HashMap::new();
+        crate::metrics::reset_this_thread(); // this thread's own bumps: the process-wide table is shared by parallel tests
+        // a Primary seat gets no nativeWake answer
+        assert!(super::wake(&home, "primary-0123abcd", "", &env, None).is_none());
+        let why = crate::defaults::text("agent_tracker.native_wake_skip_primary");
+        assert_eq!(crate::metrics::bumped_on_this_thread("native_wake_skipped", &[("reason", why)]), 1); // the skip is counted
+        crate::metrics::reset_this_thread();
+        assert!(super::wake(&home, "child-1", "", &env, None).is_none());
+        assert_eq!(crate::metrics::bumped_on_this_thread("native_wake_skipped", &[("reason", why)]), 0); // a child label is not skipped by the Primary rule
+    }
 }

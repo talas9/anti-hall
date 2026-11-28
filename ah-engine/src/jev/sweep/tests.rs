@@ -7,7 +7,7 @@ const NOW: i64 = 1_790_000_000_000;
 const MIN: i64 = 60_000;
 
 fn home(tag: &str) -> PathBuf {
-    let h = std::env::temp_dir().join(format!("ah-sweep-{tag}-{}", std::process::id()));
+    let h = crate::testtmp::path(format!("ah-sweep-{tag}-{}", std::process::id()));
     crate::discard::harmless(std::fs::remove_dir_all(&h));
     std::fs::create_dir_all(&h).unwrap();
     h

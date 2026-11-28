@@ -1,5 +1,5 @@
 [
-  {"triple": "aarch64-apple-darwin",      "runner": "macos-14",         "apt": ""},
+  {"triple": "aarch64-apple-darwin",      "runner": "macos-15",         "apt": ""},
   {"triple": "x86_64-apple-darwin",       "runner": "macos-15-intel",   "apt": ""},
   {"triple": "x86_64-unknown-linux-gnu",  "runner": "ubuntu-24.04",     "apt": ""},
   {"triple": "aarch64-unknown-linux-gnu", "runner": "ubuntu-24.04-arm", "apt": ""},

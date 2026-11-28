@@ -58,13 +58,13 @@ PY
 (cd "$out" && shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256")
 echo "$out/$name.tar.gz"
 
-# The separate debug symbols of this exact binary (Cargo.toml: split-debuginfo = "packed"; macOS ah-engine.dSYM, Linux
-# ah-engine.dwp), packed the same deterministic way into <out>/symbols/ so they never mix with the release assets that
+# The separate debug symbols of this exact binary (macOS: split-debuginfo = "packed", ah-engine.dSYM; Linux: ah-engine.debug,
+# the unstripped build kept by split-symbols.sh), packed the same deterministic way into <out>/symbols/ so they never mix with the release assets that
 # ah-engine.lock pins. `sample`, `atos` and backtraces of the shipped (stripped) binary read them: see docs/AH-ENGINE.md,
 # "CPU and memory profiling".
 syms=()
 [ -d "$bin.dSYM" ] && syms+=("$bin.dSYM")
-[ -f "$bin.dwp" ] && syms+=("$bin.dwp")
+[ -f "$bin.debug" ] && syms+=("$bin.debug")
 if [ ${#syms[@]} -gt 0 ]; then
   mkdir -p "$out/symbols"
   python3 - "$name" "$out/symbols/$name.symbols.tar.gz" "${syms[@]}" <<'PY'

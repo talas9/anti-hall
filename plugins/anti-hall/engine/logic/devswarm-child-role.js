@@ -39,15 +39,25 @@ function dwNodeRoot(root) {
   return hooks === null ? null : ah.path.resolveAbs(hooks + '/..');
 }
 
-// The command agents run for the DevSwarm CLI / the mailbox watcher: the engine binary (devswarm_role.engine_cli / engine_watcher).
+// The command agents run for the DevSwarm CLI / the mailbox watcher: the engine binary (devswarm_role.engine_bin) plus the verbs.
 function dwEngineCmd(key, home) { return text.render(ah.cfg(key), { home: home }); }
 
-// {home, cli, watcher}: the commands the texts name (devswarm_role.engine_cli / engine_watcher, the engine binary itself); null only without
+// A path as one sh word: bare when it holds only characters sh never treats specially, else in single quotes (nothing inside expands).
+function dwShWord(s) { return /^[A-Za-z0-9_\-.\/:@%+=,]+$/.test(s) ? s : "'" + s.split("'").join("'\\''") + "'"; }
+
+// The CLI command the texts name ({cli}): the engine binary (quoted when its path needs it) then the verb.
+function dwCliCmd(home) { return dwShWord(dwEngineCmd('devswarm_role.engine_bin', home)) + ' ' + ah.cfg('devswarm_role.engine_verb'); }
+
+// The mailbox watcher command the texts name ({watcher}, armed with `Monitor`): the engine binary (quoted when its path needs it) then the watcher verbs.
+function dwWatcherCmd(home) { return dwShWord(dwEngineCmd('devswarm_role.engine_bin', home)) + ' ' + ah.cfg('devswarm_role.watcher_verb'); }
+
+// {home, cli, watcher, bin, verb, wverb}: the commands the texts name (the engine binary, shell-quoted, plus the verbs); null only without
 // a usable home or plugin root. The engine writes no launcher file.
 function dwLaunchers(root, wantWatcher) {
   var home = dwUsableHome();
   if (home === null || !root) return null;
-  return { home: home, cli: dwEngineCmd('devswarm_role.engine_cli', home), watcher: dwEngineCmd('devswarm_role.engine_watcher', home) };
+  return { home: home, cli: dwCliCmd(home), watcher: dwWatcherCmd(home),
+    bin: dwEngineCmd('devswarm_role.engine_bin', home), verb: ah.cfg('devswarm_role.engine_verb'), wverb: ah.cfg('devswarm_role.watcher_verb') };
 }
 
 // The same commands (kept under this name for the scripts that build on this one).
@@ -109,6 +119,71 @@ function dwPrimarySeat(p, cli, real) {
   return { notices: dwSeatNotices(v, res.adopted === true, cli, sid), id: v.id || null };
 }
 
+// ---- the mailbox cron only while a child workspace is alive (devswarm.wakeCronOnlyWithChild, #709) ----
+// A cron tick is a full model turn that re-reads the whole context, whether or not there is mail. With no live child there is nothing to
+// hear, so a Primary arms the Monitor wake-watch alone, is ordered to delete a cron it armed earlier when the last child is gone, and is
+// asked for the cron back by the wake line at the next live child. The per-session record {deleted, at} says which side it is on.
+function dwCronOnlyWithChild() { return ah.settings.bool('devswarm_role.sw_wake_cron_child_only') === true; }
+function dwCronCtlRel(sid) {
+  return ah.cfg('devswarm_role.pg_devswarm_dir') + '/' + ah.cfg('devswarm_parent.dir_cron_ctl') + '/' + String(sid).replace(/[^A-Za-z0-9_.-]/g, '_') + '.json';
+}
+// {deleted, at} or null (no record, or one that is not an object).
+function dwCronCtlRead(sid) {
+  var raw = ah.state.readText(dwCronCtlRel(sid));
+  if (raw === null) return null;
+  try { var o = JSON.parse(raw); return o && typeof o === 'object' && !Array.isArray(o) ? { deleted: o.deleted === true, at: typeof o.at === 'number' && isFinite(o.at) ? o.at : null } : null; } catch (e) { return null; }
+}
+function dwCronCtlWrite(sid, rec) {
+  try { ah.state.writeAtomic(dwCronCtlRel(sid), JSON.stringify(rec)); } catch (e) { /* best effort: the next turn decides again */ }
+}
+// A session that starts with no cron (a new one; a cleared or resumed one may keep a cron, jobs live as long as the process) is recorded as cron-less, so it is not ordered to delete a cron it never had.
+function dwCronCtlSeed(p) {
+  var sid = jx.isObj(p) && typeof p.session_id === 'string' && p.session_id !== '' ? p.session_id : null;
+  var src = jx.isObj(p) && typeof p.source === 'string' ? p.source : null;
+  if (sid === null || src === null || ah.cfg('devswarm_role.cron_ctl_fresh_sources').indexOf(src) === -1 || dwCronCtlRead(sid) !== null) return;
+  ah.commit();
+  dwCronCtlWrite(sid, { deleted: true, at: ah.clock.now() });
+}
+
+// ---- inbox advisories speak on change or after a cooldown (devswarm.inboxAdvisoryOnChange, #709) ----
+// The unread-inbox advisory of a child and of a Primary used to repeat on every prompt while the same mail sat unread. Now it speaks when the
+// unread SET (a signature of its message identities, never a count alone) differs from the last one spoken in this session, or when the
+// cooldown since that emission has passed. A new unread message always differs, so it speaks at once. The records of every session and kind
+// live in ONE store file ({e: {"<kind>:<sid>": {sig, at}}}), capped in entries and pruned by age; the check and the record of an emission are
+// one step under the store lock (the same lock helper the spawn reservation uses), so two prompts cannot both speak or overwrite each other.
+function dwUnreadStoreRel() { return ah.cfg('devswarm_role.pg_devswarm_dir') + '/' + ah.cfg('devswarm_prompt.unread_seen_file'); }
+function dwUnreadStore() {
+  var raw = ah.state.readText(dwUnreadStoreRel()), doc = null;
+  try { doc = raw === null ? null : JSON.parse(raw); } catch (e) { doc = null; }
+  return doc && typeof doc === 'object' && doc.e && typeof doc.e === 'object' && !Array.isArray(doc.e) ? doc.e : {};
+}
+// true: speak (the emission is recorded in the same step); false: the same unread set was spoken within the cooldown. `kind`: child | own.
+function dwUnreadDecide(kind, sid, sig, now) {
+  if (!sid || ah.settings.bool('devswarm_prompt.sw_unread_on_change') !== true) return true;
+  var lock = null;
+  try { lock = ah.state.lock(ah.cfg('devswarm_role.pg_devswarm_dir') + '/' + ah.cfg('devswarm_prompt.unread_seen_lock'), ah.cfg('devswarm_prompt.unread_seen_lock_group')); } catch (e) { lock = null; }
+  if (lock === null) return true; // the store cannot be held: speak, record nothing (the next turn decides again)
+  try {
+    var store = dwUnreadStore(), k = kind + ':' + String(sid), rec = store[k], speak = true;
+    if (rec && typeof rec === 'object' && rec.sig === sig && typeof rec.at === 'number' && isFinite(rec.at)) {
+      var gap = now - rec.at;
+      speak = gap < 0 || gap >= ah.settings.num('devswarm_prompt.set_unread_cooldown_min') * ah.cfgNum('devswarm_prompt.ms_per_minute');
+    }
+    if (speak) {
+      store[k] = { sig: sig, at: now };
+      var ttl = ah.cfgNum('devswarm_prompt.unread_seen_ttl_hours') * ah.cfgNum('devswarm_parent.ms_per_hour'), max = ah.cfgNum('devswarm_prompt.unread_seen_max');
+      var keys = Object.keys(store).filter(function (x) { var r = store[x]; return r && typeof r === 'object' && typeof r.at === 'number' && isFinite(r.at) && !(now - r.at > ttl); });
+      keys.sort(function (x, y) { return store[y].at - store[x].at; }); // newest first
+      var kept = {};
+      keys.slice(0, max).forEach(function (x) { kept[x] = store[x]; });
+      // staged until the reply is delivered (the dispatcher drops it with an answer it discards, e.g. over the CPU budget): the notice that was never delivered is not recorded as shown
+      var home = ah.env.get(ah.cfg('env.home')), body = JSON.stringify({ e: kept });
+      try { if (!(home && home.charAt(0) === '/' && ah.state.op(home, 'after_reply', dwUnreadStoreRel(), body))) ah.state.writeAtomic(dwUnreadStoreRel(), body); } catch (e) { /* best effort: the next turn speaks again */ }
+    }
+    return speak;
+  } finally { try { ah.state.unlock(lock); } catch (e) { /* the host releases a lock still held when the call ends */ } }
+}
+
 function dwChildContext(cli, watcher, agent, id, cron, tickOnly) {
   return dwContext(true, cli, watcher, agent, id, cron, tickOnly);
 }
@@ -118,6 +193,8 @@ function dwContext(child, cli, watcher, agent, id, cron, tickOnly) {
   var out = text.render(ah.cfg(child ? 'devswarm_role.msg_base' : 'devswarm_role.msg_base_parent'), { cli: cli });
   if (agent === '') return out;
   if (agent === ah.cfg('devswarm_role.claude_agent')) {
+    // a Primary with the cron only while a child is alive arms the Monitor alone (the cron is ordered later, by the wake line)
+    if (!child && dwCronOnlyWithChild()) return out + text.render(ah.cfg('devswarm_role.msg_wake_claude_parent_nocron'), { watcher: watcher, expiry: ah.cfg('devswarm_role.msg_expiry_nocron') });
     var expiry = ah.cfg(tickOnly ? 'devswarm_role.msg_expiry_tick' : 'devswarm_role.msg_expiry_inline');
     return out + text.render(ah.cfg(child ? 'devswarm_role.msg_wake_claude' : 'devswarm_role.msg_wake_claude_parent'), { cli: cli, watcher: watcher, id: id, cron: cron, expiry: expiry });
   }
@@ -140,7 +217,12 @@ function decide(p, opts, event) {
   var id = rawId !== null && rawId !== '' && rawId.split('').every(function (c) { return /[A-Za-z0-9]/.test(c) || extra.indexOf(c) >= 0; }) ? rawId : ah.cfg('devswarm_role.id_placeholder');
   // a Primary names its registered `primary-<hash>` id in the wake commands (the one the store and the watcher key on)
   if (seat.id !== null && /^[A-Za-z0-9._-]+$/.test(seat.id)) id = seat.id;
-  var ctx = dwContext(child, l.cli, l.watcher, agent, id, dwWakeCron(), ah.settings.bool('devswarm_role.sw_rearm'));
+  var ctx;
+  if (agent === ah.cfg('devswarm_role.claude_agent') && sess.wakeWatchLive(l.home, jx.isObj(p) ? p.session_id : null, ah.clock.now())) {
+    var cronPart = !child && dwCronOnlyWithChild() ? ah.cfg('devswarm_role.msg_wake_live_nocron') : text.render(ah.cfg('devswarm_role.msg_wake_live_cron'), { cli: l.cli, id: id, cron: dwWakeCron(), child: child ? ah.cfg('devswarm_role.wake_child_flag') : '' });
+    ctx = text.render(ah.cfg(child ? 'devswarm_role.msg_base' : 'devswarm_role.msg_base_parent'), { cli: l.cli }) + text.render(ah.cfg('devswarm_role.msg_wake_live'), { cron_part: cronPart });
+  } else ctx = dwContext(child, l.cli, l.watcher, agent, id, dwWakeCron(), ah.settings.bool('devswarm_role.sw_rearm'));
+  if (!child && agent === ah.cfg('devswarm_role.claude_agent') && dwCronOnlyWithChild()) dwCronCtlSeed(p);
   if (seat.notices.length) ctx = seat.notices.join(ah.cfg('devswarm_role.seat_notice_joiner')) + ah.cfg('devswarm_role.seat_notice_joiner') + ctx;
   return { exact: { code: 0, out: ah.cfg('devswarm_role.out_prefix') + JSON.stringify(ctx) + ah.cfg('devswarm_role.out_suffix') + '\n', err: '' } };
 }

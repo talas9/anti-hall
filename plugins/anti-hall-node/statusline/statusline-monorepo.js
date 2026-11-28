@@ -40,7 +40,7 @@ function render(input) {
     const remaining = data.context_window?.remaining_percentage;
 
     // Context window meter — guard against non-numeric values (F-12)
-    const totalCtx = data.context_window?.total_tokens || 1_000_000;
+    const totalCtx = data.context_window?.context_window_size || data.context_window?.total_tokens || 1_000_000;
     const acw = parseInt(process.env.CLAUDE_CODE_AUTO_COMPACT_WINDOW || '0', 10);
     const AUTO_COMPACT_BUFFER_PCT = acw > 0
       ? Math.min(100, (acw / totalCtx) * 100)

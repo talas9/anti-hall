@@ -6,7 +6,7 @@
 
 ### Make Claude Code and Codex *verify before they claim* — with platform-native guardrails and workflow skills.
 
-[![tests](https://github.com/talas9/anti-hall/actions/workflows/test.yml/badge.svg)](https://github.com/talas9/anti-hall/actions/workflows/test.yml) [![version](https://img.shields.io/github/v/tag/talas9/anti-hall?label=version)](https://github.com/talas9/anti-hall/releases) [![license](https://img.shields.io/github/license/talas9/anti-hall)](LICENSE) ![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-8A2BE2) ![Codex port](https://img.shields.io/badge/Codex-port-111827) [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/15357/badge)](https://www.bestpractices.dev/projects/15357)
+[![tests](https://github.com/talas9/anti-hall/actions/workflows/ah-engine.yml/badge.svg)](https://github.com/talas9/anti-hall/actions/workflows/ah-engine.yml) [![version](https://img.shields.io/github/v/tag/talas9/anti-hall?label=version)](https://github.com/talas9/anti-hall/releases) [![license](https://img.shields.io/github/license/talas9/anti-hall)](LICENSE) ![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-8A2BE2) ![Codex port](https://img.shields.io/badge/Codex-port-111827) [![OpenSSF Best Practices](https://www.bestpractices.dev/projects/15357/badge)](https://www.bestpractices.dev/projects/15357)
 
 </div>
 
@@ -24,7 +24,7 @@
 
 ## Install
 
-**Supported systems:** macOS and Linux, including WSL on Windows (it runs the Linux build). Native Windows is not supported yet.
+**Supported systems:** macOS on Apple silicon. Linux (including WSL), Apple Intel Macs and native Windows are coming soon: not currently supported or tested.
 
 **Claude Code:**
 
@@ -55,6 +55,26 @@ Add `.anti-hall/` to your project's `.gitignore`: anti-hall keeps per-project se
 >
 > Enable: say "activate jev" (runs the `jev` skill). The full text and the measured result are in the Jev page of the documentation (below).
 <!-- jev-recommend:end -->
+
+## Advisor mode (optional) (Sonnet main + Opus advisor)
+
+Recommended setup: run Sonnet as the main model and Opus as the advisor (the `advisor` tool). Hard decisions go to the advisor; the rest stays on Sonnet.
+
+| Rule | Switch (default on) | Enforced |
+|---|---|---|
+| Retry | `guards.advisorRetry` | a second edit of the same file after a failed test or build, with no advisor call in between, is blocked once; also a second fix dispatch for one issue with no advisor call since the first (non-flagship main) |
+| Thinking | `guards.advisorThinking` | non-flagship main: a fix/design/investigate/plan/review dispatch with no advisor call since your last message is nudged, the second is blocked once per task |
+| Say-do | `guards.advisorSayDo` | non-flagship main: a turn that says it will ask the advisor and does not is blocked once at Stop |
+| Plan | `guards.advisorPlan` | writing a plan file or calling ExitPlanMode with no advisor call since the task began is blocked once |
+| Review | `guards.advisorReview` | a review-shaped agent spawn on Sonnet or Haiku is blocked once (use Opus, Fable or Codex) |
+
+All three stay silent unless the session has the advisor tool (known from the harness's `advisor_tool` transcript attachment, no earlier advisor call needed), block once per trigger, are capped per session, never fire on a Stop continuation and fail open. Their lists, patterns, caps and texts live in the plugin's `advisor.toml` and `advisory.toml`. Adherence is counted under `advisory` in the engine report (`ah-engine status --json`): `advisor_consult.consult`, `advisor_retry.armed`, `.consulted` (consult after a failure), `.injected` (blocks fired), `.acted_on` (block followed by a consult), `advisor_review` and `advisor_plan` `.injected` and `.suppressed`; each session also keeps its own tally in its `advisor-retry-<session>.json` state file.
+
+Turn it off with `set guards.advisorRetry false` (likewise `guards.advisorPlan`, `guards.advisorReview`, `guards.advisorThinking`, `guards.advisorSayDo`) or the env `ANTIHALL_ADVISOR_RETRY`, `ANTIHALL_ADVISOR_PLAN`, `ANTIHALL_ADVISOR_REVIEW`, `ANTIHALL_ADVISOR_THINKING`, `ANTIHALL_ADVISOR_SAY_DO` set to `0`.
+
+The plan rule and the retry re-edit rule, in the main session only, are skipped while the main model ranks equal or higher than the advisor model (haiku < sonnet < opus < fable, matched by family name, so a new version needs no edit): an Opus main with an Opus advisor is left alone. A subagent is never exempted, and an unknown main or advisor model keeps the guard on. The review rule and the phase-3 rules are not affected. Switch: `guards.advisorRank` (env `ANTIHALL_ADVISOR_RANK`, default off); counters `advisor_guard.skipped_equal_or_higher`, `applied_lower_model`, `applied_unknown_model`, `applied_subagent_unranked`, and the metric `advisor_rank{result}`.
+
+Codex has no advisor tool: the consult maps to the deadly-loop frontier review protocol and is not enforceable without a receipt (see the Codex port README).
 
 ## Network and data
 
@@ -102,7 +122,7 @@ Building, testing and releasing the plugin and the Rust engine: [Development gui
 
 The ordered plan (engine back online, hardening, Node removal, features, then 1.0) with each release's exit gate is in [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
-**Later (parked): native Windows support** — anti-hall currently supports macOS and Linux (including WSL). Native Windows support is parked, not promised: it would need a Windows process-control layer and a non-shell hook wrapper in the Rust engine.
+**Coming soon: Linux (including WSL), Apple Intel and native Windows.** anti-hall currently supports and tests macOS on Apple silicon only. Linux and Apple Intel are paused, not dropped: the code stays and CI for them runs only on a manual dispatch or a release. Native Windows is coming soon but not yet scheduled: it would need a Windows process-control layer and a non-shell hook wrapper in the Rust engine.
 
 ## License
 

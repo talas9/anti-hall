@@ -103,6 +103,12 @@ pub fn substitutions(text: &str) -> Vec<String> {
             i += 1;
             continue;
         }
+        // #972 wave 2: a backslash outside single quotes makes the next character literal: an escaped backtick or `\$(` in a quoted
+        // argument (`gh issue comment --body "run \`git pull\`"`) is text, not a substitution
+        if c == '\\' {
+            i += 2;
+            continue;
+        }
         if c == '"' {
             in_double = !in_double;
             i += 1;
@@ -432,7 +438,22 @@ mod tests {
         "cat <<E\\OF\nx\nEOF\n",
         "cat <<$VAR\nx\n",
         "bash -c 'echo $(ls)' ; eval \"npm test\"",
+        "gh issue comment 1 --body \"use \\`git pull --ff-only\\` and \\$(npm test)\" ; echo \\`ls\\`",
+        "echo \"`npm test`\" \"$(cargo build)\" '`x`' \\\\`ls`",
     ];
+
+    /// #972 wave 2 (item 2): an escaped backtick or `\$(` is literal text, quoted or not; an unescaped one inside double quotes still
+    /// runs (true positive), and nothing inside single quotes does.
+    #[test]
+    fn escaped_backticks_and_dollar_parens_are_no_substitution() {
+        assert!(substitutions("gh issue comment 1 --body \"run \\`git pull --ff-only\\` first\"").is_empty());
+        assert!(substitutions("echo \\`git pull\\` \\$(npm test)").is_empty());
+        assert!(substitutions("echo '`git pull`' '$(npm test)'").is_empty());
+        assert_eq!(substitutions("gh issue comment 1 --body \"run `git pull` first\""), vec!["git pull".to_string()]);
+        assert_eq!(substitutions("echo \"$(npm test)\""), vec!["npm test".to_string()]);
+        // an escaped backslash leaves the backtick after it live
+        assert_eq!(substitutions("echo \\\\`ls`"), vec!["ls".to_string()]);
+    }
 
     /// A deterministic mix of shell-ish fragments: `n` strings of up to `max` fragments.
     fn generated(n: usize, max: usize) -> Vec<String> {

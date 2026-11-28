@@ -47,8 +47,13 @@ function ppGitignoreHint(ctx, home, now) {
 function ppArchiveAndDelete(root, relProgress, relHistory, absProgress, prunedAt) {
   var content = ah.fs.readText(absProgress);
   if (content === null) return;
-  var entry = text.render(ah.cfg('session.archive_entry'), { pruned_at: prunedAt, quote: ppBlockquote(content) });
+  var quote = ppBlockquote(content), entry = text.render(ah.cfg('session.archive_entry'), { pruned_at: prunedAt, quote: quote });
+  // GH #794: a prune that archived the file but could not remove it must not archive it again on the next run: the quoted body in the
+  // history file is the proof it is already there (the entry's own time differs on every run)
+  var held = ah.fs.size(root + '/' + relHistory), histText = held !== null && held <= ah.cfgNum('script.read_max_bytes') ? ah.fs.readText(root + '/' + relHistory) : null;
+  var archived = quote !== "" && histText !== null && histText.indexOf(quote) >= 0;
   try {
+    if (archived) { ah.state.op(root, 'remove', relProgress); return; }
     if (ah.state.op(root, 'append', relHistory, entry)) ah.state.op(root, 'remove', relProgress);
   } catch (e) { /* fail-safe: nothing is removed before the append succeeded */ }
 }

@@ -5,19 +5,23 @@
 
 # ---- bounded by a cap read from config, own eviction (registry follow-ups) -------------------------------------------------
 daemon.rs | Shared.queue | accept queue cap (daemon.queue): a full queue answers busy | the connection queue; bounded by the cap, not a cache
+daemon.rs | Shared.busy_peer | exactly one slot per worker thread, built once at start-up and never grown | #969 per-worker peer pid of the request in flight (load QoS)
 db.rs | Mem.kv | registered as mem.db_kv_* and also constrained by tier.budget_kb in Tiered | active key-value items; SQLite remains the source of truth
 gitcache/mod.rs | GitCache.repos | gitcache.max_repos, idle entries expire after gitcache idle_ttl | memoised git state per repository
 hookcfg/session.rs | SessionCore.slots | registered as mem.hook_sessions_*; expired counters are pruned even without SessionEnd | per-session hook condition counters
 limits.rs | BucketCore.map | registered through aggregate mem.buckets_* holder | daemon session/project rate buckets
 limits.rs | BucketOwners.buckets | weak references to live registered bucket maps, stale entries removed on access | aggregate owner list for mem.buckets_*
+defaults/load.rs | SEEN | grows only by a config string not seen before in this process (reload of unchanged defaults adds nothing; the same changed text adds once); every member is a leaked &'static str already counted by mem.defaults_leak, so it cannot be evicted without re-leaking. NOT capped: unbounded across arbitrarily many distinct config edits, limited in practice by the distinct config values ever loaded and the engine restart on plugin update | defaults reload dedup of leaked config text (#171); proven by tests/defaults_reload_leak.rs
 load.rs | Load.minutes | newest load.minutes_kept buckets, each bucket capped | per-minute request load
 tier.rs | Bus.subs | max_channels channels and a bounded queue per subscriber | pub/sub channels
 transcript/registry.rs | Indexes.slots | `max` slots, entries expire after ttl_ms (cfg) | transcript index slots; registry follow-up (transcript caches belong to another job)
 checks/guardkit/settings.rs | SEEN | at most guardkit.settings_seen_max + 1 entries; when len is already over the configured max, the next new-key insert clears first (max 0 still permits one) | unreadable settings-file verdict cache keyed by file metadata
+checks/guardkit/settings.rs | INVALID_SEEN | at most guardkit.settings_invalid_pending_max entries (note_invalid keeps room = max - len); drained into the settings_value_invalid counter after every request | out-of-range settings values waiting to be counted
 meshw/ident.rs | SUPER_CACHE | at most mesh_write.super_cache_max entries; a full map drops its expired entries (mesh_write.super_cache_ttl_ms), then everything | the superproject answers git gave per nested checkout (identity.js superCache); registry follow-up
 devswarm_rt/reconcile.rs | Hold.edges | registered as mem.devswarm_rt_* and cfg.edge_cap also limits retained edges | recent realtime edges are recoverable and evicted first
 devswarm_rt/reconcile.rs | Hold.generations | registered as mem.devswarm_rt_* and stale weak snapshots are pruned while accounting | old Arc-held snapshots stay charged until callers drop them
 dssup/ingest/mod.rs | Ledger.slots | registered as mem.devswarm_ingest_* and mem.devswarm_ingest_max_threads caps total resident ingest threads (manager plus project workers) | bounded resident ingest project slots; value 1 permits manager-only/no project workers
+ops/statusline/rich.rs | CACHE | one slot (Option of a single manifest path, mtime and version), replaced whole when the path or mtime changes; never more than one entry | the last plugin.json read for the status line version chip
 script/host_spawn.rs | SET | one entry per probe a worker is running now, removed when it ends (host_spawn.timeout_max_ms ceiling, host_spawn.max_calls per request) | in-flight spawn-probe keys, so one probe is never started twice
 schedule.rs | Scheduler.state | one entry per configured job (schedules.toml), fixed at load | job state
 schedule.rs | Scheduler.last | one entry per configured job | last-run state
@@ -67,6 +71,8 @@ telemetry/mod.rs | STAGE | events staged by one request, taken or dropped at its
 dispatch/node.rs | Capture.buf | cut at mem.proc_output_max_bytes (mem.proc_output_marker appended) | output of the Node fallback child
 dsact/runner.rs | Drained.buf | cut at the cap passed to drain() (devswarm_act config), the rest is read and dropped | output of a DevSwarm action child
 daemon.rs | Shared.test_alloc | only reachable through the test-hook verb `alloc` (AH_ENGINE_TEST_HOOKS=1, never set in production); each call pushes one caller-sized buffer and the daemon process is short-lived in tests | test-only allocation probe for the memory watchdog tests
+checks/guardkit/nodelock.rs | FENCE_GATE | #[cfg(test)] only, absent from every non-test build; each interleaving test in script/tests.rs pushes one (target, barrier) for its own temp target and retains it out before returning, a panicking test may leave its entry, so it holds at most one entry per interleaving test case in the binary | test-only barrier gate inside fenced_write_if (GH #426)
+checks/guardkit/nodelock.rs | FENCE_GATE_AT | #[cfg(test)] only, absent from every non-test build; each interleaving test pushes at most one (target, phase, barrier) for its own temp target and retains it out before returning, a panicking test may leave its entry, so it holds at most one entry per interleaving test case in the binary | test-only barrier gates before/after staging in fenced_write_if (GH #426)
 
 # ---- added when the live19 train merged the dswire redesign, the Jev breaker and the request deadline work ----------------------
 deadline.rs | EVENT | one event name per thread, cleared when the request ends | the hook event of the request in progress
@@ -88,6 +94,8 @@ script/host_childturn.rs | PLANNED | thread-local, reset at the start of every s
 dswire/facts.rs | GIT_CACHE | devswarm_wire.git_cache_max_entries: when the map is at the cap the next insert clears it first (checked in the insert path) | remembered git answers per worktree, signature and age; stale entries are re-run, never trusted
 dssup/ingest/mod.rs | DROPPED | devswarm_ingest.drop_log_max_paths: when the map is at the cap the next insert of a new path clears it first (checked in note_drop) | the last drop reason logged per path, so a drop is logged once per (path, reason)
 metrics.rs | PENDING | telemetry.max_series: bump() adds no new series once that many wait, and every metrics read or snapshot empties the map | counter bumps from code that holds no Metrics, until the next drain
+metrics.rs | CHILD | same add_bounded cap as PENDING (telemetry.max_series, or the metric's max_series_by_metric); written to the counts file and drained at exit (take_child, try-lock: a busy table is skipped, not waited on); only bump_by fills it, and only when not in_daemon and a valid scheduled-job marker was accepted, so the daemon's own bumps never land here | counter bumps of a scheduled subprocess job, until it hands them to the daemon
+metrics.rs | THIS_THREAD | cfg(test) only, one test thread: the series that thread bumps (a handful per test) | lets a parallel test read its own counter bumps
 threads.rs | EXITED | diagnostics.tally_hard_keys: a new thread name past it is not kept | CPU of ended threads by thread name (status --threads exited_by_name)
 threads.rs | TALLY | diagnostics.tally_hard_keys: a new key past it is dropped and counted in tally_dropped | labelled work counters (site x cause) for status --threads
 nodeback/shadow.rs | CAPTURE | the checks of the call being shadowed, taken at its end | per-request
@@ -100,6 +108,7 @@ script/mod.rs | SEEN | at most script.notice_max (session, check) pairs; cleared
 budget.rs | DROPPED | answer_drop.dropped_keys_max entries | per-daemon dropped-answer counters
 budget.rs | DROPPED_LOGGED | diagnostics.abandoned_log_keys_max entries; clears at cap | dropped-answer log cadence
 budget.rs | LAST_DROP | one reason, consumed after the check | per-worker check scratch
+budget.rs | SHED_BY_SESSION | at most diagnostics.shed_sessions_max sessions (the lexically first is evicted before a new one is added); each holds one counter per check of the dispatch table | per-session shed report (#464), status budget.shed_by_session
 daemon.rs | Shared.hook_version | one string, replaced by the latest bounded request environment | last client version
 daemon.rs | Shared.hook_engine_min | one string, replaced by the latest bounded request environment | last client's minimum engine version
 daemon.rs | Shared.plugin_version | one cached manifest version string | replaced on manifest refresh
@@ -109,6 +118,18 @@ script/host_mesh.rs | IDENT | cleared at each script call | request-local mesh i
 script/host_parentinbox.rs | CACHE | devswarm_parent.drift_cache_keys_max; clears at cap | transcript session listings
 script/host_parentinbox.rs | CWDS | devswarm_parent.drift_cache_keys_max times drift_cache_cwd_factor; clears at cap | transcript head working directories
 script/mod.rs | CACHE | one library fingerprint snapshot for the current directory pair | replaced when home/root or TTL changes
+script/golden.rs | V | one String (the plugin.json version), set once per process and never replaced | golden corpus runner memo of the plugin version read (module is cfg(test) only)
 web/decisions.rs | RING | decisions.ring rows; drops oldest at cap | dashboard check decisions
 web/io.rs | Reg.names | io.max_clients slots, io.client_name_max characters each | dashboard client registry
 web/pulse.rs | SHA | web.build_sha_bytes rendered as hex, computed once | executable identity
+delivery.rs | DECIDED | thread-local; emptied by delivery::settle at the end of every request, so it holds only the answers of the request in flight | (session, check) of each message or block one request produced
+delivery.rs | PENDING | delivery.pending_sessions_max sessions (the oldest is evicted at the cap) times delivery.pending_per_session_max armed checks; an entry leaves on reaction, window or age (delivery.react_window_calls / react_window_ms) | armed checks waiting for the agent's reaction
+dispatch/mod.rs | OWED_NOTICE | at most one (session, notice, flag) per thread, taken at the start and the end of every dispatcher call | the could-not-run notice a call owes until its final outcome is settled (#473)
+funnel.rs | REQUEST | thread-local; holds one (session, project) pair, set by funnel::request at the start of a dispatch request and cleared when its guard drops | the identity of the request in flight, for a shed answer that has no payload
+currency.rs | LOGGED | one entry (the key of the line last logged), replaced on change; never grows | the engine currency job's log rate limit
+transcript/store.rs | Store.slots | transcript.max_indexes sessions (the least recently used leaves at the cap and after transcript.idle_ttl_ms); each session is bounded by transcript.session_budget_bytes and all together by transcript.global_budget_bytes, and is registered as the transcript_store memory holder | the per-session transcript fact stores
+checks/taskstate/memo.rs | MEMO | at most taskstate.memo_entries keys (0 = off), least recently used dropped first on insert; an answer the caller rejects, or computed while the file changed, is removed at once; every key is one state of one transcript file, so a changed file stops matching | per-request shared reconstruction of a transcript's task list for the Stop checks; values are type-erased answers with no size, so a byte-weighted registry holder needs a sizing trait first; registry follow-up
+client.rs | CALL_EVENT | thread-local; holds one hook-event name (a short string from the fixed hook-event set), overwritten by client::set_call_event before each call; never grows | the hook event of the call this thread makes next, for its late-reply bound (client.slow_fallback_event_ms) (#684)
+burst.rs | DUMPED | pushes only while len < diagnostics.burst_dump_max_per_hour, and entries older than diagnostics.burst_rate_window_ms are popped first (both TOML) | timestamps of the burst dumps written in the rate window, for the hourly limit
+burst.rs | RECENT | trimmed to diagnostics.burst_recent_max after every push (clamped to at least 1; TOML) | the last requests (event and checks) a burst dump names as context
+burst.rs | NOTE | thread-local; cleared by begin() and drained by request_end() of every request, and filled only while the profile is on, one entry per check the request ran (the dispatch table is fixed by the plugin's rules) | the (check, peak bytes) pairs of the request in progress on this thread

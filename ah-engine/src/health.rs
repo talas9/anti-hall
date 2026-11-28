@@ -1,6 +1,7 @@
 //! Engine health state, all inside the engine's own state dir (`paths::dir()`): the event log, the
 //! client circuit breaker, crash-loop protection, failure classification and the once-per-session
 //! advisory. Every function is best-effort: a state-dir problem must never break a hook call.
+pub mod exits;
 pub mod starts;
 
 use crate::config::ClientConfig;
@@ -20,6 +21,76 @@ pub fn log_name() -> &'static str {
 /// Event kinds that count toward the crash-loop threshold.
 fn crashy() -> Vec<&'static str> {
     defaults::list("health.crashy_kinds")
+}
+
+/// R0 (#969 hardening): the load factor (permille) for the bounds after which the engine ends a daemon on its own: the watchdog's
+/// `daemon.stall_ms`, `daemon.stuck_ms` and `daemon.start_stall_ms`, and the client's hung-daemon kill (`client.heartbeat_stale_ms`).
+/// These run outside any request, so unlike a request's deadlines (which take the factor the launcher fitted and passed down) they
+/// sample the load themselves; their ceiling is their own (`daemon.watchdog_load_scale_max_permille`), since no hook bound limits
+/// how long they may wait before ending a daemon. Same step as the request deadlines.
+pub fn watchdog_factor(load: Option<f64>) -> u64 {
+    crate::loadscale::factor_permille(load, defaults::num("daemon.watchdog_load_scale_max_permille"), defaults::num("daemon.load_scale_step_permille"))
+}
+
+/// R0: the load per core (permille) a reading stands for; 0 with no reading.
+pub fn load_permille(load: Option<f64>) -> u64 {
+    load.filter(|l| l.is_finite() && *l > 0.0).map_or(0, |l| (l * 1000.0) as u64)
+}
+
+/// R0: true when a daemon the engine ended at this load per core (permille) was ended by the machine's load, not by a fault of its
+/// own: above `health.load_exit_per_core_permille`. Such an end never counts toward the crash-loop rule.
+pub fn ended_by_load(per_core_permille: u64) -> bool {
+    per_core_permille > defaults::num("health.load_exit_per_core_permille")
+}
+
+/// R0: the event-log kind of a stall or stuck exit taken at `load` per core. Under load ([`ended_by_load`]) it is
+/// `health.load_exit_kind`, which `health.crashy_kinds` does not list: a starved machine is not a crashing binary, and four such
+/// exits in ten minutes must not latch the engine off for the crash-loop cooldown. The spawn-rate rule (`client.spawn_n`) still
+/// counts the restarts. Otherwise, or with no load reading, it stays a crash-loop `watchdog` exit, so a daemon that wedges on an
+/// idle machine still latches.
+pub fn watchdog_exit_kind(load: Option<f64>) -> &'static str {
+    if ended_by_load(load_permille(load)) { defaults::text("health.load_exit_kind") } else { "watchdog" }
+}
+
+/// R0: the event-log kind of an rss-cap exit (`daemon.rss_cap_kb`) taken at `load` per core: under load ([`ended_by_load`]) it is
+/// `health.rss_load_kind`, which `health.crashy_kinds` does not list (more requests at once raise memory with the load, so a trip
+/// then is the machine's load, not a leak, and must not latch the crash-loop cooldown); otherwise the crash-loop `rss`.
+pub fn rss_exit_kind(load: Option<f64>) -> &'static str {
+    if ended_by_load(load_permille(load)) { defaults::text("health.rss_load_kind") } else { "rss" }
+}
+
+/// R0 second path: the client is about to end the hung daemon `pid` at `load` per core: leave a tombstone (`files.hung_kill`) so the
+/// next start's reap logs that end as what it was, not as an unexplained crash ([`reap_marker`]).
+pub fn note_hung_kill(pid: u32, load: Option<f64>) {
+    let v = json!({"pid": pid, "load_permille": load_permille(load), "ts": now_ms()});
+    crate::discard::logged("hung_kill_tombstone_write", crate::atomic::write(state_file("hung_kill"), v.to_string()));
+}
+
+/// R0 second path: drop the tombstone of a kill that did not happen.
+pub fn clear_hung_kill() {
+    crate::discard::harmless(std::fs::remove_file(state_file("hung_kill"))); // keep: an absent file is the goal state
+}
+
+/// R0 second path: the kind and code a reap logs for daemon `pid` given the tombstone (if any): a kill by a client under load is
+/// `health.hung_kill_kind` (not crashy), a kill on an idle machine stays a `crash` (code `health.hung_kill_kind`) so a daemon that
+/// wedges with no load still latches, and anything else is the `crash`/`unknown` it always was.
+fn reap_kind(pid: u32, tombstone: Option<&Value>) -> (&'static str, &'static str) {
+    let hung = defaults::text("health.hung_kill_kind");
+    match tombstone.filter(|t| t.get("pid").and_then(Value::as_u64) == Some(u64::from(pid))) {
+        Some(t) if ended_by_load(t.get("load_permille").and_then(Value::as_u64).unwrap_or(0)) => (hung, hung),
+        Some(_) => ("crash", hung),
+        None => ("crash", "unknown"),
+    }
+}
+
+/// Event kinds that are daemon restarts for the degraded summary: the crashy kinds plus a watchdog exit taken under load
+/// (`health.load_exit_kind`, R0), which is still an outage even though it never counts toward the crash-loop rule.
+fn restart_kinds() -> Vec<&'static str> {
+    let mut k = crashy();
+    k.push(defaults::text("health.load_exit_kind"));
+    k.push(defaults::text("health.hung_kill_kind"));
+    k.push(defaults::text("health.rss_load_kind"));
+    k
 }
 
 /// Milliseconds since the Unix epoch (0 if the clock is before it).
@@ -149,8 +220,13 @@ pub fn start_log_thread() {
     if LOG_QUEUE.set(tx).is_err() {
         return;
     }
+    crate::discard::logged("log_thread_spawn", spawn_log_writer(rx).map(drop));
+}
+
+/// Start the thread that drains `rx` into the event log (the daemon's, and the tests' own).
+fn spawn_log_writer(rx: std::sync::mpsc::Receiver<LogMsg>) -> std::io::Result<std::thread::JoinHandle<()>> {
     let batch_max = defaults::num("health.log_batch") as usize;
-    let spawned = std::thread::Builder::new().name("ah-log".into()).spawn(move || {
+    std::thread::Builder::new().name("ah-log".into()).spawn(move || {
         let mut acks: Vec<std::sync::mpsc::Sender<()>> = Vec::new();
         while let Ok(first) = rx.recv() {
             let mut text = String::new();
@@ -176,16 +252,67 @@ pub fn start_log_thread() {
                 crate::discard::harmless(a.send(())); // keep: the waiter may have given up
             }
         }
-    });
-    crate::discard::logged("log_thread_spawn", spawned.map(drop));
+    })
 }
 
 /// Wait (bounded) until every line queued so far is on disk: for the daemon's exit and for a reader that must see its own lines.
 pub fn flush_log() {
     let Some(tx) = LOG_QUEUE.get() else { return };
+    flush_queue(tx, defaults::millis("health.log_flush_ms"), defaults::millis("health.log_flush_poll_ms"));
+}
+
+/// [`flush_via`], and when it gave up the exit says so in the log without waiting for it: a stuck writer means the log lock or
+/// the disk is stuck, and a direct append would wait on the very thing the flush just gave up on.
+fn flush_queue(tx: &std::sync::mpsc::SyncSender<LogMsg>, wait: std::time::Duration, poll: std::time::Duration) {
+    if !flush_via(tx, wait, poll) {
+        log_event_detached(defaults::text("discard.log_kind"), "log_flush_skipped", defaults::text("health.msg_flush_skipped"));
+    }
+}
+
+/// [`log_event`] from a thread of its own, so the caller never waits for the log. At most one such thread lives at a time and a
+/// request made while one is waiting is dropped (the log is stuck then, and one line about it is enough); when the process ends
+/// first the line is lost, which is the price of an exit that cannot hang.
+fn log_event_detached(kind: &'static str, code: &'static str, detail: &'static str) {
+    use std::sync::atomic::Ordering;
+    if DETACHED_LOG_BUSY.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    let spawned = std::thread::Builder::new().name("ah-log-note".into()).spawn(move || {
+        log_event(kind, code, detail);
+        DETACHED_LOG_BUSY.store(false, Ordering::Release);
+    });
+    if spawned.is_err() {
+        DETACHED_LOG_BUSY.store(false, Ordering::Release); // no thread, no line: logging from here is what must not block
+    }
+}
+
+/// True while a [`log_event_detached`] thread has not yet written its line.
+static DETACHED_LOG_BUSY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Ask the log writer behind `tx` to acknowledge a flush, never blocking past `wait`: the request is retried every `poll` (or the
+/// time left, if shorter) while the queue is full (a healthy writer drains it), then the ack is awaited for the time left. False
+/// when the queue stayed full or the writer is gone.
+fn flush_via(tx: &std::sync::mpsc::SyncSender<LogMsg>, wait: std::time::Duration, poll: std::time::Duration) -> bool {
+    use std::sync::mpsc::TrySendError;
+    let deadline = std::time::Instant::now() + wait;
     let (ack, done) = std::sync::mpsc::channel();
-    if tx.send(LogMsg::Flush(ack)).is_ok() {
-        crate::discard::harmless(done.recv_timeout(defaults::millis("health.log_flush_ms"))); // keep: a stuck writer must not hold the exit
+    let mut msg = LogMsg::Flush(ack);
+    loop {
+        match tx.try_send(msg) {
+            Ok(()) => {
+                crate::discard::harmless(done.recv_timeout(deadline.saturating_duration_since(std::time::Instant::now()))); // keep: a stuck writer must not hold the exit
+                return true;
+            }
+            Err(TrySendError::Full(m)) => {
+                let left = deadline.saturating_duration_since(std::time::Instant::now());
+                if left.is_zero() {
+                    return false;
+                }
+                msg = m;
+                std::thread::sleep(poll.min(left));
+            }
+            Err(TrySendError::Disconnected(_)) => return false,
+        }
     }
 }
 
@@ -261,14 +388,17 @@ pub fn hint_text(key: &str) -> String {
     defaults::render(key, &[("state_dir", &state_dir), ("env_dir", &defaults::env_name("dir")), ("env_mem", &defaults::env_of("daemon.mem_mb").unwrap_or(""))])
 }
 
-/// Record a failure for the advisory: `failure.json` {ts, class, kind, code, hint, reason}.
-pub fn record_failure(kind: &str, code: &str, reason: &str) {
+/// Record a failure for the advisory: `failure.json` {ts, class, kind, code, hint, reason}. True when the record was written; false
+/// when the state directory cannot be written (then no crash-loop rule can count this failure either).
+pub fn record_failure(kind: &str, code: &str, reason: &str) -> bool {
     let (class, hint) = classify(code);
     let v = json!({"ts": now_ms(), "class": if class == Class::Env {"env"} else {"permanent"}, "kind": kind, "code": code, "hint": hint, "reason": reason});
     if let Err(e) = crate::atomic::write(state_file("failure"), v.to_string()) {
         // without the record no advisory is ever shown; the log still has the failure itself
         log_event_or_stderr("health", "failure_record_write_failed", &format!("{kind}/{code}: {e}"));
+        return false;
     }
+    true
 }
 
 pub(crate) fn read_json(key: &str) -> Option<Value> {
@@ -288,6 +418,33 @@ pub fn write_cli_crash_report(v: &Value) {
 /// The last crash report of a non-daemon process.
 pub fn cli_crash() -> Option<Value> {
     read_json("cli_crash")
+}
+
+/// One line for a crash report (`last-crash.json`): pid, time, kind, uptime, memory, the request it was in, and where the full report is.
+pub fn crash_summary(report: &Value) -> String {
+    let missing = defaults::text("msg.crash_field_missing");
+    let text = |v: Option<&Value>| match v {
+        Some(Value::String(s)) => s.clone(),
+        Some(v) if !v.is_null() => v.to_string(),
+        _ => missing.to_string(),
+    };
+    let crumb = &report["breadcrumb"];
+    let ts = report.get("ts").and_then(Value::as_i64).map_or_else(|| missing.to_string(), crate::checks::taskkit::time::iso);
+    let mem_mb = crumb["memory"]["footprint_kb"].as_u64().map_or_else(|| missing.to_string(), |kb| (kb / 1024).to_string());
+    defaults::render(
+        "msg.crash_summary",
+        &[
+            ("pid", &text(report.get("pid"))),
+            ("ts", &ts),
+            ("kind", &text(report.get("kind"))),
+            ("uptime_s", &text(crumb.get("uptime_s"))),
+            ("mem_mb", &mem_mb),
+            ("request", &text(crumb.get("request"))),
+            ("event", &text(crumb.get("event").filter(|v| v.as_str() != Some("")))),
+            ("check", &text(crumb.get("check").filter(|v| v.as_str() != Some("")))),
+            ("path", &state_file("last_crash").display()),
+        ],
+    )
 }
 
 /// The last recorded crash report.
@@ -392,14 +549,66 @@ pub fn heartbeat_init() {
     let start = crate::procid::start(pid).map(|s| s.to_string()).unwrap_or_default();
     let exe = crate::procid::exe(pid).map(|p| p.to_string_lossy().into_owned()).unwrap_or_default();
     let ident = format!("{pid}\n{start}\n{exe}\n{}\n", instance_dir().to_string_lossy());
-    crate::discard::logged("heartbeat_write", crate::atomic::write(state_file("heartbeat"), ident));
+    IDENT_LEN.store(ident.len() as u64, std::sync::atomic::Ordering::Relaxed);
+    crate::discard::logged("heartbeat_write", crate::atomic::write(state_file("heartbeat"), format!("{ident}{}", progress_line(Some(0)))));
 }
 
-/// One heartbeat: touch the file's modification time (no data written).
-pub fn heartbeat() {
+/// Length of the identity part of the heartbeat file this process wrote (the progress line follows it).
+static IDENT_LEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// The heartbeat's progress line: the age in ms, zero-padded to a fixed width, so a rewrite never changes the file's length and a
+/// reader never sees a shorter number's leftover digits.
+fn progress_line(age_ms: Option<u64>) -> String {
+    let width = defaults::num("health.progress_digits") as usize;
+    // no worker busy: the idle marker (all `i`), which a reader never mistakes for a figure
+    let Some(age_ms) = age_ms else { return format!("{}\n", "i".repeat(width)) };
+    let digits = age_ms.to_string();
+    // an age too wide for the line is recorded as the widest number that fits
+    if digits.len() > width { format!("{}\n", "9".repeat(width)) } else { format!("{digits:0>width$}\n") }
+}
+
+/// One heartbeat: record the progress age in ms of the daemon's longest-silent busy worker (`None` = none busy: the idle marker) in the progress line,
+/// and touch the file's modification time. Rewritten in place with one write at a fixed offset and width.
+pub fn heartbeat(progress_ms: Option<u64>) {
+    use std::os::unix::fs::FileExt;
     if let Ok(f) = std::fs::File::options().write(true).open(state_file("heartbeat")) {
+        let at = IDENT_LEN.load(std::sync::atomic::Ordering::Relaxed);
+        if at > 0 {
+            crate::discard::harmless(f.write_all_at(progress_line(progress_ms).as_bytes(), at)); // keep: a missed figure reads as no progress, the call fails open
+        }
         crate::discard::harmless(f.set_modified(std::time::SystemTime::now())); // keep: a missed beat only makes a slow reply fail open sooner
     }
+}
+
+/// The last body [`heartbeat_peers`] wrote, so an unchanged one (an idle daemon) is not rewritten every tick.
+static PEERS_LAST: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// #969: the per-request progress next to the heartbeat (`files.heartbeat_peers`): one line `<client pid> <ms since the worker's
+/// last progress on that client's request>` per busy worker. Rewritten on each watchdog tick it changed; written before the
+/// heartbeat's own touch of the next tick, so its age is at most one tick more than the heartbeat's.
+pub fn heartbeat_peers(peers: &[(u64, u64)]) {
+    let body: String = peers.iter().map(|(pid, ms)| format!("{pid} {ms}\n")).collect();
+    let mut last = PEERS_LAST.lock().unwrap_or_else(|e| e.into_inner());
+    if last.as_deref() == Some(body.as_str()) {
+        return;
+    }
+    if std::fs::write(state_file("heartbeat_peers"), &body).is_ok() {
+        *last = Some(body);
+    }
+}
+
+/// #969: the progress age of the worker serving the request of client `pid`: its silence when the daemon last wrote
+/// `files.heartbeat_peers`, plus that file's own age. `None` = no worker names this client (not picked up yet, a daemon from before
+/// the file, a torn read): the caller keeps the daemon-wide figure.
+pub(crate) fn peer_progress(pid: u32) -> Option<Duration> {
+    let p = state_file("heartbeat_peers");
+    let raw = std::fs::read_to_string(&p).ok()?;
+    let age = std::fs::metadata(&p).and_then(|m| m.modified()).ok()?.elapsed().unwrap_or_default();
+    raw.lines().find_map(|l| {
+        let (who, ms) = l.split_once(' ')?;
+        (who.trim().parse::<u32>().ok()? == pid).then(|| ms.trim().parse::<u64>().ok()).flatten()
+    })
+    .map(|ms| Duration::from_millis(ms) + age)
 }
 
 /// One reading of the daemon's heartbeat.
@@ -407,8 +616,13 @@ pub fn heartbeat() {
 pub(crate) struct Heartbeat {
     /// The pid the heartbeat names.
     pub pid: u32,
-    /// The whole file: the generation identity (pid, start time, executable, state dir).
+    /// The identity part of the file: the generation identity (pid, start time, executable, state dir).
     pub ident: String,
+    /// The progress age in ms the daemon recorded at its last beat: how long its longest-silent busy worker has made no
+    /// progress. `None` = the file carries none (a build from before it, an unreadable figure) or the idle marker (see `idle`).
+    pub progress_ms: Option<u64>,
+    /// The progress line is the idle marker: no worker was busy at the last beat, so nothing is working on a waiting request.
+    pub idle: bool,
     /// Its modification time, nanoseconds since the epoch: changes on every beat.
     pub mtime_ns: u128,
     /// How old that modification time is by the wall clock (0 when it is in the future).
@@ -433,17 +647,26 @@ impl Heartbeat {
     }
 }
 
+/// A heartbeat file's two parts: the identity (its first four lines) and the progress age of its fifth line, when it has one that reads
+/// as a number.
+fn split_heartbeat(raw: &str) -> (String, Option<u64>, bool) {
+    let split = raw.match_indices('\n').nth(3).map_or(raw.len(), |(i, _)| i + 1);
+    let tail = raw[split..].trim();
+    (raw[..split].to_string(), tail.parse::<u64>().ok(), !tail.is_empty() && tail.bytes().all(|b| b == b'i'))
+}
+
 /// The daemon's heartbeat, counted only when it names the pid that holds the singleton lock (the daemon now serving the socket).
 /// `None` = unknown (no heartbeat yet, a daemon still starting whose watchdog has not begun, a build from before the heartbeat,
 /// an unreadable file), which counts as alive.
 pub(crate) fn heartbeat_of_lock_holder() -> Option<Heartbeat> {
     let p = state_file("heartbeat");
-    let ident = std::fs::read_to_string(&p).ok()?;
+    let raw = std::fs::read_to_string(&p).ok()?;
+    let (ident, progress_ms, idle) = split_heartbeat(&raw);
     let pid: u32 = ident.lines().next()?.trim().parse().ok()?;
     let holder: u32 = std::fs::read_to_string(paths::lock_for(&paths::socket())).ok()?.trim().parse().ok()?;
     let mtime = std::fs::metadata(&p).and_then(|m| m.modified()).ok()?;
     let mtime_ns = mtime.duration_since(std::time::UNIX_EPOCH).ok()?.as_nanos();
-    (pid != 0 && pid == holder).then(|| Heartbeat { pid, ident, mtime_ns, age: mtime.elapsed().unwrap_or_default() })
+    (pid != 0 && pid == holder).then(|| Heartbeat { pid, ident, progress_ms, idle, mtime_ns, age: mtime.elapsed().unwrap_or_default() })
 }
 
 /// The system-wide monotonic clock in milliseconds: comparable across the short-lived client processes (std's `Instant` is not
@@ -552,13 +775,21 @@ pub(crate) fn reap_marker_at(boot_ms: Option<u64>) {
             log_event("system_restart", "boot", &detail);
             return;
         }
-        let report = json!({"ts": now_ms(), "kind": "crash", "code": "unknown", "pid": pid, "breadcrumb": breadcrumb});
+        // R0 second path: a daemon a client ended as hung left a tombstone; under load that end is not a crash
+        let tombstone = read_json("hung_kill");
+        clear_hung_kill(); // read once
+        let (kind, code) = reap_kind(pid, tombstone.as_ref());
+        let report = json!({"ts": now_ms(), "kind": kind, "code": code, "pid": pid, "breadcrumb": breadcrumb});
         write_crash_report(&report);
-        let detail = defaults::render("msg.log_crash_context", &[("pid", &pid), ("context", &report)]);
-        log_event("crash", "unknown", &detail);
-        record_failure("crash", "unknown", &detail);
+        let detail = defaults::render("msg.log_crash_context", &[("pid", &pid), ("summary", &crash_summary(&report))]);
+        log_event(kind, code, &detail);
+        record_failure(kind, code, &detail);
     }
 }
+
+/// Tests that move the state directory (a process-wide env var), or need it to stay put, take turns on this.
+#[cfg(test)]
+pub(crate) static STATE_TURN: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 // ---- crash-loop protection (daemon deaths) -------------------------------------------------------
 
@@ -603,7 +834,7 @@ pub fn crashloop_tripped(cfg: &ClientConfig) -> bool {
     let n = count_recent_after_trip(&crashy(), cfg.crash_window);
     // a binary that exits at once leaves no crash event, so the starts themselves are counted too: this many in this window
     // is a loop whatever the daemon reported
-    let starts = count_recent_after_trip(&["client_spawn_attempt"], cfg.spawn_window);
+    let starts = count_recent_after_trip(&defaults::list("health.spawn_kinds"), cfg.spawn_window);
     if n < cfg.crash_n && starts < cfg.spawn_n {
         return false;
     }
@@ -726,6 +957,7 @@ pub fn add_fail_open_reason(summary: &mut Value, unhealthy: Option<(u64, String)
 pub fn summary() -> Value {
     let mut summary = summary_from(&events(), now_ms(), crashloop_remaining(), breaker_remaining());
     starts::add_summary(&mut summary);
+    exits::add_summary(&mut summary);
     summary
 }
 
@@ -736,7 +968,7 @@ pub fn summary() -> Value {
 fn degraded_reasons(ev: &[Event], now: u64, window: Duration, loop_left: Option<Duration>, breaker_left: Option<Duration>) -> Vec<Value> {
     let floor = now.saturating_sub(window.as_millis() as u64);
     let started = ev.iter().rev().find(|e| e.kind == defaults::text("health.start_kind")).map_or(0, |e| e.ts);
-    let (crashy, kinds, resolved) = (crashy(), defaults::list("health.degraded_kinds"), defaults::list("health.resolved_by_start_kinds"));
+    let (crashy, kinds, resolved) = (restart_kinds(), defaults::list("health.degraded_kinds"), defaults::list("health.resolved_by_start_kinds"));
     // (group, kind, code) -> (count, first_ts, last_ts, last detail)
     type Key<'a> = (&'a str, String, String);
     type Tally = (u64, u64, u64, String);
@@ -782,7 +1014,7 @@ fn summary_from(ev: &[Event], now: u64, loop_left: Option<Duration>, breaker_lef
         }
         m.into_iter().map(|(k, v)| (k, json!(v))).collect()
     };
-    let crashy = crashy();
+    let crashy = restart_kinds();
     // a crash-loop trip is the consequence of the restarts, not one of them
     let restarts = tally(&|e| (crashy.contains(&e.kind.as_str()) && e.kind != "crashloop").then(|| format!("{}:{}", e.kind, e.code)));
     let system_restarts = recent.iter().filter(|e| e.kind == "system_restart").count();
@@ -857,18 +1089,26 @@ pub fn first_in_session(session: &str, tag: &str) -> bool {
     first
 }
 
+/// Whether [`first_in_session`] already stamped this `session` and `tag` (a read only: it creates nothing).
+pub fn told_in_session(session: &str, tag: &str) -> bool {
+    state_file("advised_dir").join(format!("{:016x}", fnv(&format!("{session}|{tag}")))).exists()
+}
+
 /// A few words, once per session, when the engine is running below full strength (a self-restart in the window, a tripped
 /// breaker) and no failure advisory applies, so the owner learns of a degraded engine without digging through logs.
 fn degraded_notice(session: &str) -> Option<String> {
-    let s = summary();
+    degraded_notice_in(session, &summary(), &state_file("advised_dir"))
+}
+
+/// [`degraded_notice`] for a given health summary `s` and once-per-session stamp directory `dir`.
+fn degraded_notice_in(session: &str, s: &Value, dir: &std::path::Path) -> Option<String> {
     if s["degraded"] != true {
         return None;
     }
-    let dir = state_file("advised_dir");
-    crate::discard::harmless(std::fs::create_dir_all(&dir)); // keep: the write that follows reports a failure
+    crate::discard::harmless(std::fs::create_dir_all(dir)); // keep: the write that follows reports a failure
     let stamp = dir.join(format!("{:016x}", fnv(&format!("{session}|degraded"))));
     std::fs::OpenOptions::new().write(true).create_new(true).open(&stamp).ok()?; // already told => None
-    prune_advised(&dir);
+    prune_advised(dir);
     let mut text = defaults::render(
         "msg.advisory_degraded",
         &[
@@ -904,9 +1144,16 @@ fn prune_advised(dir: &std::path::Path) {
 /// Fold an advisory into hook output `existing` (what the Node hook or engine printed). Output that is
 /// not a JSON object is left untouched (returns None) so a protocol line is never corrupted.
 pub fn merge_advisory(event: &str, existing: &str, text: &str) -> Option<String> {
+    merge_advisory_for("", event, "", existing, text) // no host is known here: never one that `stop_channel.hosts` lists, so a Stop advisory stays on systemMessage
+}
+
+/// [`merge_advisory`] for a call of `host` with payload `raw` (the dispatcher knows both): a Stop advisory goes to `additionalContext` (it reaches
+/// the model) when the Stop channel is on for it and its cap and pending-work guard allow it (`dispatch::stopchan::health_to_context`, GH #540),
+/// else to `systemMessage` as before.
+pub fn merge_advisory_for(host: &str, event: &str, raw: &str, existing: &str, text: &str) -> Option<String> {
     let mut v: Value = if existing.trim().is_empty() { json!({}) } else { serde_json::from_str(existing).ok()? };
     let obj = v.as_object_mut()?;
-    if defaults::list("health.context_events").contains(&event) {
+    if defaults::list("health.context_events").contains(&event) || crate::dispatch::stopchan::health_to_context(host, event, raw, existing, text) {
         let hso = obj.entry("hookSpecificOutput").or_insert_with(|| json!({}));
         let h = hso.as_object_mut()?;
         h.entry("hookEventName").or_insert_with(|| json!(event));
@@ -933,6 +1180,20 @@ mod tests {
     }
 
     use super::*;
+
+    /// A crash report is one line (pid, time, kind, uptime, memory, request, path), never the breadcrumb JSON.
+    #[test]
+    fn crash_report_summary_is_one_line_without_the_breadcrumb() {
+        crate::defaults::init().unwrap();
+        let report = serde_json::json!({"ts": 1795176350967_i64, "kind": "crash", "pid": 56337,
+            "breadcrumb": {"request": "D", "event": "Stop", "check": "task-guard", "uptime_s": 14, "memory": {"footprint_kb": 77200, "allocator": "jemalloc"}}});
+        let line = crash_summary(&report);
+        assert!(line.contains("pid 56337") && line.contains("up 14s") && line.contains("75 MB") && line.contains("request D"), "{line}");
+        assert!(line.contains("event Stop") && line.contains("check task-guard"), "{line}");
+        assert!(line.contains("2026-11-") && line.contains("last-crash.json"), "{line}");
+        assert!(!line.contains('{') && !line.contains('\n') && !line.contains("jemalloc"), "{line}");
+        assert!(crash_summary(&serde_json::json!({})).contains("pid ?"), "an empty report still gives a line");
+    }
 
     fn ev(ts: u64, kind: &str, code: &str, detail: &str) -> Event {
         Event { ts, kind: kind.into(), code: code.into(), detail: detail.into() }
@@ -970,6 +1231,98 @@ mod tests {
         assert_eq!((row["count"].as_u64(), row["first_ts"].as_u64(), row["last_ts"].as_u64()), (Some(2), Some(9_500), Some(9_600)));
     }
 
+    /// R0 second path (#969 hardening review P1-1): a client ending a daemon whose heartbeat a starved machine made old SIGKILLs it,
+    /// and the next start's reap logged an unexplained `crash`: four such kills latched the engine off for the cooldown. Five hung
+    /// kills under load must not latch; the same five on an idle machine still must; a death with no tombstone stays a crash.
+    #[test]
+    fn hung_kills_under_load_never_latch_the_crash_loop_but_idle_ones_still_do() {
+        let _turn = STATE_TURN.lock().unwrap_or_else(|e| e.into_inner());
+        let prev = std::env::var_os("AH_ENGINE_DIR");
+        let cfg = crate::config::ClientConfig::from_env();
+        let dead_pid = || {
+            let mut c = std::process::Command::new("true").spawn().expect("spawn true");
+            c.wait().expect("wait");
+            c.id()
+        };
+        let run = |name: &str, load: Option<f64>, tombstone: bool| -> (bool, Vec<Event>) {
+            let dir = crate::testtmp::path(format!("ah-r0-hung-{name}-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            // SAFETY: a test-only env mutation; the tests that read AH_ENGINE_DIR in this process take STATE_TURN first.
+            unsafe { std::env::set_var("AH_ENGINE_DIR", &dir) };
+            for _ in 0..5 {
+                let pid = dead_pid();
+                std::fs::write(state_file("run_marker"), pid.to_string()).unwrap();
+                if tombstone {
+                    note_hung_kill(pid, load);
+                }
+                reap_marker_at(None);
+            }
+            let tripped = crashloop_tripped(&cfg);
+            let ev = events();
+            crate::discard::harmless(std::fs::remove_dir_all(&dir));
+            (tripped, ev)
+        };
+        let (loaded, ev) = run("loaded", Some(5.0), true);
+        let (idle, idle_ev) = run("idle", Some(0.5), true);
+        let (untold, _) = run("untold", Some(5.0), false);
+        match &prev {
+            // SAFETY: as above
+            Some(v) => unsafe { std::env::set_var("AH_ENGINE_DIR", v) },
+            None => unsafe { std::env::remove_var("AH_ENGINE_DIR") },
+        }
+        let hung = defaults::text("health.hung_kill_kind");
+        assert!(!loaded, "five hung kills under load latched the crash-loop cooldown");
+        assert_eq!(ev.iter().filter(|e| e.kind == hung).count(), 5, "each reap names the kill: {ev:?}");
+        assert!(idle, "hung kills on an idle machine must still trip the crash loop");
+        assert!(idle_ev.iter().any(|e| e.kind == "crash" && e.code == hung), "an idle kill is a crash with the hung-kill code");
+        assert!(untold, "a death with no tombstone is a crash as before");
+        assert!(!defaults::list("health.crashy_kinds").contains(&hung));
+    }
+
+    /// R0 (#969 hardening): an rss-cap exit taken under load never latches the crash loop, the same exits on an idle machine still
+    /// do, and the degraded summary still names the load ones as restarts.
+    #[test]
+    fn rss_exits_under_load_never_latch_the_crash_loop_but_idle_ones_still_do() {
+        let _turn = STATE_TURN.lock().unwrap_or_else(|e| e.into_inner());
+        let prev = std::env::var_os("AH_ENGINE_DIR");
+        let cfg = crate::config::ClientConfig::from_env();
+        let run = |name: &str, load: Option<f64>| -> bool {
+            let dir = crate::testtmp::path(format!("ah-r0-rss-{name}-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            // SAFETY: a test-only env mutation; the tests that read AH_ENGINE_DIR in this process take STATE_TURN first.
+            unsafe { std::env::set_var("AH_ENGINE_DIR", &dir) };
+            for _ in 0..5 {
+                log_event(rss_exit_kind(load), "rss", "rss over cap");
+            }
+            let tripped = crashloop_tripped(&cfg);
+            crate::discard::harmless(std::fs::remove_dir_all(&dir));
+            tripped
+        };
+        let (loaded, idle, unread) = (run("loaded", Some(5.0)), run("idle", Some(0.5)), run("unread", None));
+        match &prev {
+            // SAFETY: as above
+            Some(v) => unsafe { std::env::set_var("AH_ENGINE_DIR", v) },
+            None => unsafe { std::env::remove_var("AH_ENGINE_DIR") },
+        }
+        let kind = defaults::text("health.rss_load_kind");
+        assert!(!loaded, "five rss exits at load 5/core latched the crash-loop cooldown");
+        assert!(idle && unread, "rss exits on an idle machine (or with no load reading) must still trip");
+        assert!(!defaults::list("health.crashy_kinds").contains(&kind));
+        let s = summary_from(&[ev(1_000, kind, "rss", "rss over cap")], 5_000, None, None);
+        assert!(s["degraded_reason"].as_str().unwrap_or("").contains(&format!("{kind}:rss")), "{s}");
+    }
+
+    /// R0 (#969 hardening): a watchdog exit taken under load never counts toward the crash loop, but it is still a restart the
+    /// degraded summary names.
+    #[test]
+    fn a_load_exit_is_still_a_named_restart() {
+        let kind = defaults::text("health.load_exit_kind");
+        let log = vec![ev(1_000, kind, "stuck", "worker 0 stuck"), ev(2_000, "start", "-", "v0 pid 1")];
+        let s = summary_from(&log, 5_000, None, None);
+        assert_eq!(s["degraded"], true, "{s}");
+        assert!(s["degraded_reason"].as_str().unwrap().contains(&format!("{kind}:stuck")), "{s}");
+    }
+
     /// Prevention: whatever the log holds, `degraded: true` never ships without a reason, a first-seen time and an evidence count,
     /// and `degraded: false` carries none.
     #[test]
@@ -1003,6 +1356,45 @@ mod tests {
         }
     }
 
+    /// #201: a `missing_key` fallback logged AFTER the daemon start (plugin defaults lag the engine) is a live problem: the engine is
+    /// degraded, with that reason, its count and first-seen time. Before the start it is answered and does not degrade.
+    #[test]
+    fn a_missing_key_fallback_after_the_start_marks_the_engine_degraded() {
+        let detail = "defaults routine.toml routine.x rejected (missing_key): using the pristine copy";
+        let before = vec![ev(5_000, "defaults_fallback", "missing_key", detail), ev(9_000, "start", "-", "v0.1.0 pid 1")];
+        let s = summary_from(&before, 10_000, None, None);
+        assert_eq!((s["degraded"].clone(), s["defaults"]["total"].clone()), (serde_json::json!(false), serde_json::json!(0)), "{s}");
+        let mut after = before.clone();
+        after.push(ev(9_500, "defaults_fallback", "missing_key", detail));
+        after.push(ev(9_700, "defaults_fallback", "missing_key", detail));
+        let s = summary_from(&after, 10_000, None, None);
+        assert_eq!(s["degraded"], true, "a missing_key after the start must degrade: {s}");
+        assert_eq!(s["defaults"]["by_reason"]["defaults_fallback:missing_key"], 2, "{s}");
+        let row = s["reasons"].as_array().unwrap().iter().find(|r| r["code"] == "missing_key").expect("a missing_key reason");
+        assert_eq!((row["count"].as_u64(), row["first_ts"].as_u64()), (Some(2), Some(9_500)), "{s}");
+        assert!(s["degraded_reason"].as_str().unwrap().contains("defaults_fallback:missing_key"), "{s}");
+    }
+
+    /// #201: a degraded engine tells each session exactly once (rendered from `msg.advisory_degraded`, naming the defaults
+    /// fallback); a new session hears it again; a healthy engine says nothing.
+    #[test]
+    fn a_degraded_engine_gives_exactly_one_notice_per_session() {
+        let dir = crate::testtmp::path(format!("ah-degraded-notice-{}", std::process::id()));
+        std::fs::remove_dir_all(&dir).ok();
+        let log = vec![
+            ev(9_000, "start", "-", "v0.1.0 pid 1"),
+            ev(9_500, "defaults_fallback", "missing_key", "defaults routine.toml routine.x rejected (missing_key): using the pristine copy"),
+        ];
+        let sick = summary_from(&log, 10_000, None, None);
+        let well = summary_from(&[], 10_000, None, None);
+        assert_eq!(degraded_notice_in("sess-A", &well, &dir), None, "a healthy engine is silent");
+        let first = degraded_notice_in("sess-A", &sick, &dir).expect("the first call of a session carries the notice");
+        assert!(first.contains("missing_key"), "the notice names the defaults problem: {first}");
+        assert_eq!(degraded_notice_in("sess-A", &sick, &dir), None, "no repeat inside the session");
+        assert!(degraded_notice_in("sess-B", &sick, &dir).is_some(), "a new session hears it again");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
     #[test]
     fn a_fail_open_window_adds_its_own_reason() {
         let mut s = summary_from(&[], 5_000, None, None);
@@ -1014,6 +1406,26 @@ mod tests {
     }
 
     #[test]
+    fn the_progress_line_is_fixed_width_and_split_off_the_identity() {
+        let ident = "42\n1000\n/bin/ah-engine\n/state\n";
+        let width = defaults::num("health.progress_digits") as usize;
+        for age in [0u64, 7, 1234, u64::MAX] {
+            let line = progress_line(Some(age));
+            assert_eq!(line.len(), width + 1, "the line never changes length: {line:?}");
+            let (id, p, idle) = split_heartbeat(&format!("{ident}{line}"));
+            assert!(!idle);
+            assert_eq!(id, ident, "the progress never leaks into the identity");
+            assert_eq!(p, Some(age.min("9".repeat(width).parse::<u64>().unwrap())));
+        }
+        let line = progress_line(None);
+        assert_eq!(line.len(), width + 1);
+        assert_eq!(split_heartbeat(&format!("{ident}{line}")), (ident.to_string(), None, true));
+        // a file from before the progress line, or with an unreadable one, has no figure (the client reads that as no progress)
+        assert_eq!(split_heartbeat(ident), (ident.to_string(), None, false));
+        assert_eq!(split_heartbeat(&format!("{ident}junk\n")), (ident.to_string(), None, false));
+    }
+
+    #[test]
     fn the_generation_does_not_depend_on_the_executable_path() {
         // a binary update replaces the executable under a surviving daemon: same pid, start and dir must stay recoverable
         let pid = std::process::id();
@@ -1021,6 +1433,8 @@ mod tests {
         let beat = |start: u64, exe: &str| Heartbeat {
             pid,
             ident: format!("{pid}\n{start}\n{exe}\n{}\n", instance_dir().to_string_lossy()),
+            progress_ms: None,
+            idle: false,
             mtime_ns: 0,
             age: Duration::ZERO,
         };
@@ -1032,7 +1446,7 @@ mod tests {
     #[test]
     fn the_log_trim_keeps_the_tail_atomically_and_waits_for_no_one() {
         // review finding 9: the trim truncated the log in place with no lock, racing every other appender
-        let d = std::env::temp_dir().join(format!("ah-health-trim-{}", std::process::id()));
+        let d = crate::testtmp::path(format!("ah-health-trim-{}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
         let log = d.join("e.log");
         let cap = defaults::num("health.log_cap") as usize;
@@ -1063,7 +1477,7 @@ mod tests {
     #[test]
     fn an_unwritable_log_is_an_error_not_a_silent_drop() {
         // review finding 9: log_event dropped every append error; only a missing state dir is silent now
-        let d = std::env::temp_dir().join(format!("ah-health-unwritable-{}", std::process::id()));
+        let d = crate::testtmp::path(format!("ah-health-unwritable-{}", std::process::id()));
         std::fs::create_dir_all(d.join("e.log")).unwrap(); // the log path is a directory: EISDIR
         let e = append_to(&d.join("e.log"), "x\n").unwrap_err();
         assert_ne!(e.kind(), std::io::ErrorKind::NotFound, "goes to stderr");
@@ -1117,5 +1531,255 @@ mod tests {
     fn fnv_is_stable() {
         assert_eq!(fnv(""), 0xcbf2_9ce4_8422_2325);
         assert_eq!(fnv("a"), 0xaf63_dc4c_8601_ec8c);
+    }
+
+    // ---- F572: the exit flush of the event log never blocks ----
+
+    use std::sync::mpsc::{SyncSender, sync_channel};
+    use std::time::Instant;
+
+    /// A state directory of its own (the log and its lock file), for the tests that stall the log writer on the log lock. The
+    /// environment is process-wide, so these tests take turns.
+    struct StuckLog {
+        dir: PathBuf,
+        held: Option<std::fs::File>,
+        _turn: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl StuckLog {
+        fn new(name: &str) -> StuckLog {
+            let turn = STATE_TURN.lock().unwrap_or_else(|e| e.into_inner());
+            let dir = crate::testtmp::path(format!("ah-health-flush-{name}-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            // SAFETY: a test-only env mutation; the tests that read AH_ENGINE_DIR in this process take `TURN` first.
+            unsafe { std::env::set_var("AH_ENGINE_DIR", &dir) };
+            StuckLog { dir, held: None, _turn: turn }
+        }
+
+        fn log(&self) -> PathBuf {
+            file(log_name())
+        }
+
+        /// Stall every append of the log writer: hold the log's lock exclusively, as a trim in another process would.
+        fn hold_lock(&mut self) {
+            let lock = log_lock(&self.log()).expect("the lock file");
+            assert!(flock(&lock, libc::LOCK_EX | libc::LOCK_NB));
+            self.held = Some(lock);
+        }
+
+        fn release_lock(&mut self) {
+            self.held = None;
+        }
+
+        /// The real log writer on a queue of `cap` lines.
+        fn writer(&self, cap: usize) -> (SyncSender<LogMsg>, std::thread::JoinHandle<()>) {
+            let (tx, rx) = sync_channel::<LogMsg>(cap);
+            (tx, spawn_log_writer(rx).unwrap())
+        }
+
+        /// Queue one line (the writer takes it and blocks on the lock), then fill the queue to its capacity.
+        fn stall_and_fill(tx: &SyncSender<LogMsg>, cap: usize) {
+            tx.send(LogMsg::Line("1\tk\tc\tfirst\n".into())).unwrap();
+            std::thread::sleep(Duration::from_millis(300));
+            for _ in 0..cap {
+                tx.try_send(LogMsg::Line("1\tk\tc\tfill\n".into())).expect("the queue holds its capacity");
+            }
+        }
+
+        /// Release the lock and wait until the exit diagnostic is in the log and its thread is done.
+        fn diagnostic_lands(&mut self) -> bool {
+            self.release_lock();
+            let until = Instant::now() + Duration::from_secs(20);
+            while Instant::now() < until {
+                let written = std::fs::read_to_string(self.log()).is_ok_and(|t| t.contains("log_flush_skipped"));
+                if written && !DETACHED_LOG_BUSY.load(std::sync::atomic::Ordering::Acquire) {
+                    return true;
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            false
+        }
+    }
+
+    impl Drop for StuckLog {
+        fn drop(&mut self) {
+            self.held = None;
+            // SAFETY: as in `new`.
+            unsafe { std::env::remove_var("AH_ENGINE_DIR") };
+            crate::discard::harmless(std::fs::remove_dir_all(&self.dir)); // keep: cleanup that raced; an absent dir is the goal state
+        }
+    }
+
+    /// Run `flush_queue` the way the exit does and measure it. A flush still stuck after `limit` fails the test (the lock is
+    /// released first, so the stuck thread ends).
+    fn timed_flush(stuck: &mut StuckLog, tx: &SyncSender<LogMsg>, wait: Duration, poll: Duration, limit: Duration) -> Duration {
+        let (done, took) = std::sync::mpsc::channel();
+        let tx = tx.clone();
+        let t = Instant::now();
+        std::thread::spawn(move || {
+            flush_queue(&tx, wait, poll);
+            crate::discard::harmless(done.send(t.elapsed())); // keep: the test may have given up
+        });
+        match took.recv_timeout(limit) {
+            Ok(d) => d,
+            Err(_) => {
+                stuck.release_lock();
+                panic!("the flush was still stuck after {limit:?} (wait {wait:?}, poll {poll:?})");
+            }
+        }
+    }
+
+    /// F572 (verifier input): the shipped queue size and bounds, a writer stuck on the log lock, a full queue. The flush gives up at
+    /// its bound, and its own diagnostic does not wait on the lock the writer is stuck on.
+    #[test]
+    fn the_exit_flush_returns_when_the_writer_is_stuck_on_the_log_lock() {
+        let mut stuck = StuckLog::new("exact");
+        stuck.hold_lock();
+        let cap = defaults::num("health.log_queue") as usize;
+        let (tx, writer) = stuck.writer(cap);
+        StuckLog::stall_and_fill(&tx, cap);
+        let wait = defaults::millis("health.log_flush_ms");
+        let took = timed_flush(&mut stuck, &tx, wait, defaults::millis("health.log_flush_poll_ms"), wait + Duration::from_secs(5));
+        assert!(took < wait + Duration::from_millis(1500), "took {took:?}");
+        assert!(stuck.diagnostic_lands(), "the diagnostic reaches the log once the lock is free");
+        drop(tx);
+        writer.join().unwrap();
+    }
+
+    #[derive(Clone, Copy, Debug)]
+    enum Stall {
+        /// The real writer, stuck on the log lock, with a full queue.
+        LockedWriterFullQueue,
+        /// The real writer, stuck on the log lock, with room in the queue: the request is taken and never acknowledged.
+        LockedWriterRoomInQueue,
+        /// No writer ever drains the queue, and it is full (no lock involved).
+        UndrainedFullQueue,
+        /// The writer is gone (nobody receives), the lock is held.
+        WriterGone,
+    }
+
+    /// The class: whatever stalls the log, the exit flush returns within its bound plus slack, and what it has to say about giving
+    /// up goes to a thread of its own.
+    #[test]
+    fn the_exit_flush_is_bounded_whatever_stalls_the_log() {
+        use Stall::*;
+        let ms = Duration::from_millis;
+        // (stall, queue size, wait, poll, the flush gives up)
+        let cases = [
+            (LockedWriterFullQueue, 1, ms(100), ms(5), true),
+            (LockedWriterFullQueue, 16, ms(50), ms(500), true),
+            (LockedWriterFullQueue, 16, ms(1), ms(5), true),
+            (LockedWriterFullQueue, 16, ms(0), ms(5), true),
+            (LockedWriterFullQueue, 64, ms(300), ms(1000), true),
+            (LockedWriterFullQueue, 4096, ms(200), ms(5), true),
+            (LockedWriterRoomInQueue, 16, ms(150), ms(5), false),
+            (UndrainedFullQueue, 8, ms(100), ms(5), true),
+            (UndrainedFullQueue, 8, ms(10), ms(500), true),
+            (WriterGone, 16, ms(100), ms(5), true),
+            (WriterGone, 4096, ms(100), ms(300), true),
+        ];
+        for (stall, cap, wait, poll, gives_up) in cases {
+            let mut stuck = StuckLog::new("class");
+            let (tx, mut writer, _undrained) = match stall {
+                LockedWriterFullQueue | LockedWriterRoomInQueue => {
+                    stuck.hold_lock();
+                    let (tx, writer) = stuck.writer(cap);
+                    if matches!(stall, LockedWriterFullQueue) {
+                        StuckLog::stall_and_fill(&tx, cap);
+                    }
+                    (tx, Some(writer), None)
+                }
+                UndrainedFullQueue => {
+                    let (tx, rx) = sync_channel::<LogMsg>(cap);
+                    for _ in 0..cap {
+                        tx.try_send(LogMsg::Line("1\tk\tc\tfill\n".into())).unwrap();
+                    }
+                    (tx, None, Some(rx))
+                }
+                WriterGone => {
+                    stuck.hold_lock();
+                    let (tx, rx) = sync_channel::<LogMsg>(cap);
+                    drop(rx);
+                    (tx, None, None)
+                }
+            };
+            let took = timed_flush(&mut stuck, &tx, wait, poll, wait + Duration::from_secs(5));
+            assert!(took < wait + Duration::from_millis(1500), "{stall:?} cap {cap} wait {wait:?} poll {poll:?}: took {took:?}");
+            if gives_up {
+                assert!(stuck.diagnostic_lands(), "{stall:?} cap {cap}: the diagnostic reaches the log");
+            }
+            stuck.release_lock();
+            drop(tx);
+            if let Some(w) = writer.take() {
+                w.join().unwrap();
+            }
+        }
+    }
+
+    /// Repeated and simultaneous exit flushes against a stuck log: each is bounded, and they do not pile diagnostic threads on the lock.
+    #[test]
+    fn repeated_and_concurrent_exit_flushes_stay_bounded_on_a_stuck_log() {
+        let mut stuck = StuckLog::new("repeat");
+        stuck.hold_lock();
+        let (tx, writer) = stuck.writer(8);
+        StuckLog::stall_and_fill(&tx, 8);
+        let wait = Duration::from_millis(100);
+        for round in 0..3 {
+            let took = timed_flush(&mut stuck, &tx, wait, Duration::from_millis(5), wait + Duration::from_secs(5));
+            assert!(took < wait + Duration::from_millis(1500), "round {round}: took {took:?}");
+        }
+        let t = Instant::now();
+        let flushers: Vec<_> = (0..4)
+            .map(|_| {
+                let tx = tx.clone();
+                std::thread::spawn(move || flush_queue(&tx, wait, Duration::from_millis(5)))
+            })
+            .collect();
+        for f in flushers {
+            f.join().unwrap();
+        }
+        assert!(t.elapsed() < wait + Duration::from_millis(1500), "four at once took {:?}", t.elapsed());
+        assert!(stuck.diagnostic_lands());
+        drop(tx);
+        writer.join().unwrap();
+    }
+
+    /// The retry pause never outlasts the time left: a full queue returns at `wait` however long the poll.
+    #[test]
+    fn the_flush_retry_sleep_stays_inside_the_deadline() {
+        let ms = Duration::from_millis;
+        let (tx, _rx) = sync_channel::<LogMsg>(1);
+        tx.try_send(LogMsg::Line(String::new())).unwrap();
+        for (wait, poll) in [(10, 500), (1, 1000), (20, 5000), (50, 800), (5, 600), (30, 2000), (0, 700), (100, 100)] {
+            let t = Instant::now();
+            assert!(!flush_via(&tx, ms(wait), ms(poll)));
+            assert!(t.elapsed() < ms(wait + 350), "wait {wait} ms, poll {poll} ms: took {:?}", t.elapsed());
+        }
+    }
+
+    /// F572: a full queue with a stuck writer must not hold the exit flush past its bound.
+    #[test]
+    fn a_stuck_log_writer_does_not_hold_the_flush() {
+        let (tx, _rx) = sync_channel::<LogMsg>(1);
+        tx.try_send(LogMsg::Line(String::new())).unwrap();
+        let wait = defaults::millis("health.log_flush_ms");
+        let t = Instant::now();
+        assert!(!flush_via(&tx, wait, defaults::millis("health.log_flush_poll_ms")));
+        assert!(t.elapsed() < wait * 3, "the flush took {:?}", t.elapsed());
+    }
+
+    #[test]
+    fn a_healthy_log_writer_acks_the_flush() {
+        let (tx, rx) = sync_channel::<LogMsg>(4);
+        let h = std::thread::spawn(move || {
+            while let Ok(m) = rx.recv() {
+                if let LogMsg::Flush(a) = m {
+                    crate::discard::harmless(a.send(())); // keep: the waiter may be gone
+                }
+            }
+        });
+        assert!(flush_via(&tx, defaults::millis("health.log_flush_ms"), defaults::millis("health.log_flush_poll_ms")));
+        drop(tx);
+        h.join().unwrap();
     }
 }

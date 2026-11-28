@@ -102,12 +102,53 @@ fn swap_case(c: char) -> char {
     if c.is_ascii_lowercase() { c.to_ascii_uppercase() } else { c.to_ascii_lowercase() }
 }
 
-/// Compile a JavaScript regex source (no flags beyond `i`).
-pub fn compile(src: &str, ci: bool) -> Regex {
-    lit_re(&translate(src, ci))
+/// Compile a JavaScript regex source (no flags beyond `i`); an invalid source is an error, never an abort.
+///
+/// # Errors
+/// The `regex` crate's error when the translated source does not compile.
+pub fn try_compile(src: &str, ci: bool) -> Result<Regex, regex::Error> {
+    Regex::new(&translate(src, ci))
 }
 
-/// Compile a JavaScript regex source with the `m` flag (`^`/`$` match line boundaries) and optional `i`.
+/// [`try_compile`] with the `m` flag (`^`/`$` match line boundaries).
+///
+/// # Errors
+/// As [`try_compile`].
+pub fn try_compile_multiline(src: &str, ci: bool) -> Result<Regex, regex::Error> {
+    Regex::new(&format!("(?m:{})", translate(src, ci)))
+}
+
+/// The pattern behind the settings key `key`, compiled; `None` (counted in `script_regex_invalid` and noted in the event log
+/// under the key) when the configured text does not compile. The caller picks its own safe answer for `None`.
+pub fn config_re(key: &str, ci: bool) -> Option<Regex> {
+    match try_compile(defaults::text(key), ci) {
+        Ok(r) => Some(r),
+        Err(e) => {
+            invalid(key, &e);
+            None
+        }
+    }
+}
+
+fn invalid(key: &str, e: &regex::Error) {
+    crate::metrics::bump("script_regex_invalid", &[]);
+    crate::discard::note("config_regex_invalid", &defaults::render("script.msg_config_regex_invalid", &[("key", &key), ("error", &e.to_string())]));
+}
+
+/// Compile a JavaScript regex source (no flags beyond `i`) read from the shipped settings. An invalid source never stops the
+/// daemon: it is counted and noted, and the result matches nothing (the safe answer for a pattern that selects what to act on).
+/// A caller for which "matches nothing" is not safe uses [`config_re`] or [`try_compile`] instead.
+pub fn compile(src: &str, ci: bool) -> Regex {
+    try_compile(src, ci).unwrap_or_else(|e| {
+        invalid(src, &e);
+        lit_re(defaults::text("guardkit.never_match_re"))
+    })
+}
+
+/// [`compile`] with the `m` flag.
 pub fn compile_multiline(src: &str, ci: bool) -> Regex {
-    lit_re(&format!("(?m:{})", translate(src, ci)))
+    try_compile_multiline(src, ci).unwrap_or_else(|e| {
+        invalid(src, &e);
+        lit_re(defaults::text("guardkit.never_match_re"))
+    })
 }

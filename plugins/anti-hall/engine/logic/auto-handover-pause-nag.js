@@ -48,11 +48,12 @@ function decide(p) {
     // the Stop-side fire, once per arm; never for a crossing against a guessed window
     result = cb.getContextPct(tp, p.session_id, w);
     var over = cb.overThreshold(result, cfg);
-    if (over === cb.c('ctxbudget.ah_via_pct') || over === cb.c('ctxbudget.ah_via_tokens')) {
+    if ((over === cb.c('ctxbudget.ah_via_pct') || over === cb.c('ctxbudget.ah_via_tokens') || over === cb.c('ctxbudget.ah_via_workspace')) && !cb.quiet(p, linesOf())) {
       var hp = cb.expectedHandoverPath(p);
       var suffix = cb.decisiveSuffixFor(p, cfg, linesOf());
       w.latch = { fired: true, firedAt: now, firedPct: result.pct, firedVia: cb.c('ctxbudget.ah_via_stop_prefix') + over, lastNagPct: result.pct, lastNagAt: now, softFired: latch.softFired === true };
-      reason = cb.fire(result, over, p, cfg.maxTokens, hp) + suffix;
+      reason = cb.fire(result, over, p, cfg.maxTokens, hp, cfg) + suffix;
+      ah.metric('auto_handover_fired', ['via', w.latch.firedVia]);
     }
   } else if (cfg.nag) {
     result = cb.getContextPct(tp, p.session_id, w);
@@ -67,7 +68,7 @@ function decide(p) {
         if ((risen || quietElapsed) && !(!risen && latch.lastPauseNagPct === shown)) {
           var open = cb.hasOpenTasks(linesOf());
           var spawned = open === true ? false : cb.recentSpawn(tag, now);
-          if (open !== true && !spawned) {
+          if (open !== true && !spawned && !cb.quiet(p, linesOf())) { // quiet mode (GH #958 (b)): no stopping-point advice while the work must go on
             var sfx = cb.decisiveSuffixFor(p, cfg, linesOf());
             w.latch = Object.assign({}, latch, { lastNagAt: now, lastPauseNagPct: shown });
             if (risen) w.latch.lastNagPct = result.pct;
@@ -79,5 +80,7 @@ function decide(p) {
   }
   if (w.inferred) cb.writeInferred(w.inferred);
   if (w.latch) cb.writeLatch(tag, w.latch);
-  return reason === null ? 'allow' : pnBlock(reason);
+  if (reason === null) return 'allow';
+  var handover = cb.sessionHandover(p);
+  return stopReblock.finish(ah.cfg('stop_reblock.pause_guard'), p, pnBlock(reason), { pct: result && Math.round(result.pct), max: result && result.max, handover: handover });
 }

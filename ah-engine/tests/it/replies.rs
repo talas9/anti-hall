@@ -144,6 +144,7 @@ fn base_env(c: &mut Command, home: &Path) {
     c.env_clear()
         .env("PATH", std::env::var("PATH").unwrap_or_default())
         .env("HOME", home)
+        .env("AH_ENGINE_PLUGIN_ROOT", crate::common::plugin_root())
         .env("USERPROFILE", home)
         .env("ANTIHALL_TEST_ISOLATION", "1")
         .env("ANTIHALL_INGEST_DRY_RUN", "1");
@@ -226,7 +227,7 @@ pub struct Tally {
 
 fn mkhome(tag: &str, case: &Case) -> PathBuf {
     let n = ID.fetch_add(1, Ordering::Relaxed);
-    let d = std::env::temp_dir().join(format!("ah-reply-{tag}-{}-{n}", std::process::id()));
+    let d = crate::common::testtmp::path(format!("ah-reply-{tag}-{}-{n}", std::process::id()));
     ah_engine::discard::harmless(std::fs::remove_dir_all(&d));
     std::fs::create_dir_all(d.join(".anti-hall")).unwrap();
     for (rel, body) in &case.files {

@@ -77,7 +77,7 @@ fn run_cmd(argv: &[String], timeout_ms: u64, max_bytes: u64) -> rquickjs::Result
 }
 
 fn run_bounded(prog: &str, args: &[String], env: &HashMap<String, String>, timeout_ms: u64, max_bytes: u64) -> Run {
-    let mut cmd = Command::new(prog);
+    let mut cmd = Command::new(crate::proc::resolve_git(prog, env.get("PATH").map(String::as_str)));
     cmd.args(args).stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).env_clear();
     for (k, v) in env {
         cmd.env(k, v);
@@ -124,8 +124,9 @@ fn argv_of(key: &str) -> Vec<String> {
     defaults::list(key).into_iter().map(str::to_string).collect()
 }
 
-fn re_of(key: &str, ci: bool) -> Regex {
-    jsre::compile(defaults::text(key), ci)
+/// The pattern behind settings key `key`; `None` (counted, noted) when it does not compile, and the caller answers safely.
+fn re_of(key: &str, ci: bool) -> Option<Regex> {
+    jsre::config_re(key, ci)
 }
 
 fn key(pid: f64) -> u64 {
@@ -140,7 +141,8 @@ fn unsure() -> String {
 pub fn proc_list() -> rquickjs::Result<String> {
     let argv = argv_of("hostproc.list_command");
     let Run::Ok(out) = run_cmd(&argv, defaults::num("hostproc.list_timeout_ms"), defaults::num("hostproc.list_max_bytes"))? else { return Ok("null".into()) };
-    let re = re_of("hostproc.list_line_re", false);
+    // a listing that cannot be read is the same answer as a listing that did not run
+    let Some(re) = re_of("hostproc.list_line_re", false) else { return Ok("null".into()) };
     let mut rows = Vec::new();
     for line in out.split('\n') {
         let Some(c) = re.captures(line) else { continue };
@@ -158,7 +160,8 @@ pub fn proc_list() -> rquickjs::Result<String> {
 
 /// `parseEtimesOutput(stdout)`: pid to elapsed seconds.
 fn parse_etimes(out: &str) -> HashMap<u64, f64> {
-    let re = re_of("hostproc.etimes_line_re", false);
+    // no readable elapsed times: the caller falls back to the start-time probe
+    let Some(re) = re_of("hostproc.etimes_line_re", false) else { return HashMap::new() };
     out.split('\n').filter_map(|l| re.captures(l)).map(|c| (key(number_of_str(&c[1])), number_of_str(&c[2]))).collect()
 }
 
@@ -204,7 +207,7 @@ fn local_epoch_ms(tz_agrees: bool, y: i64, mo: u32, d: u32, h: u32, mi: u32, s: 
 
 /// `new Date(text)` for the one form `ps -o lstart=` prints, in local time; `Err` for any other text.
 fn lstart_ms(text: &str, tz_agrees: bool) -> Result<f64, ()> {
-    let c = re_of("hostproc.lstart_form_re", false).captures(text).ok_or(())?;
+    let c = re_of("hostproc.lstart_form_re", false).ok_or(())?.captures(text).ok_or(())?;
     let months = defaults::list("hostproc.months");
     let mo = months.iter().position(|m| *m == &c[2]).ok_or(())? as u32 + 1;
     let (d, h, mi, s, y) =
@@ -219,7 +222,7 @@ fn lstart_ms(text: &str, tz_agrees: bool) -> Result<f64, ()> {
 
 /// `parseLstartOutput(stdout, nowMs)`: pid to age in seconds; a start time in the future is unknown (left out).
 fn parse_lstart(out: &str, now_ms: f64, tz_agrees: bool) -> Result<HashMap<u64, f64>, ()> {
-    let re = re_of("hostproc.lstart_line_re", false);
+    let re = re_of("hostproc.lstart_line_re", false).ok_or(())?;
     let mut map = HashMap::new();
     for line in out.split('\n') {
         let Some(c) = re.captures(line) else { continue };
@@ -280,16 +283,16 @@ pub fn proc_ages(pids_json: &str) -> rquickjs::Result<String> {
 }
 
 /// `parseLaunchctlListOutput(stdout)`: the pids the service manager owns.
-fn parse_launchctl(out: &str) -> Vec<f64> {
-    let header = re_of("hostproc.service_header_re", true);
-    out.split('\n')
+fn parse_launchctl(out: &str) -> Option<Vec<f64>> {
+    let header = re_of("hostproc.service_header_re", true)?;
+    Some(out.split('\n')
         .map(js_trim)
         .filter(|t| !t.is_empty() && !header.is_match(t))
         .filter_map(|t| {
             let n = number_of_str(t.split(is_js_space).next().unwrap_or(""));
             (n.is_finite() && n > 0.0).then_some(n)
         })
-        .collect()
+        .collect())
 }
 
 /// `procManaged(pids)`: see the module table.
@@ -300,7 +303,10 @@ pub fn proc_managed(pids_json: &str) -> rquickjs::Result<String> {
         let argv = argv_of("hostproc.service_list_command");
         return Ok(match run_cmd(&argv, defaults::num("hostproc.probe_timeout_ms"), defaults::num("hostproc.probe_max_bytes"))? {
             Run::Ok(s) => {
-                let owned = parse_launchctl(&s);
+                // an unreadable header pattern leaves the listing unverified, never an empty one (that would unprotect every candidate)
+                let Some(owned) = parse_launchctl(&s) else {
+                    return Ok(json!({"platform": "launchd", "managed": [], "unverifiable": true}).to_string());
+                };
                 let managed: Vec<f64> = pids.iter().copied().filter(|p| owned.contains(p)).collect();
                 json!({"platform": "launchd", "managed": managed, "unverifiable": false}).to_string()
             }

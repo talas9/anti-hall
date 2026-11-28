@@ -8,21 +8,61 @@ var ahWfRe = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\ud
 function ahWf(t) { return typeof t === 'string' ? t.replace(ahWfRe, '\ufffd') : t; }
 // Count a case this script could not model exactly (at `site`, a short stable name such as `task-tracker.state_unsure`): a stand-in (stand_in: the script went on with a stand-in value) or, with `kind` 'abandoned', a dropped decision (abandoned). The caller applies the native decision.
 function ahUnableCount(site, kind) { try { if (kind === undefined) ahHost.unable(site); else ahHost.unable(site, kind); } catch (e) { /* a lost count never changes a decision */ } }
-var ahCfgMemo = { gen: -1, map: new Map() };
+// `req`: the `ah.request` object the memo was last checked under. The engine installs a fresh one before EVERY check call, so a new
+// call re-reads `cfgGen` once (a defaults reload between calls is seen) and the rest of the call costs no host call.
+var ahCfgMemo = { gen: -1, map: new Map(), req: null };
+// Memo hits and misses of this call's `ah.cfg` / `ah.settings` reads: handed to the host with the next call's one `cfgGen` read (no host call of their own).
+var ahCfgTally = { hit: 0, miss: 0 };
+// Settings values read in this call, by kind + key: the settings chain and the request's home/env are fixed for a call (`useHome` drops them).
+var ahSetMemo = { req: null, map: new Map() };
+function ahSet(kind, key, read) {
+  ah.cfgGen();
+  if (ahSetMemo.req !== ah.request) { ahSetMemo.req = ah.request; ahSetMemo.map = new Map(); }
+  var k = kind + '\u0000' + key, m = ahSetMemo.map;
+  if (m.has(k)) { ahCfgTally.hit++; return m.get(k); }
+  ahCfgTally.miss++;
+  var v = read(key);
+  m.set(k, v);
+  return v;
+}
+// Tracker-row indexes (ah.transcript.trackedIndex) by rows array; weak, so an array nobody holds takes its index with it.
+var ahTrackedIdx = new WeakMap();
 var ah = {
   // Replaced before EVERY check call: authoritative dispatcher options, including --host. Never daemon-global state.
   request: {},
+  // The defaults generation, read from the host once per check call (a defaults reload between calls is seen by the next one). Every memo keyed on it uses this.
+  cfgGen: function () {
+    var r = ah.request;
+    if (ahCfgMemo.req !== r || r === undefined || r === null) {
+      var h = ahCfgTally.hit, mi = ahCfgTally.miss;
+      ahCfgTally.hit = 0; ahCfgTally.miss = 0;
+      var g = ahHost.cfgGen(h, mi);
+      if (g !== ahCfgMemo.gen) { ahCfgMemo.gen = g; ahCfgMemo.map = new Map(); }
+      ahCfgMemo.req = r;
+    }
+    return ahCfgMemo.gen;
+  },
   // Defaults entries, memoized until the engine loads a new defaults snapshot (a file edit or a plugin update).
   cfg: function (key) {
-    var g = ahHost.cfgGen();
-    if (g !== ahCfgMemo.gen) { ahCfgMemo.gen = g; ahCfgMemo.map = new Map(); }
+    ah.cfgGen();
     var v = ahCfgMemo.map.get(key);
-    if (v === undefined) { v = JSON.parse(ahHost.cfg(key)); ahCfgMemo.map.set(key, v); }
+    if (v === undefined) { ahCfgTally.miss++; v = JSON.parse(ahHost.cfg(key)); ahCfgMemo.map.set(key, v); } else ahCfgTally.hit++;
     return v;
   },
   cfgNum: function (key) { return ahHost.cfgNum(key); },
   unable: function (site, kind) { ahUnableCount(site, kind); },
+  // Add `by` (default 1) to the registered counter `name` ([metric.<name>] in a defaults file); `labels` = {label: value} or
+  // [label, value, ...]. A lost count never changes a decision.
+  metric: function (name, labels, by) {
+    try {
+      var o = labels || {};
+      if (Array.isArray(o)) { o = {}; for (var i = 0; i + 1 < labels.length; i += 2) o[String(labels[i])] = String(labels[i + 1]); }
+      ahHost.metric(name, JSON.stringify(o), by === undefined ? 1 : by);
+    } catch (e) { /* telemetry only */ }
+  },
   // One advisory event of `kind` (flagged, asked, confirmed, injected, suppressed, jev_error) under `metric`; a lost count never changes a decision.
+  // {current, top: [[rule, n]..], last}: recorded guard blocks of the session, its most frequent rules, and the latest other session's count.
+  sessionBlocks: function (sid) { try { return JSON.parse(ahHost.sessionBlocks(sid)); } catch (e) { return { current: 0, top: [], last: 0 }; } },
   advisory: function (kind, metric) { try { ahHost.advisory(kind, metric); } catch (e) { /* telemetry only */ } },
   // The hook's own environment (the request's, never the daemon's); null when a variable is unset.
   env: {
@@ -42,7 +82,16 @@ var ah = {
     // when it could not be taken. A lock still held when the call ends is released by the engine.
     // `waitMs` (optional) replaces the group's wait (never past script.lock_wait_max_ms). Up to script.lock_max_held at once; take nested ones in a fixed order.
     lock: function (rel, group, waitMs) { return ahNull(ahHost.lockAcquire(rel, group, waitMs === undefined ? null : waitMs)); },
+    // A kernel flock on a file no other (Node) writer locks: a handle, 'busy' (the wait ran out), 'failed' (not acquired: the file cannot be opened or is a link, or flock failed: write nothing),
+    // or null (ONLY: this platform or filesystem has no flock at all; the one case a caller may use another lock instead). Release with unlock.
+    flock: function (rel, group, waitMs) { var h = ahNull(ahHost.flockAcquire(rel, group, waitMs === undefined ? null : waitMs)); return h === 0 ? 'busy' : (h === -1 ? 'failed' : h); },
     unlock: function (h) { return ahHost.lockRelease(h); },
+    // The fenced commit of a file guarded by the lock `h` taken in this call: `fenceSweep` (right after taking the lock, before
+    // reading `rel`) removes earlier holders' staged copies `<rel><infix>*`; `writeFenced` stages, re-checks that `h` is still
+    // ours, then renames; false when the lock was taken over (nothing of ours lands over the new holder's write).
+    fenceSweep: function (rel, infix) { return ahHost.fenceSweep(rel, infix); },
+    // `guard` (optional): [[rel, key, max], ...]; the commit is discarded when a watched number is above its bound at the rename.
+    writeFenced: function (rel, t, h, infix, guard) { return ahHost.writeFenced(rel, ahWf(t), h, infix, guard === undefined || guard === null ? null : JSON.stringify(guard)); },
     // The retention sweep of the state files of one writer prefix (stale ones go; `keep` stays).
     // Scoped read of a file under the state directory (null when absent, unreadable or over the cap).
     readText: function (rel) { return ahNull(ahHost.stateRead(rel)); },
@@ -80,19 +129,19 @@ var ah = {
   markExecutable: function (rel) { return ahHost.fileExec(rel) === true; },
   // Make absolute directory `h` the home of the rest of this call (settings, skips and the scoped state reads and writes), as a Node
   // hook whose os.homedir() falls back to the passwd home sees it. false (nothing changed) for a path that is not absolute.
-  useHome: function (h) { return ahHost.useHome(h); },
+  useHome: function (h) { ahSetMemo.req = null; return ahHost.useHome(h); },
   pid: function () { return ahHost.pid(); },
   fnv: function (t) { return ahHost.fnv(t); },
   contentHash: function (parts) { return ahHost.contentHash(parts); },
   settings: {
-    bool: function (key) { return ahHost.settingBool(key); },
-    enum: function (key) { return ahHost.settingEnum(key); },
-    str: function (key) { return ahHost.settingStr(key); },
-    num: function (key) { return ahHost.settingNum(key); },
+    bool: function (key) { return ahSet('b', key, ahHost.settingBool); },
+    enum: function (key) { return ahSet('e', key, ahHost.settingEnum); },
+    str: function (key) { return ahSet('s', key, ahHost.settingStr); },
+    num: function (key) { return ahSet('n', key, ahHost.settingNum); },
     // Like `num`, but a value below the entry's minimum is dropped (the next source is asked), the way the Node `settings.get` does.
-    numStrict: function (key) { return ahHost.settingNumStrict(key); },
+    numStrict: function (key) { return ahSet('m', key, ahHost.settingNumStrict); },
     // The effective value of a free-text setting (its default when unset).
-    str: function (key) { return ahHost.settingStr(key); },
+    str: function (key) { return ahSet('s', key, ahHost.settingStr); },
     skipped: function (guard) { return ahHost.skipped(guard); },
     // `get(section, key, dflt)` of the settings chain for the described entry; `dflt` undefined: the entry's own default.
     // Returns {status: 'value'|'none'|'undecidable', value}.
@@ -152,6 +201,9 @@ var ah = {
   // The effective value of a defaults key through the owner's editable layers (settings.json, config.toml, shipped default).
   cfgLive: function (key) { return JSON.parse(ahHost.cfgLive(key)); },
   sha1: function (t) { return ahHost.sha1(ahWf(t)); },
+  // Whether a blockedOn reason names the owner or a human (a word of dispatch_tier.owner_values): the engine's one owner matcher, the
+  // same the agent tracker's hold_owner uses (GH #959).
+  ownerNamed: function (t) { return typeof t === 'string' && ahHost.ownerNamed(ahWf(t)); },
   // The engine's outbound secret scrubber (the `jev.scrub_rules` of the plugin's jev.toml).
   scrub: function (t) { return ahHost.scrubSecrets(t); },
   log: function (kind, t) { ahHost.log(kind, t); },
@@ -212,12 +264,42 @@ var ah = {
     // [timestamp (a string, else null), [[name, file_path|null, command|null]]] per entry with a string timestamp or a tool use
     // (found through the `keys` of nested objects; a non-string name is ''). Blank and invalid lines are left out.
     toolUseScan: function (p, windowBytes, needles, keys) { var r = ahHost.toolUseScan(p, windowBytes || 0, needles, keys); return r === null || r === undefined ? null : JSON.parse(r); },
+    // The lines of the tail that hold a needle, each reduced to the facts a reducer reads (m: marks, r: regex captures, p: parsed paths, q: quoted pieces):
+    // null or an array of {m, r, p, q?}; the engine keeps them between calls, so only the appended bytes are digested. See host_ts.rs `features`.
+    features: function (p, windowBytes, spec) { var r = ahHost.transcriptFeatures(p, windowBytes, JSON.stringify(spec)); if (r === null || r === undefined) return null; var v = JSON.parse(r); return v && v.unsure ? null : v; },
     // Finished-but-not-stopped named teammates of a Claude transcript tail: null, {unsure: true} or {teammates: [{name, idleSinceMs}]}.
     teammates: function (p, tailBytes) { var r = ahHost.transcriptTeammates(p, tailBytes || 0); return r === null || r === undefined ? null : JSON.parse(r); },
     // Finished-but-not-closed agents of a Codex rollout tail: null, {unsure: true} or {agents: [{id, label, idleSinceMs}]}.
     codexAgents: function (p, tailBytes) { var r = ahHost.transcriptCodexAgents(p, tailBytes || 0); return r === null || r === undefined ? null : JSON.parse(r); },
     // The running agents of a transcript: null (unreadable), {unsure: true}, or {rows: [{id, description, spawnInput}]}.
     agents: function (p) { return JSON.parse(ahHost.agents(p)); },
+    // The same completion/liveness rules as the agent tracker, refreshed read-only.
+    trackedAgents: function (p) { return JSON.parse(ahHost.trackedAgents(p.session_id || '', p.transcript_path || '', p.cwd || '')); },
+    // The tracker rows indexed once: by id and by name, with the two state lists read once. Cached per rows array (the
+    // arrays are read-only to every caller), so a loop over many agents costs one pass over the rows, not one per agent.
+    trackedIndex: function (rows) {
+      var hit = ahTrackedIdx.get(rows);
+      if (hit !== undefined && hit.n === rows.length) return hit;
+      var byId = new Map(), byName = new Map();
+      for (var i = 0; i < rows.length; i++) {
+        var r = rows[i];
+        if (!byId.has(r.id)) byId.set(r.id, []);
+        byId.get(r.id).push(r);
+        if (!byName.has(r.name)) byName.set(r.name, []);
+        byName.get(r.name).push(r);
+      }
+      hit = { n: rows.length, byId: byId, byName: byName, live: ah.cfg('agent_tracker.guard_live_states'), inactive: ah.cfg('agent_tracker.guard_inactive_states') };
+      ahTrackedIdx.set(rows, hit);
+      return hit;
+    },
+    // true (a live tracker row), false (all its rows inactive) or null (no row, or unknown) for the agent `id` (an id, else a name).
+    trackedLiveness: function (id, rows) {
+      var ix = ah.transcript.trackedIndex(rows), matches = ix.byId.get(id);
+      if (matches === undefined) matches = ix.byName.get(id);
+      if (matches === undefined) return null;
+      if (matches.some(function (r) { return r.known && ix.live.indexOf(r.state) >= 0; })) return true;
+      return matches.every(function (r) { return ix.inactive.indexOf(r.state) >= 0; }) ? false : null;
+    },
     // Like `agents`, but only the default window (the Node `runningAgents`): no widening, and an empty window is an empty list.
     agentsWindow: function (p) { return JSON.parse(ahHost.agentsWindow(p)); },
     // The last lines of a file with their byte offsets: {lines: [[offset, text|null]]} (text null: over lineMax, or not UTF-8), or null.
@@ -225,6 +307,8 @@ var ah = {
     // The newest maxLines lines parsed by the engine and cut down to the `keep` paths (lists of keys, '*' = every array element):
     // {lines: [[offset, value]], dropped, droppedUnread} (older lines left out; of them over lineMax or not UTF-8), value null (over lineMax or not UTF-8), 0 (blank, or not a JSON object), the cut-down object,
     // or the line's text when the engine's parser refused it (parse it yourself); null when unreadable.
+    // An incremental forward read from `from` (a `next` an earlier call returned; below 0: the last window), bounded per call and per line.
+    rangeEntries: function (p, from, windowBytes, lineMax, keep, maxLines) { var r = ahHost.rangeEntries(p, from, windowBytes || 0, lineMax || 0, JSON.stringify(keep), maxLines || 0); return r === null || r === undefined ? null : JSON.parse(r); },
     tailEntries: function (p, windowBytes, lineMax, keep, maxLines) { var r = ahHost.tailEntries(p, windowBytes || 0, lineMax || 0, JSON.stringify(keep), maxLines || 0); return r === null || r === undefined ? null : JSON.parse(r); },
     // null: no readable transcript; {hint:false}: no line can hold `hint`; {unsure:true}: a line JS might read differently;
     // {parts:[...]}: the current turn's assistant text blocks.

@@ -155,7 +155,7 @@ pub fn run_cmd(p: &Parsed) -> i32 {
     let sub = p.rest.first().map(String::as_str).unwrap_or("status");
     let Some(mut env) = Env::current() else { return 64 };
     if sub == defaults::text("agent_tracker.wake_verb") {
-        return super::wake::run(p);
+        return super::wake::run_merged(p, false);
     }
     if sub == "send" {
         return super::ctl::run_send(p);

@@ -1,0 +1,13 @@
+diff --git a/plugins/anti-hall/engine/logic/task-tracker.js b/plugins/anti-hall/engine/logic/task-tracker.js
+index f6a7790f..30a49bbf 100644
+--- a/plugins/anti-hall/engine/logic/task-tracker.js
++++ b/plugins/anti-hall/engine/logic/task-tracker.js
+@@ -371,7 +371,7 @@ function ttFresh(home, tp, sessionRaw, p) {
+     if (r.unsure) { ah.unable('task-tracker:tasks_unsure'); return null; } // a tail the engine cannot read exactly is read as no tasks
+     if (r.unreadable) return null;
+   }
+-  var tasks = store === null ? r.tasks : tk.withStore(r.unsure || r.unreadable ? [] : r.tasks, store);
++  var tasks = r.tasks;
+   var plan = { track: null, annotate: null, demandShown: 0 };
+   var tr = ttTrack(home, sessionRaw, tp, tasks);
+   plan.track = tr.apply;

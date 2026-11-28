@@ -14,10 +14,77 @@ function tgRe(key, flags) { return jx.re(key, flags); }
 
 function tgCoordinator(owner) { return tgRe('task_guard.coordinator_owner_re', 'i').test(owner); }
 
+// ---- bounded holds (owner principle: no exemption lasts for ever) ----
+// Every marker exemption (owner decision, blockedOn reason, parked, clock) holds a task out of the rule for nudges.hold.hold_max_ms from
+// when the Stop first saw that marker text on that task; past it the exemption lapses and the normal rule applies. A changed marker
+// text restarts the clock. The first-seen times live in one small state file per session. Outside a decision (tgHolds null) nothing lapses.
+var tgHolds = null;
+
+function tgHoldsOpen(home, safeSession, now) {
+  var rel = ah.cfg('paths.base_dir') + '/' + ah.cfg('task_guard.hold_state_prefix') + safeSession, prior = {}, raw = ah.state.readText(rel);
+  if (raw !== null) {
+    var r = jx.parse(raw);
+    if (r.unsure) ah.unable('task-guard:hold_state_unsure');
+    else if (!r.invalid && r.v !== null && typeof r.v === 'object' && !Array.isArray(r.v)) prior = r.v;
+  }
+  tgHolds = { home: home, rel: rel, now: now, prior: prior, seen: {}, lapsed: {}, max: ah.cfg('nudges.hold').hold_max_ms };
+}
+
+// When this session's own transcript last wrote `blockedOn` of task `t` with a TaskUpdate (ms), else null. With a task store the list holds no
+// transcript facts, so the transcript is read once for them (the 'guard' variant of the shared reader).
+var tgAtPath = null, tgAtSid = null, tgAtMap = null;
+function tgBlockedOnAt(t) {
+  if (typeof t.blockedOnAtMs === 'number' && isFinite(t.blockedOnAtMs)) return t.blockedOnAtMs;
+  if (tgAtPath === null) return null;
+  if (tgAtMap === null) {
+    tgAtMap = {};
+    var r = ah.transcript.tasks(tgAtPath, 'guard', ah.cfgNum('taskstate.tail_bytes'), 0);
+    if (r && Array.isArray(r.tasks)) r.tasks.forEach(function (x) { if (typeof x.blockedOnAtMs === 'number' && isFinite(x.blockedOnAtMs)) tgAtMap[x.id] = x.blockedOnAtMs; });
+  }
+  return typeof tgAtMap[t.id] === 'number' ? tgAtMap[t.id] : null;
+}
+
+// Whether the `kind` exemption of task `t` (marker text `marker`) is still in force.
+function tgHeld(t, kind, marker) {
+  if (tgHolds === null) return true;
+  var key = t.id + '|' + kind + '|' + ah.sha1(marker), first = tgHolds.seen[key];
+  if (first === undefined) {
+    var was = tgHolds.prior[key];
+    first = typeof was === 'number' && isFinite(was) && was <= tgHolds.now ? was : tgHolds.now;
+    tgHolds.seen[key] = first;
+  }
+  // The session's own TaskUpdate that writes metadata.blockedOn again (even with the same text) is the re-confirmation the hint asks for: the
+  // hold runs from it. Only this transcript's tool calls count (blockedOnAtMs); a task file another session rewrites renews nothing.
+  var at = tgBlockedOnAt(t);
+  if (at !== null && at > first && at <= tgHolds.now) {
+    first = at;
+    tgHolds.seen[key] = first;
+  }
+  if (tgHolds.now - first < tgHolds.max) return true;
+  if (tgHolds.lapsed[key] === undefined) { tgHolds.lapsed[key] = kind; ah.metric('idle_rule_hold_lapsed', ['reason', kind]); }
+  return false;
+}
+
+// Save the clocks of the holds this Stop saw (the ones gone are dropped); written only when something changed.
+function tgHoldsClose() {
+  var h = tgHolds;
+  if (h === null) return;
+  var keys = Object.keys(h.seen), same = keys.length === Object.keys(h.prior).length && keys.every(function (k) { return h.prior[k] === h.seen[k]; });
+  if (same) return;
+  if (keys.length === 0) { ah.state.remove(h.rel); return; }
+  ah.state.op(h.home, 'after_reply', h.rel, JSON.stringify(h.seen));
+}
+
 // `isOwnerBlocked` of lib/dispatch-demand.js.
 function tgOwnerBlocked(t) {
+  return tgOwnerMarked(t) && tgHeld(t, ah.cfg('idle_rule.reason_owner'), tgIrText(t) + '\n' + tk.blockedOnText(t));
+}
+
+function tgOwnerMarked(t) {
   if (!ah.settings.bool('dispatch_tier.owner_marker_setting')) return false;
-  if (ah.cfg('dispatch_tier.owner_values').indexOf(tk.blockedOnText(t)) >= 0) return true;
+  if (tk.ownerHeld(t)) return true;
+  var value = [t.owner || '', t.content || '', t.description || ''].join(' ').toLowerCase();
+  if (ah.cfg('task_guard.owner_decision_markers').some(function (m) { return value.indexOf(m.toLowerCase()) >= 0; })) return true;
   return tgRe('dispatch_tier.owner_subject_re', 'i').test(t.content);
 }
 
@@ -36,7 +103,7 @@ function tgMinPriorityRank() {
 }
 
 // The open tasks that can be dispatched now.
-function tgActionable(open, tasks) {
+function tgActionable(open, tasks, skips) {
   var known = {}, notDone = {};
   tasks.forEach(function (t) { known[t.id] = true; if (!tk.isDone(t)) notDone[t.id] = true; });
   var floor = tgMinPriorityRank(), pending = ah.cfg('task_guard.pending_status');
@@ -44,9 +111,92 @@ function tgActionable(open, tasks) {
     if (tk.statusLc(t) !== pending || t.blockUnknown) return false;
     if (t.owner && !tgCoordinator(t.owner)) return false;
     if (tgOwnerBlocked(t)) return false;
+    var bo = tk.blockedOnText(t);
+    if (bo !== '' && !tk.ownerHeld(t) && tgHeld(t, ah.cfg('idle_rule.reason_blocked_on'), bo)) return false; // a task that names what it waits on is held, not dispatchable (the owner values keep their own, switchable test above)
+    if (skips !== null && skips[t.id] !== undefined) return false; // attended by an agent's description or launch name too: tk.evaluate reads descriptions only
     if (t.blockedBy.some(function (id) { return notDone[id] === true || known[id] !== true; })) return false;
     return tgPriorityRank(t.priority) <= floor;
   });
+}
+
+
+// ---- R-idle (plan v2 section 4; guards.idleRule, off by default): the false-positive filter and the exact-id block text ----
+// With the switch off none of this runs and every answer is the one it always was.
+function tgIdleRuleOn() { return ah.settings.bool('task_guard.idle_rule_setting'); }
+
+// The text a task's marker is looked for in: its subject and the start of its description.
+function tgIrText(t) { return ((t.content || '') + '\n' + (t.description || '')).slice(0, ah.cfgNum('idle_rule.text_max')); }
+
+// The tasks that are not idle, each with the reason it is skipped: {taskId: reason}. A live owner agent, an agent whose description (or
+// launch name) names the task, an owner decision, a blockedOn marker with a reason, an in-progress task while a background shell or Monitor runs, a parked/blocked/waiting marker that gives its reason,
+// a wait on a clock. A bare "BLOCKED" with no reason is not skipped. Reads only what the Stop already read (tasks, agent rows).
+function tgIdleSkips(open, rows) {
+  var out = {}, minReason = ah.cfgNum('idle_rule.blocked_on_min'), refRe = new RegExp(ah.cfg('task_guard.task_ref_re'), 'g'), covered = {};
+  (rows || []).forEach(function (r) {
+    if (r.live === false) return; // the tracker knows it stopped
+    var name = jx.isObj(r.spawnInput) && typeof r.spawnInput[ah.cfg('task_guard.owner_name_key')] === 'string' ? r.spawnInput[ah.cfg('task_guard.owner_name_key')] : '';
+    // the start of the spawn prompt counts too: an agent launched "for #1" in its brief is working #1 (its description may only name the work)
+    var prompt = jx.isObj(r.spawnInput) && typeof r.spawnInput.prompt === 'string' ? r.spawnInput.prompt.slice(0, ah.cfgNum('idle_rule.prompt_ref_max')).replace(new RegExp(ah.cfg('idle_rule.prompt_ref_skip_re'), 'gi'), ' ') : '';
+    [String(r.description || ''), name, prompt].forEach(function (txt) {
+      var m; refRe.lastIndex = 0;
+      while ((m = refRe.exec(txt)) !== null) { covered[m[1]] = true; if (m[0].length === 0) refRe.lastIndex++; }
+    });
+    // ... and so does the task's own subject quoted in the description, launch name or prompt head
+    var hay = (String(r.description || '') + '\n' + name + '\n' + prompt).toLowerCase();
+    open.forEach(function (t) {
+      var subj = tk.oneLine(String(t.content || '').replace(jx.re('task_guard.label_priority_prefix_re', 'i'), ''), ah.cfgNum('idle_rule.subject_ref_max')).toLowerCase();
+      if (subj.length >= ah.cfgNum('idle_rule.subject_ref_min') && hay.indexOf(subj) >= 0) covered[t.id] = true;
+    });
+  });
+  // a live background shell or Monitor is the work an in-progress task is waiting on: the session is not idle
+  var bgLive = tk.bgLive(rows);
+  open.forEach(function (t) {
+    var why = '';
+    if (tgOwnerBlocked(t)) why = ah.cfg('idle_rule.reason_owner');
+    else if (tk.blockedOnText(t).length >= minReason && tgHeld(t, ah.cfg('idle_rule.reason_blocked_on'), tk.blockedOnText(t))) why = ah.cfg('idle_rule.reason_blocked_on');
+    else if (tgRe('idle_rule.parked_re', 'i').test(tgIrText(t)) && tgHeld(t, ah.cfg('idle_rule.reason_parked'), tgIrText(t))) why = ah.cfg('idle_rule.reason_parked');
+    else if (tgRe('idle_rule.clock_re', 'i').test(tgIrText(t)) && tgHeld(t, ah.cfg('idle_rule.reason_clock'), tgIrText(t))) why = ah.cfg('idle_rule.reason_clock');
+    else if (t.owner && !tgCoordinator(t.owner) && (tgLiveAgentOwner(t.owner, rows) || tgChildAttended(t.owner))) why = ah.cfg('idle_rule.reason_live_agent');
+    else if (covered[t.id] === true) why = ah.cfg('idle_rule.reason_agent_ref');
+    else if (bgLive && ah.cfg('taskstate.in_progress_statuses').indexOf(tk.statusLc(t)) >= 0) why = ah.cfg('idle_rule.reason_bg_job');
+    if (why !== '') out[t.id] = why;
+  });
+  return out;
+}
+
+// Whether the Stop saw a hold of task `t` run out (its blockedOn or other marker): the task has a stated reason, it only needs confirming.
+function tgLapsed(t) {
+  if (tgHolds === null) return false;
+  var pre = t.id + '|';
+  return Object.keys(tgHolds.lapsed).some(function (k) { return k.indexOf(pre) === 0; });
+}
+
+function tgIdleLabel(t) {
+  var subj = tk.oneLine(t.content && t.content !== t.id ? t.content : ah.cfg('task_guard.subject_unknown'), ah.cfgNum('task_guard.subject_max'));
+  var lapsed = tgLapsed(t) && tk.blockedOnText(t) !== ''
+    ? text.render(ah.cfg('idle_rule.label_lapsed'), { reason: tk.oneLine(t.blockedOn, ah.cfgNum('idle_rule.subject_ref_max')) }) : '';
+  return '#' + t.id + ' ' + JSON.stringify(subj) + ' [' + tk.oneLine(t.status || ah.cfg('task_guard.status_open'), ah.cfgNum('task_guard.status_max')) + ']' + lapsed;
+}
+
+// {what, instead, extra} of the R-idle block for `tasks`: the exact ids first (the visible line is cut near 115 units), the one step that
+// clears each in the instead line, the full per-task list and the three clearing steps in the saved details.
+function tgIdleRuleText(kind, tasks, upd) {
+  var max = ah.cfgNum('idle_rule.ids_max');
+  // a task whose blockedOn hold ran out has a reason that needs confirming; the others have none: two groups, each named alone
+  var lapsed = tasks.filter(function (t) { return tgLapsed(t) && tk.blockedOnText(t) !== ''; });
+  var missing = tasks.filter(function (t) { return lapsed.indexOf(t) < 0; });
+  function vars(group) {
+    var ids = group.slice(0, max).map(function (t) { return '#' + t.id; });
+    var more = group.length > max ? text.render(ah.cfg('idle_rule.more'), { n: group.length - max }) : '';
+    return { n: group.length, ids: ids.join(ah.cfg('idle_rule.id_sep')), more: more, upd: upd, first: group[0] ? group[0].id : '' };
+  }
+  var parts = [], extra = [];
+  if (missing.length > 0) parts.push(text.render(kind === 'idle' ? ah.cfg('idle_rule.what_idle') : ah.cfg('idle_rule.what_open'), vars(missing)));
+  if (lapsed.length > 0) parts.push(text.render(ah.cfg('idle_rule.what_lapsed'), vars(lapsed)));
+  var instead = text.render(ah.cfg(missing.length > 0 ? 'idle_rule.instead' : 'idle_rule.instead_lapsed'), vars(missing.length > 0 ? missing : lapsed));
+  if (missing.length > 0 && lapsed.length > 0) extra.push(text.render(ah.cfg('idle_rule.instead_lapsed'), vars(lapsed)));
+  extra.push(text.render(ah.cfg('idle_rule.details_list'), { list: tasks.map(tgIdleLabel).join('\n') }), text.render(ah.cfg('idle_rule.details_steps'), vars(tasks)));
+  return { what: parts.join(' '), instead: instead, extra: extra };
 }
 
 // `devswarmChildAttended(owner)`: the app database shows the owner's workspace live (tk.childAttended).
@@ -54,20 +204,26 @@ function tgChildAttended(owner) { return tk.childAttended(owner); }
 
 // A task whose owner names an agent this session has running (its id, the name it was launched with, or its description) is attended: the agent is working
 // it. `rows` is the running-agent list of the transcript scan (null when unreadable: nothing is attended through it).
+function tgMatchingOwners(owner, rows) { return tk.matchingOwners(owner, rows); }
+
 function tgLiveAgentOwner(owner, rows) {
-  var o = (owner || '').trim().toLowerCase();
-  if (!o || rows === null || tgCoordinator(o)) return false;
-  var min = ah.cfgNum('task_guard.owner_match_min'), nameKey = ah.cfg('task_guard.owner_name_key');
-  return rows.some(function (r) {
-    var id = String(r.id || '').toLowerCase(), d = String(r.description || '').toLowerCase();
-    var nm = jx.isObj(r.spawnInput) && typeof r.spawnInput[nameKey] === 'string' ? r.spawnInput[nameKey].trim().toLowerCase() : '';
-    return o === id || (d !== '' && o === d) || (nm !== '' && o === nm) || (o.length >= min && d.indexOf(o) >= 0);
-  });
+  return tgMatchingOwners(owner, rows).some(function (r) { return r.live === true; });
+}
+
+// An owner is unresolved when it names agent work this session can see (a launched or tracked agent) whose liveness no source can
+// tell: that is advised, not blocked (#317). An owner that names nothing the session can see, or only work known to have ended, is
+// not unresolved and blocks like any open task, unless task_guard.advise_unmatched_owners says to advise it too.
+function tgUnresolvedOwner(t, rows) {
+  if (!t.owner || tgCoordinator(t.owner) || tgOwnerBlocked(t) || tgChildAttended(t.owner)) return false;
+  var m = tgMatchingOwners(t.owner, rows);
+  // a scan that could not read the agents (rows.scanUnknown) proves nothing about this owner: advise, never block on missing evidence
+  if (m.length === 0) return rows.scanUnknown === true || ah.cfg('task_guard.advise_unmatched_owners') === true;
+  return !m.some(function (r) { return r.live !== null; });
 }
 
 // The open tasks the generic block lists: a task waiting (through any chain) on an open task that is itself free or waiting on the
 // owner is honestly blocked and left out, as is a task waiting on the owner and one owned by a live DevSwarm workspace.
-function tgUnblocked(open, tasks, rows) {
+function tgUnblocked(open, tasks, rows, skips) {
   var byId = {}, openIds = [];
   tasks.forEach(function (t) { byId[t.id] = t; if (ah.cfg('taskstate.open_statuses').indexOf(tk.statusLc(t)) >= 0 && openIds.indexOf(t.id) < 0) openIds.push(t.id); });
   function valid(t) { return t.blockedBy.filter(function (id) { return id !== t.id && openIds.indexOf(id) >= 0; }); }
@@ -85,7 +241,9 @@ function tgUnblocked(open, tasks, rows) {
   for (var i = 0; i < open.length; i++) {
     var t = open[i];
     if (tgOwnerBlocked(t) || valid(t).some(function (b) { return reach[b] === true; })) continue;
+    if (skips !== null && skips[t.id] !== undefined) continue;
     if (tgLiveAgentOwner(t.owner, rows)) continue;
+    if (ah.cfg('task_guard.advise_unresolved_owners') && tgUnresolvedOwner(t, rows)) continue;
     if (!tgChildAttended(t.owner)) out.push(t);
   }
   return out;
@@ -153,7 +311,7 @@ function tgReadState(path) {
   if (r.unsure) { ah.unable('task-guard:state_unsure'); return { hash: '', blocks: 0 }; }
   if (!r.invalid && r.v !== null && typeof r.v === 'object') {
     var h = r.v[ah.cfg('task_guard.state_hash_key')], b = r.v[ah.cfg('task_guard.state_blocks_key')];
-    return { hash: typeof h === 'string' ? h : '', blocks: typeof b === 'number' && isFinite(b) ? b : 0 };
+    return Object.assign({}, r.v, { hash: typeof h === 'string' ? h : '', blocks: typeof b === 'number' && isFinite(b) ? b : 0 });
   }
   return { hash: raw, blocks: 0 };
 }
@@ -231,10 +389,19 @@ function tgPromptKey(p, transcript) {
   var pid = p[ah.cfg('task_guard.prompt_id_key')];
   if (typeof pid === 'string' && pid) return pid;
   var user = ah.cfg('task_guard.user_type');
-  // only the lines that name a user entry are read below, so only those are fetched
-  var lines = ah.fs.tailLines(transcript, ah.cfgNum('taskstate.tail_bytes'), false, ['"' + user + '"']);
+  // only the newest lines that name a user entry are fetched, newest first; a window whose newest `max` are all unusable (a long run of
+  // tool results) is read again whole, so the answer is the one a full scan gives
+  var max = ah.cfgNum('taskstate.prompt_key_max_lines'), needle = ['"' + user + '"'], bytes = ah.cfgNum('taskstate.tail_bytes');
+  var lines = ah.fs.tailLinesNewest(transcript, bytes, false, needle, max);
   if (lines === null) return '';
-  for (var i = lines.length - 1; i >= 0; i--) {
+  var key = tgNewestPromptKey(lines, user);
+  if (key === '' && max > 0 && lines.length >= max) key = tgNewestPromptKey(ah.fs.tailLinesNewest(transcript, bytes, false, needle, 0) || [], user);
+  return key;
+}
+
+// The uuid of the first real user entry of `lines` (newest first), or ''.
+function tgNewestPromptKey(lines, user) {
+  for (var i = 0; i < lines.length; i++) {
     var t = lines[i].trim();
     if (!t || t.indexOf('"' + user + '"') < 0) continue;
     var r = jx.parse(t);
@@ -296,8 +463,12 @@ function tgMetrics(guard) {
   return { rel: rel, body: JSON.stringify(m) };
 }
 
-function tgBlockReason(p, idle, demand, nudge, home) {
+function tgBlockReason(p, idle, demand, nudge, home, rule) {
   var upd = ah.cfg(tgCodex(p) ? 'task_guard.update_codex' : 'task_guard.update_claude'), guard = ah.cfg('task_guard.guard_name');
+  if (rule) {
+    var rt = tgIdleRuleText(idle ? 'idle' : 'open', idle ? demand.dispatch : nudge, upd);
+    return text.message('block', guard, { what: rt.what, why: ah.cfg(idle ? 'task_guard.idle_why' : 'task_guard.generic_why'), instead: rt.instead, allowed: '', extra: rt.extra });
+  }
   if (idle) {
     var max = ah.cfgNum('task_guard.dispatch_list_max'), labels = [];
     for (var i = 0; i < Math.min(max, demand.dispatch.length); i++) labels.push(tgLabel(demand.dispatch[i]));
@@ -331,7 +502,8 @@ function tgQuiet(out, tasks, home, sessionId) {
   return tgExact(out);
 }
 
-function decide(p) {
+function tgDecideCore(p) {
+  tgHolds = null;
   if (ah.env.get(ah.cfg('task_guard.judge_child_env')) === '1') return 'allow';
   if (!ah.settings.bool('task_guard.setting') || ah.settings.skipped(ah.cfg('task_guard.guard_name'))) return 'allow';
   if (p === null || typeof p !== 'object') p = {};
@@ -350,10 +522,11 @@ function decide(p) {
   var sessionId = given === '' ? ah.sha1(transcript).slice(0, ah.cfgNum('task_guard.session_hash_len')) : given;
   var safeSession = tk.safeKey(sessionId);
   var stateRel = ah.cfg('paths.base_dir') + '/' + ah.cfg('task_guard.state_prefix') + safeSession;
-  var tasks = tk.tasks(transcript);
-  var completed = tasks.filter(tk.isDone).length, out = '';
-  var pruneAfter = ah.settings.num('task_guard.prune_setting');
-  if (isFinite(pruneAfter) && pruneAfter > 0 && completed > pruneAfter) { if (adv.gate(ah.cfg('advisory.kind_task_guard_prune'), sessionId)) out += text.render(ah.cfg('task_guard.prune_advisory'), { n: completed, limit: String(pruneAfter) }); }
+  tgAtPath = transcript; tgAtSid = given === '' ? undefined : given; tgAtMap = null;
+  var tasks = tk.tasks(transcript, home, given === '' ? undefined : given);
+  // the prune-the-list advisory is NOT here: a Stop hook's stderr at exit 0 never reaches the model (KB-claude-code-hooks.md, Stop row), so
+  // it is delivered by task-tracker on UserPromptSubmit (additionalContext) instead
+  var out = '';
   var open = tasks.filter(tk.isOpen);
   if (open.length === 0) {
     if (!tasks.unsure) ah.state.remove(stateRel);
@@ -363,7 +536,25 @@ function decide(p) {
   var now = ah.clock.now();
   var agMemo;
   function tgAgents() { if (agMemo === undefined) agMemo = ah.transcript.agents(transcript); return agMemo; }
-  var actionable = tgActionable(open, tasks);
+  // R-idle (guards.idleRule): plan mode is quiet; the running agents are read for every Stop so an agent that names a task attends it
+  var rule = tgIdleRuleOn();
+  if (rule && typeof p.permission_mode === 'string' && p.permission_mode.toLowerCase() === ah.cfg('tasklist_guard.plan_mode_value')) {
+    ah.metric('idle_rule_suppressed', ['reason', ah.cfg('idle_rule.reason_plan_mode')], open.length);
+    return tgQuiet(out, tasks, home, sessionId);
+  }
+  // the running agents are read once, and only when a dispatch check, an owned open task or the R-idle filter needs them
+  var rows = null;
+  if (rule || open.some(function (t) { return t.owner && !tgCoordinator(t.owner); })) {
+    var own = tgAgents();
+    if (own !== null && own.unsure) { ah.unable('task-guard:owner_agents_unsure'); own = null; }
+    // a scan of a truncated tail lists the agents it saw, never all of them: an owner launched before the window may still run
+    var scanUnknown = own === null || own.truncated === true;
+    rows = tk.coverRows(own, ah.transcript.trackedAgents(p));
+    rows.scanUnknown = scanUnknown;
+  }
+  tgHoldsOpen(home, safeSession, now);
+  var skips = rule ? tgIdleSkips(open, rows) : null;
+  var actionable = tgActionable(open, tasks, skips);
   var haveAgents = tgAgentsRunning(home, now);
   var demand = { fire: false, proven: false, unknown: false, dispatch: [], cap: null };
   if (actionable.length > 0) {
@@ -377,19 +568,17 @@ function decide(p) {
     }
   }
   var idle = demand.fire;
-  // the running agents are read once, and only when a dispatch check or an owned open task needs them
-  var rows = null;
-  if (open.some(function (t) { return t.owner && !tgCoordinator(t.owner); })) {
-    var own = tgAgents();
-    if (own !== null && own.unsure) { ah.unable('task-guard:owner_agents_unsure'); own = null; }
-    rows = own === null ? null : own.rows;
-  }
-  var nudge = tgUnblocked(open, tasks, rows);
+  var unresolved = ah.cfg('task_guard.advise_unresolved_owners') ? open.filter(function (t) { return tgUnresolvedOwner(t, rows); }) : [];
+  if (unresolved.length > 0) out += text.render(ah.cfg('task_guard.unresolved_owner_advisory'), { list: tgRenderList(unresolved) });
+  var nudge = tgUnblocked(open, tasks, rows, skips);
+  tgHoldsClose();
   if (!idle && nudge.length === 0) return tgQuiet(out, tasks, home, sessionId);
 
   var sep = ah.cfg('task_guard.hash_sep');
   var hash = idle ? ah.sha1(ah.cfg('task_guard.idle_hash_tags').join(sep) + sep + tgIds(demand.dispatch)) : ah.sha1(tgIds(nudge));
   var prior = tgReadState(home + '/' + stateRel);
+  var cap = blockCap.open(prior, transcript, 'task_guard.cap_scope', home, stateRel);
+  prior = cap.state;
   if (hash === prior.hash || prior.blocks >= ah.cfgNum('task_guard.max_blocks')) return tgQuiet(out, tasks, home, sessionId);
   var cwd = typeof p.cwd === 'string' ? p.cwd : null;
   var sid = p.session_id ? String(p.session_id) : null;
@@ -401,16 +590,114 @@ function decide(p) {
   var guard = ah.homeGuard();
   if (guard.status === 'unknown') ah.unable('task-guard:home_unknown'); // no usable home: no budget or metrics state, the block itself stands
   var budget = tgBudget(guard, p, transcript, safeSession, now);
-  var reason = tgBlockReason(p, idle, demand, nudge, home);
+  var reason = tgBlockReason(p, idle, demand, nudge, home, rule);
   var metrics = null;
   if (guard.status === 'ok' && idle) metrics = tgMetrics(guard);
   var plan = tk.unknownNote(tasks, home, sessionId, ah.cfg('task_guard.unknown_tag'));
   if (budget.spent) return tgExact(out);
+  if (!cap.backup()) return tgExact(out);
   if (budget.rel !== undefined && !ah.state.op(guard.home, 'after_reply', budget.rel, budget.body)) return tgExact(out);
-  var state = {}; state[ah.cfg('task_guard.state_hash_key')] = hash; state[ah.cfg('task_guard.state_blocks_key')] = prior.blocks + 1;
+  var state = cap.blocked(); state[ah.cfg('task_guard.state_hash_key')] = hash; state[ah.cfg('task_guard.state_blocks_key')] = prior.blocks + 1;
   if (!ah.state.op(home, 'after_reply', stateRel, JSON.stringify(state))) return tgExact(out);
   if (metrics !== null) { try { ah.state.writeAtomic(metrics.rel, metrics.body); } catch (e) { /* fail-open, as Node's writeMetrics */ } }
+  if (rule) tgIdleRuleCount(idle, idle ? demand.dispatch : nudge, skips, now);
   var note = plan.write();
   if (note) reason += '\n' + note;
+  var blocked = tgExact(out, text.render(ah.cfg('task_guard.block_json'), { reason: JSON.stringify(reason) }));
+  return idle ? stopReblock.finish(ah.cfg('task_guard.guard_name'), p, blocked, tasks.map(function (t) { return [t.id, t.status, t.owner, t.content, t.description, t.blockedBy]; }).sort()) : blocked;
+}
+
+// R-idle counters, written only for a block that is delivered: fired by kind, the tasks it listed, the tasks the filter kept out by reason,
+// and a proxy for idle-slot minutes (the age of the oldest listed task at the moment its block fires, capped; a true integral over time
+// would need new persistent state, so this is a proxy and is labelled as one).
+function tgIdleRuleCount(idle, listed, skips, now) {
+  var kind = idle ? ah.cfg('idle_rule.kind_idle') : ah.cfg('idle_rule.kind_open');
+  ah.metric('idle_rule_fired', ['kind', kind]);
+  ah.metric('idle_rule_listed', ['kind', kind], listed.length);
+  Object.keys(skips).forEach(function (id) { ah.metric('idle_rule_suppressed', ['reason', skips[id]]); });
+  var oldest = NaN;
+  listed.forEach(function (t) { if (typeof t.sinceMs === 'number' && isFinite(t.sinceMs) && (isNaN(oldest) || t.sinceMs < oldest)) oldest = t.sinceMs; });
+  if (isNaN(oldest)) { ah.metric('idle_rule_age_unknown', ['kind', kind]); return; }
+  var min = Math.min(ah.cfgNum('idle_rule.minutes_cap'), Math.max(0, Math.floor((now - oldest) / ah.cfgNum('task_guard.ms_per_minute'))));
+  ah.metric('idle_slot_minutes', ['kind', kind], min);
+}
+
+// ---- the task-list enforcement at Stop: a capped block for an ignored prune advisory, and for a priority slot that is not P0-P3 ----
+// State: one small file per session, {prune: {n, blocks}, prio: {hash, blocks}}; a changed count or tag set starts a new window. A state
+// that cannot be written or read exactly lets the Stop through (fail-open: a block that cannot be counted could never end).
+function tgEnforce(p, out) {
+  var pruneOn = ah.settings.bool('task_guard.prune_block_setting'), prioOn = ah.settings.bool('task_guard.priority_check_setting');
+  // GH #762: completed tasks left in the list past the age are ordered deleted; at Stop that is a block, only with handover.taskListEnforce = block
+  var orderOn = dord.on() && ah.settings.enum('ctxbudget.set_h_task_enforce') === 'block';
+  if (!pruneOn && !prioOn && !orderOn) return null;
+  var transcript = p.transcript_path, home = ah.home();
+  if (!transcript || typeof transcript !== 'string' || !home) return null;
+  var given = p.session_id ? String(p.session_id) : '';
+  var sessionId = given === '' ? ah.sha1(transcript).slice(0, ah.cfgNum('task_guard.session_hash_len')) : given;
+  tgAtPath = transcript; tgAtSid = given === '' ? undefined : given; tgAtMap = null;
+  var tasks = tk.tasks(transcript, home, given === '' ? undefined : given);
+  if (tasks.unsure) return null;
+  var stateRel = ah.cfg('paths.base_dir') + '/' + ah.cfg('task_guard.enforce_state_prefix') + tk.safeKey(sessionId);
+  var st = { prune: { n: -1, blocks: 0 }, prio: { hash: '', blocks: 0 } }, raw = null;
+  try { raw = ah.state.readText(stateRel); } catch (e) { raw = null; }
+  if (raw !== null) {
+    var r = jx.parse(raw);
+    if (r.unsure) return null;
+    if (!r.invalid && jx.isObj(r.v)) {
+      if (jx.isObj(r.v.prune)) st.prune = { n: Number(r.v.prune.n), blocks: Number(r.v.prune.blocks) || 0 };
+      if (jx.isObj(r.v.prio)) st.prio = { hash: String(r.v.prio.hash || ''), blocks: Number(r.v.prio.blocks) || 0 };
+    }
+  }
+  var reason = '';
+  if (pruneOn) {
+    var limit = ah.settings.num('task_guard.prune_setting'), done = tasks.filter(tk.isDone).length;
+    var shown = adv.load(sessionId).kinds[ah.cfg('advisory.kind_task_guard_prune')];
+    var wasShown = jx.isObj(shown) && typeof shown.n === 'number' && shown.n > 0;
+    if (isFinite(limit) && limit > 0 && done > limit && wasShown) {
+      if (st.prune.n !== done) st.prune = { n: done, blocks: 0 };
+      if (st.prune.blocks < ah.settings.num('task_guard.prune_block_max_setting')) {
+        st.prune.blocks++;
+        reason = text.render(ah.cfg('task_guard.prune_block_text'), { n: done, limit: String(limit) });
+      }
+    }
+  }
+  if (reason === '' && prioOn) {
+    var slotRe = jx.re('task_guard.priority_slot_re'), okRe = jx.re('task_guard.priority_ok_re', 'i'), bad = [];
+    tasks.filter(tk.isOpen).forEach(function (t) {
+      var m = slotRe.exec(String(t.content || ''));
+      if (m && !okRe.test(m[1].trim()) && bad.indexOf(m[1].trim()) < 0) bad.push(m[1].trim());
+    });
+    if (bad.length > 0) {
+      var hash = ah.sha1(bad.slice().sort().join('\n'));
+      if (st.prio.hash !== hash) st.prio = { hash: hash, blocks: 0 };
+      if (st.prio.blocks < ah.settings.num('task_guard.priority_check_max_setting')) {
+        st.prio.blocks++;
+        var lmax = ah.cfgNum('task_guard.priority_list_max');
+        reason = text.render(ah.cfg('task_guard.priority_block_text'), { list: bad.slice(0, lmax).map(function (x) { return '[' + x + ']'; }).join(', ') });
+      }
+    }
+  }
+  var dpl = null;
+  if (reason === '' && orderOn) {
+    dpl = dord.plan(sessionId, tasks, ah.clock.now(), dord.ownNames(p));
+    if (dpl.due.length > 0) reason = dord.order(dpl.due);
+  }
+  if (reason === '') {
+    if (dpl !== null && (dpl.changed || dpl.lingering > 0)) { ah.commit(); dord.apply(dpl); }
+    return null;
+  }
+  if (dpl !== null) { ah.commit(); if (!dord.apply(dpl)) return null; } // an order that cannot be counted is never given
+  var wrote = false;
+  try { wrote = ah.state.writeAtomic(stateRel, JSON.stringify(st)); } catch (e) { wrote = false; }
+  if (!wrote) return null; // a block that cannot be counted is never made
   return tgExact(out, text.render(ah.cfg('task_guard.block_json'), { reason: JSON.stringify(reason) }));
+}
+
+function decide(p) {
+  var r = tgDecideCore(p);
+  if (r !== 'allow' && !(jx.isObj(r) && r.exact && !r.exact.out)) return r; // the open-task block stands first
+  if (ah.env.get(ah.cfg('task_guard.judge_child_env')) === '1' || ah.settings.skipped(ah.cfg('task_guard.guard_name'))) return r;
+  if (!ah.settings.bool('task_guard.setting')) return r;
+  var e = tgEnforce(jx.isObj(p) ? p : {}, r === 'allow' ? '' : r.exact.err);
+  return e === null ? r : e;
 }

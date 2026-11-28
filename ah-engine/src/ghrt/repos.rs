@@ -166,7 +166,7 @@ mod tests {
 
     #[test]
     fn noting_a_directory_is_throttled_pruned_and_capped() {
-        let d = std::env::temp_dir().join(format!("ghrt-note-{}", std::process::id()));
+        let d = crate::testtmp::path(format!("ghrt-note-{}", std::process::id()));
         let n = |cwd: &str, now: u64| note(&d, "cwds.json", cwd, now, 1000, 10_000, 3);
         assert!(n("/a", 100), "first sighting writes");
         assert!(!n("/a", 600), "inside note_every nothing is written");

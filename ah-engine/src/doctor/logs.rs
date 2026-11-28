@@ -114,7 +114,7 @@ mod tests {
     use super::*;
 
     fn dir(name: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("ah-doctor-logs-{name}-{}", std::process::id()));
+        let d = crate::testtmp::path(format!("ah-doctor-logs-{name}-{}", std::process::id()));
         crate::discard::harmless(std::fs::create_dir_all(&d)); // a test scratch directory
         d
     }

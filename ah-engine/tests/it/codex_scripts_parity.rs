@@ -17,7 +17,7 @@ impl Home {
     fn new() -> Home {
         static N: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
         let n = N.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        Home(TempDir::at(std::env::temp_dir().join(format!("ah-codex-scripts-{}-{n}", std::process::id()))))
+        Home(TempDir::at(crate::common::testtmp::path(format!("ah-codex-scripts-{}-{n}", std::process::id()))))
     }
     fn path(&self) -> &Path {
         self.0.path()
@@ -39,6 +39,7 @@ fn exec(cmd: &mut Command, home: &Home, env: &[(&str, &str)]) -> Run {
         .env("HOME", home.path())
         .env("ANTI_HALL_ROOT", plugin())
         .env("CLAUDE_PLUGIN_ROOT", plugin())
+        .env("AH_ENGINE_PLUGIN_ROOT", plugin())
         .env("AH_ENGINE_DIR", home.path().join("state"))
         .env("ANTIHALL_INGEST_DRY_RUN", "1")
         .current_dir(home.path());

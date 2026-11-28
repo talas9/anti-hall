@@ -1,7 +1,7 @@
 // check = "speculation-guard" (Stop; mirrors hooks/speculation-guard.js). Takes the reply being stopped (the payload's
 // last_assistant_message, else the transcript's last assistant text), looks for hedge words that assert without evidence ("probably",
 // "should be", "I suspect"), and blocks once when it finds one and the reply holds no acknowledgment that would make the hedge
-// honest. A reply is blocked once per distinct text and at most a few times per session, so the guard can never wedge a session.
+// honest. A reply is blocked once per distinct text and at most a few times per configured window, so retries cannot wedge a turn.
 // While the Jev master switch is on the reply is also asked about on the Jev lane (add-block trust: a confident "speculative" adds a
 // block; a hedge under a plan or expectation heading is asked once more with relax-block trust), every decision is written to the
 // guard's own jev-judge.ndjson, and the Stop after a block reports that block's outcome to the Jev decision log. Anything this
@@ -17,6 +17,17 @@ function sgHasAck(t) {
   var ci = ah.cfg('speculation_guard.ack_ci'), cs = ah.cfg('speculation_guard.ack_cs'), i;
   for (i = 0; i < ci.length; i++) if (ah.re.test(ci[i], 'i', t)) return true;
   for (i = 0; i < cs.length; i++) if (ah.re.test(cs[i], '', t)) return true;
+  return false;
+}
+
+// A label that follows the hedge in its own sentence and is written as a label (speculation_guard.ack_local_ci): '(not yet proven)',
+// '\u2014 unconfirmed', ', my inference,', 'unconfirmed:' attached to the hedge by punctuation. A label before the hedge, in another
+// sentence, or inside a description of another subject ('The ticket is unconfirmed; ... probably DNS') covers nothing. The sentence cut is
+// speculation_guard.ack_scope_re: the text after the hedge is cut at its first match before the label is looked for.
+function sgLocalAck(text, end) {
+  var rest = text.slice(end), list = ah.cfg('speculation_guard.ack_local_ci'), cut = ah.re.find(ah.cfg('speculation_guard.ack_scope_re'), '', rest);
+  if (cut) rest = rest.slice(0, cut[0]);
+  for (var i = 0; i < list.length; i++) if (ah.re.find(list[i], 'i', rest)) return true;
   return false;
 }
 
@@ -70,16 +81,24 @@ function sgObligation(text, start, end) {
   return sgT('speculation_guard.requirement_line_re', 'i', text.slice(ls, le < 0 ? text.length : le));
 }
 
+// An unhedged completion claim (speculation_guard.claim_markers): true when any pattern matches.
+function sgClaim(text) {
+  var cl = ah.cfg('speculation_guard.claim_markers');
+  for (var i = 0; i < cl.length; i++) if (ah.re.test(cl[i], 'i', text)) return true;
+  return false;
+}
+
 // The first hedge, in pattern order, that is not exempt: {text, at} or null.
 function sgHit(text) {
   var markers = ah.cfg('speculation_guard.markers'), modal = ah.cfg('speculation_guard.modal_markers');
   for (var i = 0; i < markers.length; i++) {
-    var all = ah.re.findAll(markers[i], 'i', text);
+    var all = rp.wordHits(markers[i], 'i', text);
     if (all.length === 0) continue;
-    var first = text.slice(all[0][0], all[0][1]);
-    if (modal.indexOf(first.toLowerCase()) < 0) return { text: first, at: all[0][0] };
+    var first = text.slice(all[0][0], all[0][1]), isModal = modal.indexOf(first.toLowerCase()) >= 0;
     for (var j = 0; j < all.length; j++) {
-      if (!sgObligation(text, all[j][0], all[j][1])) return { text: text.slice(all[j][0], all[j][1]), at: all[j][0] };
+      if (isModal && sgObligation(text, all[j][0], all[j][1])) continue;
+      if (sgLocalAck(text, all[j][1])) continue; // a hedge its own sentence labels honest, after it, is not a guess
+      return { text: text.slice(all[j][0], all[j][1]), at: all[j][0] };
     }
   }
   return null;
@@ -123,7 +142,7 @@ function sgPrior(path) {
   if (v && typeof v === 'object') {
     var pending = null;
     if (jx.isObj(v.pending) && typeof v.pending.h === 'string' && typeof v.pending.source === 'string') pending = { h: v.pending.h, source: v.pending.source };
-    return { hash: typeof v.hash === 'string' ? v.hash : '', blocks: typeof v.blocks === 'number' && Number.isFinite(v.blocks) ? v.blocks : 0, pending: pending };
+    return Object.assign({}, v, { hash: typeof v.hash === 'string' ? v.hash : '', blocks: typeof v.blocks === 'number' && Number.isFinite(v.blocks) ? v.blocks : 0, pending: pending });
   }
   // a legacy file holding just a hash (or any other JSON scalar): the whole text is the blocked hash
   return { hash: t, blocks: 0, pending: null };
@@ -183,7 +202,7 @@ function decide(p) {
   var tailLines, asstLines;
   // the lines lastAssistant reads: entries that name `assistant` (or spell it with an escape); the host hands over just those
   function assistantLines() {
-    if (asstLines === undefined) asstLines = readable ? rp.lines(transcript, ah.cfgNum('speculation_guard.window_bytes'), ['assistant', '\\u']) : null;
+    if (asstLines === undefined) asstLines = readable ? rp.lines(transcript, ah.cfgNum('speculation_guard.window_bytes'), ['assistant', 'agent_message', '\\u']) : null;
     return asstLines;
   }
   function fromTranscript(map) {
@@ -210,6 +229,8 @@ function decide(p) {
   if (!markerText.trim()) markerText = lastText;
   var msgHash = ah.sha1(lastText);
   var prior = sgPrior(home + '/' + stateRel);
+  var cap = blockCap.open(prior, transcript, 'speculation_guard.cap_scope', home, stateRel);
+  prior = cap.state;
   var guard = ah.cfg('speculation_guard.guard_name');
   var skipped = ah.settings.skipped(guard);
   var jevOn = ah.jev.enabled();
@@ -239,7 +260,8 @@ function decide(p) {
     else if (sgHasAck(lastText)) outcome = ah.cfg('speculation_guard.outcome_evidence');
     else if (sgHit(markerText) !== null) outcome = ah.cfg('speculation_guard.outcome_repeat');
     if (outcome !== null) ah.jev.recordOutcome(jevId, prior.pending.h, outcome, prior.pending.source, typeof p.cwd === 'string' ? p.cwd : null);
-    ah.state.writeAtomic(stateRel, JSON.stringify({ hash: prior.hash, blocks: prior.blocks, pending: null }));
+    if (!cap.backup()) return 'allow';
+    ah.state.writeAtomic(stateRel, JSON.stringify(Object.assign({}, prior, { pending: null })));
   }
   if (skipped) return 'allow';
 
@@ -252,7 +274,19 @@ function decide(p) {
   var wouldBlock = hit !== null && !sgHasAck(lastText) && !cited;
   // the Stop gate: Jev is waited for only when the rule layer flagged a likely unverified claim (the predicate is speculation_guard.jev_gate)
   var gateMode = ah.cfg('speculation_guard.jev_gate');
-  var flagged = gateMode === 'always' ? true : gateMode === 'would_block' ? wouldBlock : hit !== null;
+  var flagged;
+  if (gateMode === 'always') flagged = true;
+  else if (gateMode === 'would_block') flagged = wouldBlock;
+  else if (gateMode === 'hit') flagged = hit !== null;
+  else {
+    // `claim` (default; any other value too): a hedge hit, or an UNHEDGED completion claim ("all done", "fixed") that neither
+    // acknowledges nor cites evidence (#310). Only the semantic judge can block the latter, so it is the one that must be asked.
+    flagged = hit !== null;
+    if (!flagged && !sgHasAck(lastText) && sgClaim(markerText)) {
+      if (tailLines === undefined) tailLines = readable ? rp.lines(transcript, ah.cfgNum('speculation_guard.window_bytes')) : null;
+      flagged = !sgCites(lastText, tailLines);
+    }
+  }
 
   // JEV: the speculation question (add-block). A confident "speculative" adds a block; any failure leaves the regex verdict.
   var entry = null, jevBlock = false, jevHash = '';
@@ -306,7 +340,8 @@ function decide(p) {
 
   var pendingH = jevBlock ? (jevHash || msgHash) : msgHash;
   var source = jevBlock ? ah.cfg('speculation_guard.source_jev') : (inference !== null ? ah.cfg('inference.source') : ah.cfg('speculation_guard.source_regex'));
-  var body = JSON.stringify({ hash: msgHash, blocks: prior.blocks + 1, pending: { h: pendingH, source: source } });
+  var body = JSON.stringify(Object.assign({}, cap.blocked(), { hash: msgHash, blocks: prior.blocks + 1, pending: { h: pendingH, source: source } }));
+  if (!cap.backup()) return finish('allow', 'allow');
   if (!ah.state.writeAtomic(stateRel, body)) return finish('allow', 'allow');
   ah.state.prune(ah.cfg('speculation_guard.prune_prefix'), stateName);
   var what = jevBlock ? ah.cfg('speculation_guard.msg_what_jev')

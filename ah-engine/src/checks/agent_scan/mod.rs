@@ -20,6 +20,7 @@ use std::io::{BufRead, Read, Seek, SeekFrom};
 use std::os::unix::fs::{FileExt, MetadataExt};
 use std::sync::OnceLock;
 
+pub mod lines;
 #[cfg(test)]
 mod tests;
 
@@ -70,7 +71,7 @@ pub struct Rec {
     /// The `shell.kind` of the `task_status` attachment that adopted it (`monitor` for a Monitor-tool task, `bash` for a Bash one); empty when launched or unknown.
     pub shell_kind: String,
     /// The input of the Agent/Task call that launched it (Node `rec.spawnInput`); `None` when that call is outside the window.
-    pub spawn_input: Option<Value>,
+    pub spawn_input: Option<std::sync::Arc<Value>>,
 }
 
 /// A teammate message that has not been answered.
@@ -86,6 +87,9 @@ pub struct Pending {
     pub live: bool,
     /// The `<name>@<team>` agent id (empty when unknown).
     pub agent_id: String,
+    /// Whether `sent_at_ms` is a message to the teammate (false: it is the spawn prompt, the teammate's first instruction, which is not a
+    /// message the coordinator can have left unanswered).
+    pub messaged: bool,
 }
 
 /// An insertion-ordered map: a JavaScript `Map` (setting an existing key keeps its position).
@@ -140,6 +144,9 @@ pub struct Scan {
     /// Agent ids of teammates a `TaskStop` ended, which names the teammate (`task_id` is the name, not the agent id) and was issued
     /// after its latest spawn. A stop that failed because the task no longer exists counts: the teammate is gone either way.
     pub stopped_agents: HashSet<String>,
+    /// The time (ms) of the latest terminal or stop evidence per id of `terminal` and `stopped_agents`, when the transcript dated it: a
+    /// stop older than an agent's own later writes is history, not a fresh stop (#972 round 2).
+    pub ended_ts: HashMap<String, f64>,
     /// Teammates sent a message they have not reported on.
     pub pending: Vec<(String, Pending)>,
 }
@@ -337,19 +344,49 @@ pub fn extract_texts(node: &Value, out: &mut Vec<String>) {
     }
 }
 
+/// [`extract_texts`], borrowed: a large tool result is read where it sits in the parsed line, never copied.
+fn extract_text_refs<'a>(node: &'a Value, out: &mut Vec<&'a str>) {
+    match node {
+        Value::String(s) => out.push(s),
+        Value::Array(a) => a.iter().for_each(|x| extract_text_refs(x, out)),
+        Value::Object(o) => {
+            if let Some(Value::String(t)) = o.get("text") {
+                out.push(t);
+            }
+            if let Some(c) = o.get("content") {
+                extract_text_refs(c, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// `text.toLowerCase().includes(needle)` without the lower-cased copy when both are ASCII (a copy of a multi-megabyte tool result
+/// otherwise); any other text takes the copy, so the answer is the same for every input.
+fn lower_contains(text: &str, needle: &str) -> bool {
+    if !(text.is_ascii() && needle.is_ascii()) {
+        return text.to_lowercase().contains(needle);
+    }
+    let (t, n) = (text.as_bytes(), needle.as_bytes());
+    if n.is_empty() {
+        return true;
+    }
+    t.windows(n.len()).any(|w| w.iter().zip(n).all(|(a, b)| a.to_ascii_lowercase() == *b))
+}
+
 /// `notificationTexts(entry)` of `companion/lib/devswarm-idle.js`: the texts of this entry that hold a completion notice.
-fn notification_texts(e: &Value) -> Vec<String> {
-    let mut out: Vec<String> = Vec::new();
+fn notification_texts(e: &Value) -> Vec<&str> {
+    let mut out: Vec<&str> = Vec::new();
     let content = prop(e, "message").and_then(|m| prop(m, "content"));
     match sprop(e, "type") {
         Some("user") => match content {
-            Some(Value::String(s)) => out.push(s.clone()),
+            Some(Value::String(s)) => out.push(s),
             Some(Value::Array(a)) => {
                 for b in a {
                     if sprop(b, "type") == Some("text")
                         && let Some(t) = sprop(b, "text")
                     {
-                        out.push(t.to_string());
+                        out.push(t);
                     }
                 }
             }
@@ -357,12 +394,12 @@ fn notification_texts(e: &Value) -> Vec<String> {
         },
         Some("attachment") => {
             if let Some(p) = prop(e, "attachment").and_then(|a| sprop(a, "prompt")) {
-                out.push(p.to_string());
+                out.push(p);
             }
         }
         Some("queue-operation") => {
             if let Some(c) = sprop(e, "content") {
-                out.push(c.to_string());
+                out.push(c);
             }
         }
         _ => {}
@@ -414,12 +451,14 @@ struct Tail {
 }
 
 impl Tail {
-    /// `None` for a missing, unreadable or empty file (`readTail` returns null).
-    fn open(path: &str, max: u64) -> Option<Tail> {
-        if path.is_empty() {
+    /// `None` for an unreadable or empty file (`readTail` returns null). The window is read from `file` itself (a duplicate of
+    /// the handle), never from a second open of its path, so the bytes read and the length the window is cut from are one file's.
+    fn of(file: &std::fs::File, max: u64) -> Option<Tail> {
+        #[cfg(test)]
+        if test_seam::clone_fails_at(max) {
             return None;
         }
-        let mut f = std::fs::File::open(path).ok()?;
+        let mut f = file.try_clone().ok()?;
         let size = f.metadata().ok()?.len();
         if size == 0 {
             return None;
@@ -430,20 +469,68 @@ impl Tail {
         Some(Tail { r: std::io::BufReader::with_capacity(defaults::num("agent_scan.reader_buf_bytes") as usize, f.take(n)), drop_first: size > n })
     }
 
-    /// The next line without its newline; `Ok(false)` at the end; `Err` when the read fails (`readTail` then returns null).
-    fn read_line(&mut self, buf: &mut Vec<u8>) -> Result<bool, std::io::Error> {
-        buf.clear();
-        match self.r.read_until(b'\n', buf) {
-            Ok(0) => Ok(false),
-            Ok(_) => {
-                if buf.last() == Some(&b'\n') {
-                    buf.pop();
-                }
-                Ok(true)
+    /// The next line without its newline, read with [`read_line_bounded`] at `agent_scan.max_line_bytes`; `Err` when the read
+    /// fails (`readTail` then returns null).
+    fn read_line(&mut self, buf: &mut Vec<u8>) -> Result<Option<LineRead>, std::io::Error> {
+        read_line_bounded(&mut self.r, buf, defaults::num("agent_scan.max_line_bytes"))
+    }
+}
+
+/// One line read by [`read_line_bounded`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LineRead {
+    /// Bytes the line took in the file, its newline included: what a reader's offset moves by, whether or not the line was kept.
+    pub len: u64,
+    /// The line ended with a newline (the last line of a file may not).
+    pub newline: bool,
+    /// The line was longer than the bound: `buf` is empty and the rest of the line was read past without being held.
+    pub oversize: bool,
+}
+
+/// The next line of `r` into `buf` (cleared first, newline not kept), holding at most `max` bytes: `None` at the end. A line
+/// longer than `max` is read through the reader's own buffer and dropped, so a single huge `tool_result` line never grows `buf`
+/// (or anything else) past `max`; `LineRead::oversize` says so. `max` 0 holds any line whole (the unbounded read).
+pub fn read_line_bounded<R: BufRead>(r: &mut R, buf: &mut Vec<u8>, max: u64) -> Result<Option<LineRead>, std::io::Error> {
+    buf.clear();
+    let (mut len, mut oversize, mut newline) = (0u64, false, false);
+    loop {
+        let chunk = match r.fill_buf() {
+            Ok(c) => c,
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(e) => return Err(e),
+        };
+        if chunk.is_empty() {
+            break;
+        }
+        let (body, used) = match chunk.iter().position(|&b| b == b'\n') {
+            Some(i) => {
+                newline = true;
+                (&chunk[..i], i + 1)
             }
-            Err(e) => Err(e),
+            None => (chunk, chunk.len()),
+        };
+        if !oversize {
+            if max > 0 && (buf.len() as u64).saturating_add(body.len() as u64) > max {
+                oversize = true;
+                buf.clear();
+                buf.shrink_to(0);
+            } else {
+                if max > 0 {
+                    // grow by doubling but never past the bound: the default doubling would take up to twice `max`
+                    let need = buf.len() + body.len();
+                    let want = need.max(buf.capacity().saturating_mul(2)).min(max as usize);
+                    buf.reserve_exact(want - buf.len());
+                }
+                buf.extend_from_slice(body);
+            }
+        }
+        len += used as u64;
+        r.consume(used);
+        if newline {
+            break;
         }
     }
+    Ok((len > 0).then_some(LineRead { len, newline, oversize }))
 }
 
 /// `fs.statSync(p).mtimeMs`: Node computes `sec * 1000 + nsec / 1e6` in doubles, and so does this (the rounding is part
@@ -506,6 +593,7 @@ struct Flags {
     taskstop: bool,
     task_status: bool,
     tool_use: bool,
+    /// A teammate message: an idle notice or plain report in a `<teammate-message` block, or a report the host stamped with a peer origin.
     idle: bool,
 }
 
@@ -520,7 +608,7 @@ impl Flags {
 /// lossily decoded, trimmed line would; otherwise the scan decodes and trims first and searches the string.
 struct Prefilter {
     fast: bool,
-    keys: [&'static str; 10],
+    keys: [&'static str; 12],
     finders: Vec<memchr::memmem::Finder<'static>>,
 }
 
@@ -528,7 +616,7 @@ fn prefilter() -> std::sync::Arc<Prefilter> {
     static P: crate::defaults::Cache<Prefilter> = crate::defaults::Cache::new();
     P.get_or_init(|| {
         let k = defaults::raw("agent_scan.prefilter");
-        let keys: [&'static str; 10] = [
+        let keys: [&'static str; 12] = [
             k.str_field("launch"),
             k.str_field("notification"),
             k.str_field("agent_use"),
@@ -539,6 +627,8 @@ fn prefilter() -> std::sync::Arc<Prefilter> {
             k.str_field("task_status"),
             k.str_field("tool_use"),
             k.str_field("idle"),
+            k.str_field("peer"),
+            k.str_field("peer_spaced"),
         ];
         let blank = |b: u8| b.is_ascii_whitespace() || b == 0x0b;
         let fast = keys.iter().all(|n| n.is_ascii() && n.as_bytes().first().is_some_and(|b| !blank(*b)) && n.as_bytes().last().is_some_and(|b| !blank(*b)));
@@ -556,7 +646,7 @@ impl Prefilter {
             taskstop: has(5) || has(6),
             task_status: has(7),
             tool_use: has(8),
-            idle: has(9),
+            idle: has(9) || has(10) || has(11),
         }
     }
 
@@ -573,10 +663,89 @@ impl Prefilter {
 
 // ---- the walk ----------------------------------------------------------------------------------------------
 
+/// The 128-bit key of an id: two independent SipHash-1-3 digests of its bytes (fixed keys, so it is the same on every run). A kept
+/// walk holds one entry per tool call and per tool result of a window of up to tens of megabytes; keying them by this digest
+/// instead of by the id text keeps a third of the memory, and two ids that collide (about 2^-128 per pair) would have to be
+/// ids of one session's own calls.
+fn id_key(id: &str) -> u128 {
+    use std::hash::{Hash, Hasher};
+    let digest = |seed: u8| {
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        seed.hash(&mut h);
+        id.as_bytes().hash(&mut h);
+        h.finish()
+    };
+    (u128::from(digest(1)) << 64) | u128::from(digest(2))
+}
+
+/// A hasher for keys that are already digests.
+#[derive(Default, Clone, Copy)]
+struct DigestHasher(u64);
+
+impl std::hash::Hasher for DigestHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    fn write(&mut self, bytes: &[u8]) {
+        for b in bytes {
+            self.0 = self.0.rotate_left(8) ^ u64::from(*b);
+        }
+    }
+    fn write_u128(&mut self, i: u128) {
+        self.0 = (i as u64) ^ ((i >> 64) as u64);
+    }
+}
+
+type DigestBuild = std::hash::BuildHasherDefault<DigestHasher>;
+
+/// A set of ids, held as their digests.
+#[derive(Clone, Default)]
+struct IdSet(HashSet<u128, DigestBuild>);
+
+impl IdSet {
+    fn insert(&mut self, id: &str) -> bool {
+        self.0.insert(id_key(id))
+    }
+    fn contains(&self, id: &str) -> bool {
+        self.0.contains(&id_key(id))
+    }
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+}
+
+/// A map keyed by ids, held as their digests.
+#[derive(Clone)]
+struct IdMap<V>(HashMap<u128, V, DigestBuild>);
+
+impl<V> Default for IdMap<V> {
+    fn default() -> Self {
+        IdMap(HashMap::default())
+    }
+}
+
+impl<V> IdMap<V> {
+    fn get(&self, id: &str) -> Option<&V> {
+        self.0.get(&id_key(id))
+    }
+    fn get_mut(&mut self, id: &str) -> Option<&mut V> {
+        self.0.get_mut(&id_key(id))
+    }
+    fn insert(&mut self, id: &str, v: V) -> Option<V> {
+        self.0.insert(id_key(id), v)
+    }
+    fn values(&self) -> impl Iterator<Item = &V> {
+        self.0.values()
+    }
+    fn len(&self) -> usize {
+        self.0.len()
+    }
+}
+
 #[derive(Clone)]
 struct ToolUse {
     name: Option<String>,
-    input: Option<Value>,
+    input: Option<std::sync::Arc<Value>>,
     /// Offset of the line that made the call (kept walks only).
     off: u64,
     /// Offset of the last line that looked this call up to judge its answer (kept walks only).
@@ -612,6 +781,8 @@ struct Other {
     ts: f64,
     /// Offset of the line the text came from (kept walks only).
     off: u64,
+    /// Where the text sits in its line when it is not held (`text` is then empty): block, text, byte length (store replays only).
+    at: Option<(u32, u32, u64)>,
 }
 
 #[derive(Clone)]
@@ -621,13 +792,15 @@ struct Walk {
     desc_by_tool_use: HashMap<String, String>,
     others: Vec<Other>,
     other_bytes: u64,
-    dropped_ids: HashSet<String>,
-    tool_uses: HashMap<String, ToolUse>,
+    dropped_ids: IdSet,
+    tool_uses: IdMap<ToolUse>,
+    /// Tool-use ids whose call input an answer is made of (a launch record or a retained result names them): never released.
+    pinned: IdSet,
     stops: Vec<Stop>,
-    errored: HashSet<String>,
+    errored: IdSet,
     /// Tool-use ids whose result says the task does not exist (already ended).
-    gone: HashSet<String>,
-    answered: HashSet<String>,
+    gone: IdSet,
+    answered: IdSet,
     team_events: OMap<Vec<TeamEv>>,
     team_info: OMap<TeamInfo>,
     terminal_ev: HashMap<String, Vec<(u64, f64)>>,
@@ -639,6 +812,25 @@ struct Walk {
     /// Offset of the first line that touched anything an answer is made of (launches, terminal notices, stops, teammate and resume
     /// events); `u64::MAX` while none has.
     rel_min: u64,
+    /// Offset of the last line read past as oversize (`agent_scan.max_line_bytes`); `None` while none has. Such a line is not parsed,
+    /// so the walk cannot say what it carried: a scan whose window holds one is unknown ([`Unsupported`]), never an ordinary answer.
+    oversize_at: Option<u64>,
+}
+
+/// `Walk::mark_terminal` on the fields it changes (so [`finish`] can apply it to its own copies).
+fn mark_terminal_in(terminal: &mut HashSet<String>, terminal_ev: &mut HashMap<String, Vec<(u64, f64)>>, id: &str, seq: u64, ts: f64) {
+    terminal.insert(id.to_string());
+    terminal_ev.entry(id.to_string()).or_default().push((seq, ts));
+}
+
+/// `Walk::team_event` on the field it changes.
+fn team_event_in(team_events: &mut OMap<Vec<TeamEv>>, name: &str, kind: &'static str, ts: f64, seq: u64) {
+    if !team_events.has(name) {
+        team_events.set(name, Vec::new());
+    }
+    if let Some(v) = team_events.get_mut(name) {
+        v.push(TeamEv { kind, ts, seq });
+    }
 }
 
 impl Walk {
@@ -649,12 +841,13 @@ impl Walk {
             desc_by_tool_use: HashMap::new(),
             others: Vec::new(),
             other_bytes: 0,
-            dropped_ids: HashSet::new(),
-            tool_uses: HashMap::new(),
+            dropped_ids: IdSet::default(),
+            tool_uses: IdMap::default(),
+            pinned: IdSet::default(),
             stops: Vec::new(),
-            errored: HashSet::new(),
-            gone: HashSet::new(),
-            answered: HashSet::new(),
+            errored: IdSet::default(),
+            gone: IdSet::default(),
+            answered: IdSet::default(),
             team_events: OMap::default(),
             team_info: OMap::default(),
             terminal_ev: HashMap::new(),
@@ -663,6 +856,7 @@ impl Walk {
             resume_ts: HashMap::new(),
             cur_off: 0,
             rel_min: u64::MAX,
+            oversize_at: None,
         }
     }
 
@@ -685,18 +879,12 @@ impl Walk {
 
     fn mark_terminal(&mut self, id: &str, seq: u64, ts: f64) {
         self.rel();
-        self.terminal.insert(id.to_string());
-        self.terminal_ev.entry(id.to_string()).or_default().push((seq, ts));
+        mark_terminal_in(&mut self.terminal, &mut self.terminal_ev, id, seq, ts);
     }
 
     fn team_event(&mut self, name: &str, kind: &'static str, ts: f64, seq: u64) {
         self.rel();
-        if !self.team_events.has(name) {
-            self.team_events.set(name, Vec::new());
-        }
-        if let Some(v) = self.team_events.get_mut(name) {
-            v.push(TeamEv { kind, ts, seq });
-        }
+        team_event_in(&mut self.team_events, name, kind, ts, seq);
     }
 
     /// `answersCall(toolUseId, names)`: true when the call is unseen or one of `names`.
@@ -716,8 +904,13 @@ impl Walk {
             return Err(Unsupported);
         }
         self.tool_uses.insert(
-            id.to_string(),
-            ToolUse { name: name.map(str::to_string), input: if keep { input.cloned() } else { None }, off: self.cur_off, used: std::cell::Cell::new(0) },
+            id,
+            ToolUse {
+                name: name.map(str::to_string),
+                input: if keep { input.map(|i| std::sync::Arc::new(i.clone())) } else { None },
+                off: self.cur_off,
+                used: std::cell::Cell::new(0),
+            },
         );
         Ok(())
     }
@@ -838,7 +1031,7 @@ impl Walk {
         // (b) a terminal notification, in any of its three shapes.
         if has_notif {
             for text in notification_texts(&entry) {
-                for bm in pats().block.captures_iter(&text) {
+                for bm in pats().block.captures_iter(text) {
                     let body = bm.get(1).map_or("", |m| m.as_str());
                     let tid = pats().task_id.captures(body).and_then(|c| c.get(1).map(|m| m.as_str().to_string()));
                     let st = pats().status.captures(body).and_then(|c| c.get(1).map(|m| m.as_str().to_string()));
@@ -854,7 +1047,7 @@ impl Walk {
 
         if has_idle {
             for i in self.teammate_idles(&entry, entry_ts)? {
-                self.team_event(&i.0, "idle", i.1, seq);
+                self.team_event(&i.0, i.2, i.1, seq);
             }
         }
 
@@ -901,29 +1094,29 @@ impl Walk {
                 && prop(block, "is_error") == Some(&Value::Bool(true))
                 && let Some(id) = tuid
             {
-                self.errored.insert(id.to_string());
+                self.errored.insert(id);
             }
             if is_tool_result && let Some(id) = tuid {
-                self.answered.insert(id.to_string());
+                self.answered.insert(id);
             }
-            let mut texts = Vec::new();
-            extract_texts(block_content, &mut texts);
+            let mut texts: Vec<&str> = Vec::new();
+            extract_text_refs(block_content, &mut texts);
             if is_tool_result
                 && let Some(id) = tuid
-                && texts.iter().any(|t| t.to_lowercase().contains(defaults::text("agent_scan.stop_gone_text")))
+                && texts.iter().any(|t| lower_contains(t, defaults::text("agent_scan.stop_gone_text")))
             {
-                self.gone.insert(id.to_string());
+                self.gone.insert(id);
             }
             for text in texts {
                 if is_tool_result
                     && has_launch
                     && self.answers(tuid, "agent_scan.launch_tools")
-                    && trim_start(&text).starts_with(defaults::text("agent_scan.launch_text"))
+                    && trim_start(text).starts_with(defaults::text("agent_scan.launch_text"))
                 {
-                    let idm = pats().agent_id.captures(&text).and_then(|c| c.get(1).map(|m| m.as_str().to_string()));
+                    let idm = pats().agent_id.captures(text).and_then(|c| c.get(1).map(|m| m.as_str().to_string()));
                     let sid = prop(&entry, "toolUseResult").and_then(|t| sprop(t, "agentId")).filter(|s| pats().hex_id.is_match(s)).map(str::to_string);
                     if let Some(id) = sid.or(idm) {
-                        let of = pats().output_file.captures(&text).and_then(|c| c.get(1).map(|m| m.as_str().to_string())).unwrap_or_default();
+                        let of = pats().output_file.captures(text).and_then(|c| c.get(1).map(|m| m.as_str().to_string())).unwrap_or_default();
                         self.rel();
                         self.launched.set(
                             &id,
@@ -942,9 +1135,12 @@ impl Walk {
                                 spawn_input: None,
                             },
                         );
+                        if let Some(t) = tuid {
+                            self.pinned.insert(t);
+                        }
                     }
                 }
-                let resume = if is_tool_result && self.answers(tuid, "agent_scan.resume_tools") { parse_resume(&text)? } else { None };
+                let resume = if is_tool_result && self.answers(tuid, "agent_scan.resume_tools") { parse_resume(text)? } else { None };
                 if let Some((rid, full)) = resume {
                     self.rel();
                     if full {
@@ -958,10 +1154,10 @@ impl Walk {
                     }
                     continue;
                 }
-                if is_queued_result(&text)? {
+                if is_queued_result(text)? {
                     continue;
                 }
-                let inbox = if is_tool_result && self.answers(tuid, "agent_scan.send_tools") { parse_inbox_send(&text)? } else { None };
+                let inbox = if is_tool_result && self.answers(tuid, "agent_scan.send_tools") { parse_inbox_send(text)? } else { None };
                 if let Some(name) = inbox {
                     self.team_event(&name, "send", entry_ts, seq);
                     continue;
@@ -973,7 +1169,7 @@ impl Walk {
                         && !c.name.as_deref().is_some_and(|n| in_list("agent_scan.delivery_tools", n))
                     {
                         if let Some(id) = tuid {
-                            self.dropped_ids.insert(id.to_string());
+                            self.dropped_ids.insert(id);
                         }
                         continue;
                     }
@@ -981,16 +1177,36 @@ impl Walk {
                     if self.other_bytes > defaults::num("agent_scan.retain_bytes") {
                         return Err(Unsupported);
                     }
-                    self.others.push(Other { tool_use_id: tuid.map(str::to_string), text, seq, ts: entry_ts, off: self.cur_off });
+                    self.others.push(Other { tool_use_id: tuid.map(str::to_string), text: text.to_string(), seq, ts: entry_ts, off: self.cur_off, at: None });
+                    if let Some(t) = tuid {
+                        self.pinned.insert(t);
+                    }
                 }
+            }
+            // The call is answered. Its input is read later only for a launch record that names the call and for a retained result
+            // of it; for every other call (nearly all of them: the walk would hold a copy of each launch prompt of the window) it is
+            // released now.
+            if is_tool_result
+                && let Some(t) = tuid
+                && !self.pinned.contains(t)
+                && let Some(c) = self.tool_uses.get_mut(t)
+            {
+                c.input = None;
             }
         }
         Ok(())
     }
 
     /// `teammateIdles(entry, entryTs, spawned)`: `(name, ts, reason)` of each genuine teammate report in this entry.
-    fn teammate_idles(&self, entry: &Value, entry_ts: f64) -> Res<Vec<(String, f64)>> {
+    fn teammate_idles(&self, entry: &Value, entry_ts: f64) -> Res<Vec<(String, f64, &'static str)>> {
         let mut out = Vec::new();
+        // a report the host stamped with a peer origin (#972 wave 2): its sender is structured, whatever envelope wraps the text
+        if let Some(who) = peer_report_from(entry) {
+            if self.team_info.has(who) {
+                out.push((who.to_string(), entry_ts, "report"));
+            }
+            return Ok(out);
+        }
         if sprop(entry, "type") != Some("user") {
             return Ok(out);
         }
@@ -1010,13 +1226,34 @@ impl Walk {
             }
         }
         let skew = defaults::num("agent_scan.report_future_skew_ms") as f64;
+        let mut late: Option<f64> = None;
         let mut at = prefix.len();
         at += c[at..].len() - trim_start(&c[at..]).len();
         while let Some(m) = pats().teammate_block.captures(&c[at..]) {
             let (id, body) = (m.get(1).map_or("", |x| x.as_str()), m.get(2).map_or("", |x| x.as_str()));
             at += m.get(0).map_or(0, |x| x.end());
             at += c[at..].len() - trim_start(&c[at..]).len();
-            if !self.team_info.has(id) || body.contains('\n') || !body.starts_with('{') {
+            if !self.team_info.has(id) {
+                continue;
+            }
+            // a plain-text body is the teammate's own report (a SendMessage to the coordinator), an answer to everything sent before it
+            let lead = body.trim_start();
+            if !lead.starts_with('{') && !lead.is_empty() {
+                out.push((id.to_string(), entry_ts, "report"));
+                // the block closed at the first closing tag inside it: the report quotes earlier teammate messages, and what follows is
+                // quoted text, never another teammate's report
+                if body.contains(defaults::text("agent_scan.teammate_open")) {
+                    // the teammate's own idle notice may follow the quoted text: it dates the report
+                    if let Some(t) = late_idle_ts(&c[at..], id, entry_ts)?
+                        && t < entry_ts
+                    {
+                        late = Some(t);
+                    }
+                    break;
+                }
+                continue;
+            }
+            if body.contains('\n') || !body.starts_with('{') {
                 continue;
             }
             let Some(o) = parse_json(body)? else { continue };
@@ -1031,10 +1268,69 @@ impl Walk {
                 continue;
             }
             let ts = if inner.is_finite() && entry_ts.is_finite() { inner } else { entry_ts };
-            out.push((id.to_string(), ts));
+            out.push((id.to_string(), ts, "idle"));
+        }
+        // a plain report has no time of its own: the idle notice of the same entry (the teammate's turn end, written after the report
+        // text) dates it, the entry's receipt time is its latest possible time
+        let mut idles: Vec<(String, f64)> = out.iter().filter(|o| o.2 == "idle").map(|o| (o.0.clone(), o.1)).collect();
+        if let Some(t) = late {
+            for o in out.iter().filter(|o| o.2 == "report") {
+                idles.push((o.0.clone(), t));
+            }
+        }
+        for o in out.iter_mut().filter(|o| o.2 == "report") {
+            if let Some((_, t)) = idles.iter().find(|(i, t)| *i == o.0 && t.is_finite() && *t < o.1) {
+                o.1 = *t;
+            }
         }
         Ok(out)
     }
+}
+
+/// The sender of a message the host delivered with a peer origin (`agent_scan.peer_report`): a user entry, or an attachment of a listed
+/// type (a message delivered while the session was busy), whose origin kind is the peer word. Its envelope text (`<agent-message`,
+/// `<teammate-message`) and the record keys that mark host-made entries do not matter: the origin names who sent it. The caller decides
+/// whether the sender is a spawned teammate.
+pub(super) fn peer_report_from(entry: &Value) -> Option<&str> {
+    let cfg = defaults::raw("agent_scan.peer_report");
+    let key = cfg.str_field("origin_key");
+    let origin = match sprop(entry, "type") {
+        Some(t) if t == cfg.str_field("entry_type") => prop(entry, key),
+        Some(t) if t == cfg.str_field("attachment_entry_type") => prop(entry, cfg.str_field("attachment_key"))
+            .filter(|a| sprop(a, "type").is_some_and(|at| cfg.get("attachment_types").map(|l| l.strings()).unwrap_or_default().contains(&at)))
+            .and_then(|a| prop(a, key)),
+        _ => None,
+    }?;
+    if sprop(origin, cfg.str_field("kind_key")) != Some(cfg.str_field("kind")) {
+        return None;
+    }
+    sprop(origin, cfg.str_field("from_key")).filter(|w| !w.is_empty())
+}
+
+/// The time of the teammate's own idle notice that follows a report which quotes earlier teammate messages: `rest` is what follows the
+/// block that closed early. Only a single-line idle notice from `id` itself, not dated past the entry, counts; the latest one wins.
+pub(super) fn late_idle_ts(rest: &str, id: &str, entry_ts: f64) -> Res<Option<f64>> {
+    let skew = defaults::num("agent_scan.report_future_skew_ms") as f64;
+    let mut best: Option<f64> = None;
+    for (at, _) in rest.match_indices(defaults::text("agent_scan.teammate_open")) {
+        let Some(m) = pats().teammate_block.captures(&rest[at..]) else { continue };
+        let (who, body) = (m.get(1).map_or("", |x| x.as_str()), m.get(2).map_or("", |x| x.as_str()));
+        if who != id || body.contains('\n') || !body.starts_with('{') {
+            continue;
+        }
+        let Some(o) = parse_json(body)? else { continue };
+        if sprop(&o, "type") != Some("idle_notification") || sprop(&o, "from") != Some(id) {
+            continue;
+        }
+        let t = match sprop(&o, "timestamp") {
+            Some(t) => date_parse(t)?,
+            None => f64::NAN,
+        };
+        if t.is_finite() && entry_ts.is_finite() && t <= entry_ts + skew && best.is_none_or(|b| t > b) {
+            best = Some(t);
+        }
+    }
+    Ok(best)
 }
 
 /// `parseResumeResult(text)` -> `(id, full)`.
@@ -1217,16 +1513,115 @@ pub fn scan_transcript(path: &str, tail: u64, opts: &Opts) -> Res<Option<Scan>> 
         // A relative path means the hook's own working directory, which the engine does not share.
         return Err(Unsupported);
     }
-    if !path.is_empty()
-        && defaults::num("agent_scan.cache_max_paths") > 0
-        && let Ok(f) = std::fs::File::open(path)
-        && let Ok(m) = f.metadata()
+    let Some(f) = open_transcript(path) else { return Ok(None) };
+    scan_transcript_on(path, &f, tail, opts)
+}
+
+/// The transcript at `path` opened for a scan, or `None` when it is missing or unreadable (a scan of it is then `None`).
+fn open_transcript(path: &str) -> Option<std::fs::File> {
+    if path.is_empty() { None } else { std::fs::File::open(path).ok() }
+}
+
+/// [`scan_transcript`] over a handle already open on `path`: every byte the scan reads, and the length its window is cut from,
+/// come from `file`, so a caller that judges the scan by that same handle judges the file the scan read.
+fn scan_transcript_on(path: &str, file: &std::fs::File, tail: u64, opts: &Opts) -> Res<Option<Scan>> {
+    if !path.starts_with('/') {
+        return Err(Unsupported);
+    }
+    if defaults::num("agent_scan.use_store") == 1 {
+        if let Some(r) = scan_store(path, file, tail, opts) {
+            return r;
+        }
+        // the store could not answer this window: it is read afresh, and no walk is kept (the store is the cache)
+        let _turn = crate::transcript::scan::permit();
+        return scan_window(path, file, tail, opts);
+    }
+    // one transcript window is walked at a time in the daemon; a request that gets no turn before its deadline walks anyway
+    let _turn = crate::transcript::scan::permit();
+    if defaults::num("agent_scan.cache_max_paths") > 0
+        && let Ok(m) = file.metadata()
         && m.len() > 0
         && (m.len() <= tail || slack_of(tail) > 0)
     {
-        return scan_kept(path, tail, f, &m, opts);
+        return scan_kept(path, tail, file, &m, opts);
     }
-    scan_window(path, tail, opts)
+    scan_window(path, file, tail, opts)
+}
+
+/// The line of `file` at `off` (no newline), read with the store's reader; `None` when it cannot be read or is over the line cap.
+fn line_at(file: &std::fs::File, off: u64, size: u64) -> Option<Vec<u8>> {
+    let mut r = crate::transcript::reader::LineReader::new(file, crate::transcript::reader::ReadCfg::from_defaults(), off, size);
+    let l = r.next_line().ok()??;
+    (!l.oversize && l.off == off).then(|| r.bytes().to_vec())
+}
+
+/// The scan of the window answered from the transcript store's agent digests (`agent_scan.use_store`). `None` when the store
+/// cannot answer it (not covered, busy, another file, settings changed): the caller then reads the window afresh. Counted in
+/// `agent_scan_store{result}`.
+fn scan_store(path: &str, file: &std::fs::File, tail: u64, opts: &Opts) -> Option<Res<Option<Scan>>> {
+    let m = file.metadata().ok()?;
+    let size = m.len();
+    if size == 0 {
+        return None;
+    }
+    let id = (m.dev(), m.ino());
+    let replayed = crate::transcript::store::global().with(std::path::Path::new(path), now_ms() as u64, |v| {
+        // the store refreshed after this handle was measured: a file that only grew is the same file, read at its newer size
+        if v.size() < size || v.file_id() != Some(id) {
+            return Err(lines::Miss::Reread);
+        }
+        let size = v.size();
+        let s = size - window_len(size, tail);
+        let oversize = v.oversize();
+        v.agent_digests().replay(s, &oversize, &mut |off| line_at(file, off, size)).map(|r| r.map(|w| (w, size)))
+    });
+    let ((mut walk, loads), size) = match replayed {
+        Err(u) => {
+            crate::load::note_count("agent_scan_store", "result", u.code());
+            return None;
+        }
+        Ok(Err(miss)) => {
+            crate::load::note_count("agent_scan_store", "result", miss.label());
+            return None;
+        }
+        Ok(Ok(Err(e))) => {
+            crate::load::note_count("agent_scan_store", "result", "unsupported");
+            return Some(Err(e));
+        }
+        Ok(Ok(Ok(w))) => w,
+    };
+    // what the answer reads of a call (a launch's spawnInput and description, a delivery call's name and input, a teammate's
+    // description), read again from each call's line
+    for l in loads {
+        let Some(c) = line_at(file, l.off, size).and_then(|raw| lines::call_at(&raw, &l.id)) else {
+            crate::load::note_count("agent_scan_store", "result", "reread");
+            return None;
+        };
+        if let Some(d) = c.desc {
+            walk.desc_by_tool_use.insert(l.id.clone(), d);
+        }
+        if l.tool
+            && let Some(t) = walk.tool_uses.get_mut(&l.id)
+        {
+            t.name = c.name;
+            t.input = c.input.map(std::sync::Arc::new);
+        }
+    }
+    let mut load = |o: &Other| o.at.and_then(|at| line_at(file, o.off, size).and_then(|raw| lines::text_at(&raw, at)));
+    match finish_with(&walk, 0, path, opts, &mut load) {
+        Ok(Some(scan)) => {
+            crate::load::note_count("agent_scan_store", "result", "hit");
+            Some(Ok(Some(scan)))
+        }
+        Ok(None) => {
+            crate::load::note_count("agent_scan_store", "result", "reread");
+            None
+        }
+        Err(e) => {
+            crate::load::note_count("agent_scan_store", "result", "unsupported");
+            Some(Err(e))
+        }
+    }
 }
 
 /// How far before the window start a kept walk may begin before it is rebuilt: `agent_scan.window_slack_pct` percent of the window.
@@ -1255,34 +1650,52 @@ pub fn scan_transcript_uncached(path: &str, tail: u64, opts: &Opts) -> Res<Optio
     if !path.is_empty() && !path.starts_with('/') {
         return Err(Unsupported);
     }
-    scan_window(path, tail, opts)
+    let Some(f) = open_transcript(path) else { return Ok(None) };
+    scan_window(path, &f, tail, opts)
 }
 
-/// The scan of the last `tail` bytes, read afresh.
-fn scan_window(path: &str, tail: u64, opts: &Opts) -> Res<Option<Scan>> {
-    let Some(mut t) = Tail::open(path, tail) else { return Ok(None) };
+/// The scan of the last `tail` bytes of `file` (open on `path`), read afresh.
+fn scan_window(path: &str, file: &std::fs::File, tail: u64, opts: &Opts) -> Res<Option<Scan>> {
+    let Some(mut t) = Tail::of(file, tail) else { return Ok(None) };
     let mut w = Walk::new();
     let mut buf: Vec<u8> = Vec::new();
     let mut seq: u64 = 0;
     let mut first = t.drop_first;
+    let mut oversize = false;
     loop {
         // a script call cut at its request's deadline stops here; the host turns the cut into the call's failure
         if seq.is_multiple_of(defaults::num("agent_scan.cut_check_lines").max(1)) && crate::deadline::cut_due() {
             return Ok(None);
         }
-        match t.read_line(&mut buf) {
-            Ok(true) => {}
-            Ok(false) => break,
+        let line = match t.read_line(&mut buf) {
+            Ok(Some(l)) => l,
+            Ok(None) => break,
             // `readTail` reads the whole window first and returns null when any read fails.
             Err(_) => return Ok(None),
-        }
+        };
         if first {
             first = false;
             continue;
         }
+        if line.oversize {
+            crate::load::note_count("transcript_line_skipped_oversize", "reader", "scan_window");
+            oversize = true;
+            continue;
+        }
         feed(&mut w, &mut seq, &buf)?;
     }
-    finish(w, path, opts).map(Some)
+    if oversize {
+        return degraded("scan_window");
+    }
+    finish(&w, 0, path, opts).map(Some)
+}
+
+/// A line the scan skipped as oversize may have carried a launch, a completion or a stop: what the walk shows is then incomplete, and an
+/// incomplete scan must never read as a complete one (a completion that vanished would leave its agent "running"). The scan is unknown, so
+/// the Node-side callers take their `unsure` path (the silent-agent nudge judges no transcript agents and does not block the Stop).
+fn degraded(reader: &'static str) -> Res<Option<Scan>> {
+    crate::load::note_count("agent_scan_degraded", "reader", reader);
+    Err(Unsupported)
 }
 
 /// Where the window `[size - tail, size)` begins: its first line, after the one [`Tail`] drops. `None` when the window holds no
@@ -1295,8 +1708,9 @@ fn window_start(f: &std::fs::File, size: u64, tail: u64) -> Option<u64> {
     let mut rd = std::io::BufReader::with_capacity(defaults::num("agent_scan.reader_buf_bytes") as usize, f);
     rd.seek(SeekFrom::Start(s)).ok()?;
     let mut first: Vec<u8> = Vec::new();
-    let n = rd.read_until(b'\n', &mut first).ok()?;
-    (first.last() == Some(&b'\n')).then_some(s + n as u64)
+    // only where the line ends is wanted: an oversize line is read past, not held
+    let l = read_line_bounded(&mut rd, &mut first, defaults::num("agent_scan.max_line_bytes")).ok()??;
+    l.newline.then_some(s + l.len)
 }
 
 /// The scan of the window `[size - tail, size)`, resuming from the walk kept by the last scan of this file when it is still valid.
@@ -1312,17 +1726,17 @@ fn window_start(f: &std::fs::File, size: u64, tail: u64) -> Option<u64> {
 ///   what the walk holds).
 ///
 /// Anything else, and any error the older lines raise, makes the scan read its window afresh, which is what it did before.
-fn scan_kept(path: &str, tail: u64, f: std::fs::File, m: &std::fs::Metadata, opts: &Opts) -> Res<Option<Scan>> {
+fn scan_kept(path: &str, tail: u64, f: &std::fs::File, m: &std::fs::Metadata, opts: &Opts) -> Res<Option<Scan>> {
     let size = m.len();
     let fp = defaults::num("agent_scan.cache_fingerprint_bytes").max(1);
     let gen_ = defaults::generation();
     let s = size - window_len(size, tail);
     let slack = slack_of(tail);
-    let Some(start) = window_start(&f, size, tail) else { return scan_window(path, tail, opts) };
+    let Some(start) = window_start(f, size, tail) else { return scan_window(path, f, tail, opts) };
     let key = (path.to_string(), tail);
     let taken = walk_cache().remove(&key);
     let mut k = match taken {
-        Some(k) if kept_miss_reason(&k, gen_, m, size, s, start, slack, &f, fp).is_none() => {
+        Some(k) if kept_miss_reason(&k, gen_, m, size, s, start, slack, f, fp).is_none() => {
             crate::load::note_count("agent_scan_kept", "result", "hit");
             k
         }
@@ -1331,7 +1745,7 @@ fn scan_kept(path: &str, tail: u64, f: std::fs::File, m: &std::fs::Metadata, opt
             crate::load::note_count(
                 "agent_scan_kept_miss",
                 "reason",
-                other.as_ref().and_then(|k| kept_miss_reason(k, gen_, m, size, s, start, slack, &f, fp)).unwrap_or("none"),
+                other.as_ref().and_then(|k| kept_miss_reason(k, gen_, m, size, s, start, slack, f, fp)).unwrap_or("none"),
             );
             Kept { gen_, dev: m.dev(), ino: m.ino(), base: start, built_s: s, off: start, seq: 0, head: 0, back: 0, walk: Walk::new() }
         }
@@ -1339,61 +1753,76 @@ fn scan_kept(path: &str, tail: u64, f: std::fs::File, m: &std::fs::Metadata, opt
     let banded = k.base < start;
     let want = size - k.off;
     crate::load::note_scan(want);
-    let mut rd = std::io::BufReader::with_capacity(defaults::num("agent_scan.reader_buf_bytes") as usize, &f);
+    let mut rd = std::io::BufReader::with_capacity(defaults::num("agent_scan.reader_buf_bytes") as usize, f);
     if rd.seek(SeekFrom::Start(k.off)).is_err() {
         return Ok(None);
     }
     let mut rd = rd.take(want);
     let mut buf: Vec<u8> = Vec::new();
     let mut partial: Option<Vec<u8>> = None;
+    let mut partial_oversize = false;
     loop {
         if k.seq.is_multiple_of(defaults::num("agent_scan.cut_check_lines").max(1)) && crate::deadline::cut_due() {
             return Ok(None);
         }
-        buf.clear();
-        let n = match rd.read_until(b'\n', &mut buf) {
-            Ok(0) => break,
-            Ok(n) => n,
+        let line = match read_line_bounded(&mut rd, &mut buf, defaults::num("agent_scan.max_line_bytes")) {
+            Ok(None) => break,
+            Ok(Some(l)) => l,
             Err(_) => return Ok(None),
         };
         k.walk.cur_off = k.off;
-        if buf.last() == Some(&b'\n') {
-            buf.pop();
-            if let Err(e) = feed(&mut k.walk, &mut k.seq, &buf) {
+        if line.newline {
+            if line.oversize {
+                crate::load::note_count("transcript_line_skipped_oversize", "reader", "scan_kept");
+                k.walk.oversize_at = Some(k.off);
+            } else if let Err(e) = feed(&mut k.walk, &mut k.seq, &buf) {
                 // what an older line raises is not an error of this window
                 crate::load::note_count("agent_scan_kept_miss", "reason", "error");
-                return if banded { scan_window(path, tail, opts) } else { Err(e) };
+                return if banded { scan_window(path, f, tail, opts) } else { Err(e) };
             }
-            k.off += n as u64;
+            k.off += line.len;
         } else {
-            // the last line has no newline yet: it counts in this answer, but is walked for good once it is complete
-            partial = Some(std::mem::take(&mut buf));
+            // the last line has no newline yet: it counts in this answer (unless it is already oversize), but is walked for good once it is complete
+            if line.oversize {
+                crate::load::note_count("transcript_line_skipped_oversize", "reader", "scan_kept");
+                partial_oversize = true;
+            } else {
+                partial = Some(std::mem::take(&mut buf));
+            }
             break;
         }
     }
-    let mut w = k.walk.clone();
-    if let Some(p) = partial {
-        let mut seq = k.seq;
-        w.cur_off = k.off;
-        if let Err(e) = feed(&mut w, &mut seq, &p) {
-            return if banded { scan_window(path, tail, opts) } else { Err(e) };
+    // The unfinished last line is fed to a copy of the walk (it is walked for good once complete); only then is the walk cloned. With
+    // no unfinished line the answer is made from the kept walk in place: `finish` reads it and copies only the few fields it changes.
+    let fed: Option<Walk> = match partial {
+        Some(p) => {
+            let mut w = k.walk.clone();
+            let mut seq = k.seq;
+            w.cur_off = k.off;
+            if let Err(e) = feed(&mut w, &mut seq, &p) {
+                return if banded { scan_window(path, f, tail, opts) } else { Err(e) };
+            }
+            Some(w)
         }
-    }
+        None => None,
+    };
+    let w: &Walk = fed.as_ref().unwrap_or(&k.walk);
     // the appended lines (the unfinished one included) may judge, by an answer, a call that already left the exact window: such a
     // walk no longer holds what a fresh scan of the window holds, so the window is read afresh
     if w.straddles(start) {
         crate::load::note_count("agent_scan_kept_miss", "reason", "straddles_after");
-        return scan_window(path, tail, opts);
+        return scan_window(path, f, tail, opts);
     }
-    if k.base < start {
-        w.others.retain(|o| o.off >= start);
-    }
-    let scan = finish(w, path, opts).map(Some);
-    // keep the walk for the next call, unless it grew past the cap
-    if scan.is_ok() && walk_bytes(&k.walk) <= defaults::num("agent_scan.cache_max_bytes") {
+    // a kept walk may hold lines the window has slid past: their text is not read
+    let others_from = if k.base < start { start } else { 0 };
+    // an oversize line still inside the window (a kept walk may hold one the window has slid past) makes the answer unknown
+    let degraded_now = partial_oversize || w.oversize_at.is_some_and(|o| o >= start);
+    let scan = if degraded_now { degraded("scan_kept") } else { finish(w, others_from, path, opts).map(Some) };
+    // keep the walk for the next call, unless it grew past the cap (an unknown answer keeps it too: the walk is sound, only the answer is not)
+    if (scan.is_ok() || degraded_now) && walk_bytes(&k.walk) <= defaults::num("agent_scan.cache_max_bytes") {
         let now = now_ms() as u64;
         let fpn = fp.min(k.off - k.base);
-        if let (Some(head), Some(back)) = (digest_at(&f, k.base, fpn), digest_at(&f, k.off - fpn, fpn)) {
+        if let (Some(head), Some(back)) = (digest_at(f, k.base, fpn), digest_at(f, k.off - fpn, fpn)) {
             k.head = head;
             k.back = back;
             let ttl = defaults::num("agent_scan.cache_idle_ms");
@@ -1430,91 +1859,128 @@ fn kept_miss_reason(k: &Kept, gen_: u64, m: &std::fs::Metadata, size: u64, s: u6
     None
 }
 
-fn finish(mut w: Walk, path: &str, opts: &Opts) -> Res<Scan> {
+fn finish(w: &Walk, others_from: u64, path: &str, opts: &Opts) -> Res<Scan> {
+    finish_with(w, others_from, path, opts, &mut |_| None).map(|s| s.unwrap_or_default())
+}
+
+/// [`finish`], with `load` giving the text of a retained result the walk does not hold (`Other::at`). `Ok(None)` when a text
+/// cannot be read again (the caller then scans afresh).
+fn finish_with(w: &Walk, others_from: u64, path: &str, opts: &Opts, load: &mut dyn FnMut(&Other) -> Option<String>) -> Res<Option<Scan>> {
+    // finish only borrows the walk (a kept walk is cached for the next call and must not be cloned whole): the few fields it
+    // changes are copied here, the big read-only ones (calls, answers, the text of other lines) are read in place
+    let mut launched = w.launched.clone();
+    let mut terminal = w.terminal.clone();
+    let mut terminal_ev = w.terminal_ev.clone();
+    let mut team_events = w.team_events.clone();
+    let stops = w.stops.clone();
     // Attach descriptions where the Agent tool_use was in the window.
-    let ids: Vec<String> = w.launched.keys().cloned().collect();
+    let ids: Vec<String> = launched.keys().cloned().collect();
     for id in &ids {
-        let d = w.launched.get(id).and_then(|r| r.tool_use_id.as_ref()).and_then(|t| w.desc_by_tool_use.get(t)).cloned();
-        if let (Some(d), Some(r)) = (d, w.launched.get_mut(id)) {
+        let d = launched.get(id).and_then(|r| r.tool_use_id.as_ref()).and_then(|t| w.desc_by_tool_use.get(t)).cloned();
+        if let (Some(d), Some(r)) = (d, launched.get_mut(id)) {
             r.description = d;
         }
         // `rec.spawnInput`: the input of the launching call when it is in the window (an object or array, as `typeof` says)
-        let spawn = w.launched.get(id).and_then(|r| r.tool_use_id.as_ref()).and_then(|t| w.tool_uses.get(t)).and_then(|c| c.input.clone());
-        if let (Some(i), Some(r)) = (spawn.filter(|i| i.is_object() || i.is_array()), w.launched.get_mut(id)) {
+        let spawn = launched.get(id).and_then(|r| r.tool_use_id.as_ref()).and_then(|t| w.tool_uses.get(t.as_str())).and_then(|c| c.input.clone());
+        if let (Some(i), Some(r)) = (spawn.filter(|i| i.is_object() || i.is_array()), launched.get_mut(id)) {
             r.spawn_input = Some(i);
         }
     }
 
     // Background-agent ids known from the walk: a teammate name equal to one is a collision.
-    let mut background: HashSet<String> = w.launched.keys().cloned().collect();
-    background.extend(w.terminal.iter().cloned());
+    let mut background: HashSet<String> = launched.keys().cloned().collect();
+    background.extend(terminal.iter().cloned());
 
-    let stops = std::mem::take(&mut w.stops);
     for s in &stops {
-        if s.tool_use_id.as_ref().is_some_and(|t| w.errored.contains(t)) {
+        if s.tool_use_id.as_ref().is_some_and(|t| w.errored.contains(t.as_str())) {
             continue;
         }
-        if opts.ignore_unanswered_stops && !s.tool_use_id.as_ref().is_some_and(|t| w.answered.contains(t)) {
+        if opts.ignore_unanswered_stops && !s.tool_use_id.as_ref().is_some_and(|t| w.answered.contains(t.as_str())) {
             continue;
         }
-        w.mark_terminal(&s.id, s.seq, s.ts);
+        mark_terminal_in(&mut terminal, &mut terminal_ev, &s.id, s.seq, s.ts);
         let names: Vec<String> = w.team_info.iter().filter(|(_, i)| i.agent_id == s.id).map(|(n, _)| n.clone()).collect();
         for n in names {
-            if !w.team_events.has(&s.id) {
-                w.team_event(&n, "stop", s.ts, s.seq);
+            if !team_events.has(&s.id) {
+                team_event_in(&mut team_events, &n, "stop", s.ts, s.seq);
             }
         }
-        if w.team_events.has(&s.id) {
-            w.team_event(&s.id, "stop", s.ts, s.seq);
+        if team_events.has(&s.id) {
+            team_event_in(&mut team_events, &s.id, "stop", s.ts, s.seq);
         }
     }
 
     // A stop names a teammate by its name: the agent id of that spawn ended too (only a stop after the latest spawn counts).
     let mut stopped_agents: HashSet<String> = HashSet::new();
+    let mut stop_ts: HashMap<String, f64> = HashMap::new();
     for s in &stops {
         let Some(tuid) = s.tool_use_id.as_ref() else { continue };
-        if (w.errored.contains(tuid) && !w.gone.contains(tuid)) || !(w.answered.contains(tuid)) {
+        if (w.errored.contains(tuid.as_str()) && !w.gone.contains(tuid.as_str())) || !(w.answered.contains(tuid.as_str())) {
             continue;
         }
         let Some(info) = w.team_info.get(&s.id).filter(|i| !i.agent_id.is_empty()) else { continue };
-        let spawned_at = w.team_events.get(&s.id).and_then(|evs| evs.iter().filter(|e| e.kind == "spawn").map(|e| e.seq).max());
+        let spawned_at = team_events.get(&s.id).and_then(|evs| evs.iter().filter(|e| e.kind == "spawn").map(|e| e.seq).max());
         if spawned_at.is_some_and(|sp| s.seq > sp) {
             stopped_agents.insert(info.agent_id.clone());
+            if s.ts.is_finite() {
+                let e = stop_ts.entry(info.agent_id.clone()).or_insert(s.ts);
+                *e = e.max(s.ts);
+            }
         }
     }
 
-    // SAFETY NET: a later answer to a TaskOutput/SendMessage call that quotes a launched agent's id.
-    let launched_ids: Vec<String> = w.launched.keys().cloned().collect();
-    for id in &launched_ids {
-        if w.terminal.contains(id) {
-            continue;
+    // SAFETY NET: a later answer to a TaskOutput/SendMessage call that quotes a launched agent's id. Each agent takes the first
+    // retained answer that quotes it; the answers are visited once each (in order) and asked about every agent not yet found, which
+    // looks at the same (agent, answer) pairs as one pass per agent, so a text that is not held is read at most once.
+    let launched_ids: Vec<String> = launched.keys().cloned().collect();
+    let live_ids: Vec<&String> = launched_ids.iter().filter(|id| !terminal.contains(*id)).collect();
+    let mut hits: Vec<Option<(u64, f64)>> = vec![None; live_ids.len()];
+    for o in w.others.iter().filter(|o| o.off >= others_from) {
+        if hits.iter().all(Option::is_some) {
+            break;
         }
-        let own = w.launched.get(id).and_then(|r| r.tool_use_id.clone());
-        let mut hit: Option<(u64, f64)> = None;
-        for o in &w.others {
+        let mut loaded: Option<String> = None;
+        for (i, id) in live_ids.iter().enumerate() {
+            if hits[i].is_some() {
+                continue;
+            }
+            let own = launched.get(id.as_str()).and_then(|r| r.tool_use_id.clone());
             if o.tool_use_id.is_some() && o.tool_use_id == own {
                 continue;
             }
-            let call = o.tool_use_id.as_ref().and_then(|t| w.tool_uses.get(t));
+            let call = o.tool_use_id.as_ref().and_then(|t| w.tool_uses.get(t.as_str()));
             if let Some(c) = call {
                 let delivery = c.name.as_deref().is_some_and(|n| in_list("agent_scan.delivery_tools", n));
-                if !(delivery && names_agent(c.input.as_ref(), id, &w.launched)?) {
+                if !(delivery && names_agent(c.input.as_deref(), id, &launched)?) {
                     continue;
                 }
             }
-            if o.text.split('\n').any(|ln| ln.contains(id.as_str()) && !pats().running_row.is_match(ln)) {
-                hit = Some((o.seq, o.ts));
-                break;
+            let text: &str = match o.at {
+                None => &o.text,
+                Some(_) => {
+                    if loaded.is_none() {
+                        match load(o) {
+                            Some(t) => loaded = Some(t),
+                            None => return Ok(None),
+                        }
+                    }
+                    loaded.as_deref().unwrap_or("")
+                }
+            };
+            if text.split('\n').any(|ln| ln.contains(id.as_str()) && !pats().running_row.is_match(ln)) {
+                hits[i] = Some((o.seq, o.ts));
             }
         }
-        if let Some((seq, ts)) = hit {
-            w.mark_terminal(id, seq, ts);
+    }
+    for (i, id) in live_ids.iter().enumerate() {
+        if let Some((seq, ts)) = hits[i] {
+            mark_terminal_in(&mut terminal, &mut terminal_ev, id, seq, ts);
         }
     }
 
     // RESUME RECONCILIATION.
-    let mut known: Vec<String> = w.launched.keys().cloned().collect();
-    for t in &w.terminal {
+    let mut known: Vec<String> = launched.keys().cloned().collect();
+    for t in &terminal {
         if !known.contains(t) {
             known.push(t.clone());
         }
@@ -1530,7 +1996,7 @@ fn finish(mut w: Walk, path: &str, opts: &Opts) -> Res<Scan> {
             && w.resume_full.contains(&rid)
             && let Some(ts) = w.resume_ts.get(&rid).copied()
         {
-            w.launched.set(
+            launched.set(
                 &rid,
                 Rec {
                     adopted: true,
@@ -1551,18 +2017,17 @@ fn finish(mut w: Walk, path: &str, opts: &Opts) -> Res<Scan> {
         }
         let r_ts = w.resume_ts.get(&rid).copied();
         for id in targets {
-            if let (Some(ts), Some(rec)) = (r_ts, w.launched.get_mut(&id)) {
+            if let (Some(ts), Some(rec)) = (r_ts, launched.get_mut(&id)) {
                 rec.resumed_at_ms = Some(rec.resumed_at_ms.unwrap_or(0.0).max(ts));
             }
-            if !w.terminal.contains(&id) {
+            if !terminal.contains(&id) {
                 continue;
             }
-            let stands = w
-                .terminal_ev
+            let stands = terminal_ev
                 .get(&id)
                 .is_some_and(|evs| evs.iter().any(|(s, ts)| *s > r_seq && !(ts.is_finite() && r_ts.is_some_and(|r| r.is_finite() && *ts < r - slack))));
             if !stands {
-                w.terminal.remove(&id);
+                terminal.remove(&id);
             }
         }
     }
@@ -1570,10 +2035,10 @@ fn finish(mut w: Walk, path: &str, opts: &Opts) -> Res<Scan> {
     // PENDING TEAMMATE MESSAGES: replay each teammate's events in time order.
     let mut pending: Vec<(String, Pending)> = Vec::new();
     let silence = defaults::num("agent_scan.pending_silence_ms") as f64;
-    let names: Vec<String> = w.team_events.keys().cloned().collect();
+    let names: Vec<String> = team_events.keys().cloned().collect();
     for name in names {
-        let Some(evs) = w.team_events.get(&name) else { continue };
-        if !evs.iter().any(|e| e.kind == "spawn" || e.kind == "idle") {
+        let Some(evs) = team_events.get(&name) else { continue };
+        if !evs.iter().any(|e| e.kind == "spawn" || e.kind == "idle" || e.kind == "report") {
             continue;
         }
         if evs.iter().any(|e| !e.ts.is_finite()) {
@@ -1589,12 +2054,16 @@ fn finish(mut w: Walk, path: &str, opts: &Opts) -> Res<Scan> {
         }
         let mut state = St::Idle;
         let (mut queued, mut pend, mut last_idle) = (f64::NAN, f64::NAN, f64::NAN);
+        // whether `pend` is a message sent to the teammate (not its spawn prompt)
+        let mut pend_sent = false;
         for e in &ordered {
             match e.kind {
+                // the spawn prompt is the teammate's first instruction: it is busy on it until its first idle report (#965)
                 "spawn" => {
                     state = St::Busy;
                     queued = f64::NAN;
-                    pend = f64::NAN;
+                    pend = e.ts;
+                    pend_sent = false;
                 }
                 "stop" => {
                     state = St::Stopped;
@@ -1606,24 +2075,38 @@ fn finish(mut w: Walk, path: &str, opts: &Opts) -> Res<Scan> {
                     if state == St::Idle {
                         state = St::Busy;
                         pend = e.ts;
+                        pend_sent = true;
                     } else {
                         queued = e.ts;
+                    }
+                }
+                // the teammate's own report to the coordinator: it answers every message sent before it; a teammate still on its spawn prompt stays busy.
+                // It leaves `last_idle` to the idle notices (the same entry usually carries both)
+                "report" => {
+                    queued = f64::NAN;
+                    if pend_sent {
+                        pend = f64::NAN;
+                        pend_sent = false;
+                        state = St::Idle;
                     }
                 }
                 _ => {
                     last_idle = e.ts;
                     if queued.is_finite() {
                         pend = queued;
+                        pend_sent = true;
                         queued = f64::NAN;
                         state = St::Busy;
                     } else {
                         pend = f64::NAN;
+                        pend_sent = false;
                         state = St::Idle;
                     }
                 }
             }
         }
         let sent = if queued.is_finite() { queued } else { pend };
+        let messaged = queued.is_finite() || pend_sent;
         if !sent.is_finite() || background.contains(&name) {
             continue;
         }
@@ -1633,11 +2116,11 @@ fn finish(mut w: Walk, path: &str, opts: &Opts) -> Res<Scan> {
         let info = w.team_info.get(&name);
         let agent_id = info.map(|i| i.agent_id.clone()).unwrap_or_default();
         let tuid = info.and_then(|i| i.tool_use_id.clone());
-        pending.push((name.clone(), Pending { sent_at_ms: sent, last_idle_ms: last_idle, last_seen_ms: last_seen, live, agent_id }));
+        pending.push((name.clone(), Pending { sent_at_ms: sent, last_idle_ms: last_idle, last_seen_ms: last_seen, live, agent_id, messaged }));
         if !live {
             continue;
         }
-        w.launched.set(
+        launched.set(
             &name,
             Rec {
                 adopted: false,
@@ -1654,14 +2137,21 @@ fn finish(mut w: Walk, path: &str, opts: &Opts) -> Res<Scan> {
                 spawn_input: None,
             },
         );
-        w.terminal.remove(&name);
+        terminal.remove(&name);
     }
-    Ok(Scan { launched: w.launched, terminal: w.terminal, stopped_agents, pending })
+    let mut ended_ts = stop_ts;
+    for id in &terminal {
+        if let Some(t) = terminal_ev.get(id).and_then(|evs| evs.iter().map(|(_, t)| *t).filter(|t| t.is_finite()).reduce(f64::max)) {
+            let e = ended_ts.entry(id.clone()).or_insert(t);
+            *e = e.max(t);
+        }
+    }
+    Ok(Some(Scan { launched, terminal, stopped_agents, ended_ts, pending }))
 }
 
 /// What `agentCountProof` returns: the running agents (`None`: the count cannot be trusted), the ids the scanned window shows
-/// launched (all finished when `rows` is `None`), and how many bytes of transcript the proof covers (0: the agents were found
-/// in the default window; the whole file size when it fits a window).
+/// launched (all finished when `rows` is `None`), how many bytes of transcript the proof covers (0: the agents were found
+/// in the default window; the whole file size when it fits a window), and whether the scanned window was the whole transcript.
 pub struct Proof {
     /// The running agents, or `None` when the count cannot be trusted.
     pub rows: Option<Vec<Row>>,
@@ -1669,33 +2159,80 @@ pub struct Proof {
     pub seen: Vec<String>,
     /// Bytes of transcript the proof covers.
     pub window_bytes: u64,
+    /// The window that produced `rows` held the whole transcript. `false`: it was a tail of a longer file, so an agent launched
+    /// before it is invisible and the rows prove only that the agents they list run, never that some other agent does not.
+    pub complete: bool,
+}
+
+/// The transcript as opened once for a proof: the handle every scan of the proof reads, and its length when it was opened.
+struct Probe(Option<(std::fs::File, u64)>);
+
+impl Probe {
+    fn open(path: &str) -> Probe {
+        Probe(open_transcript(path).and_then(|f| f.metadata().ok().map(|m| (f, m.len()))))
+    }
+
+    fn file(&self) -> Option<&std::fs::File> {
+        self.0.as_ref().map(|(f, _)| f)
+    }
+
+    /// The length of the scanned file, taken from the handle the scans read (fstat), or `None` when what they read can no
+    /// longer be judged: the handle's file shrank since it was opened (truncated or rewritten in place), or `path` now names
+    /// another file (device or inode differs: replaced or rotated). The path is looked up only for its identity, never its length.
+    fn size_if_unchanged(&self, path: &str) -> Option<u64> {
+        let (f, opened_len) = self.0.as_ref()?;
+        let held = f.metadata().ok()?;
+        if held.len() < *opened_len {
+            return None;
+        }
+        let named = std::fs::metadata(path).ok()?;
+        (named.dev() == held.dev() && named.ino() == held.ino()).then_some(held.len())
+    }
 }
 
 /// `agentCountProof(path)`: [`running_agents_or_null`] with what it saw, so a caller can say why a count is unknown.
 pub fn agent_count_proof(path: &str, opts: &Opts) -> Res<Proof> {
-    let none = |seen: Vec<String>, window_bytes: u64| Proof { rows: None, seen, window_bytes };
+    // One handle, opened before any scan: every scan below reads it, and the length that decides completeness is that handle's
+    // (fstat), so a compaction or rotation that swaps or truncates the file while a scan runs leaves the proof incomplete instead of
+    // judging the scanned bytes by another file's length.
+    if !path.is_empty() && !path.starts_with('/') {
+        return Err(Unsupported);
+    }
+    let probe = Probe::open(path);
+    let none = |seen: Vec<String>, window_bytes: u64| Proof { rows: None, seen, window_bytes, complete: false };
     let seen_of = |s: &Scan| s.launched.iter().map(|(id, _)| id.clone()).collect::<Vec<String>>();
     let tail = defaults::num("agent_scan.tail_bytes");
-    let Some(scan) = scan_transcript(path, tail, opts)? else { return Ok(none(Vec::new(), 0)) };
+    let Some(file) = probe.file() else { return Ok(none(Vec::new(), 0)) };
+    let Some(scan) = scan_transcript_on(path, file, tail, opts)? else { return Ok(none(Vec::new(), 0)) };
     let rows = scan.rows();
+    #[cfg(test)]
+    test_seam::fire();
+    let size = probe.size_if_unchanged(path);
     if !rows.is_empty() {
-        return Ok(Proof { rows: Some(rows), seen: seen_of(&scan), window_bytes: 0 });
+        // agents seen in the default window answer at once; the answer is complete only when that window was the whole file
+        let complete = size.is_some_and(|n| n <= tail);
+        return Ok(Proof { rows: Some(rows), seen: seen_of(&scan), window_bytes: 0, complete });
     }
-    let Ok(size) = std::fs::metadata(path).map(|m| m.len()) else { return Ok(none(Vec::new(), 0)) };
+    let Some(size) = size else { return Ok(none(Vec::new(), 0)) };
     if size <= tail {
-        return Ok(Proof { rows: Some(rows), seen: seen_of(&scan), window_bytes: size });
+        return Ok(Proof { rows: Some(rows), seen: seen_of(&scan), window_bytes: size, complete: true });
     }
     let wide_bytes = defaults::num("agent_scan.wide_tail_bytes");
     // `scanTranscript(path, readTail(path, WIDE) )`: an unreadable wide read falls back to the default tail read.
-    let wide_window = if Tail::open(path, wide_bytes).is_some() { wide_bytes } else { tail };
-    let Some(wide) = scan_transcript(path, wide_window, opts)? else { return Ok(none(seen_of(&scan), tail)) };
+    let wide_window = if Tail::of(file, wide_bytes).is_some() { wide_bytes } else { tail };
+    let Some(wide) = scan_transcript_on(path, file, wide_window, opts)? else { return Ok(none(seen_of(&scan), tail)) };
     let wrows = wide.rows();
     let seen = seen_of(&wide);
+    // the file may have been replaced or shrunk during the wide scan too: then nothing it read proves completeness
+    let size = probe.size_if_unchanged(path);
+    let Some(size) = size else { return Ok(none(seen, wide_bytes)) };
     if !wrows.is_empty() {
-        return Ok(Proof { rows: Some(wrows), seen, window_bytes: wide_bytes });
+        return Ok(Proof { rows: Some(wrows), seen, window_bytes: wide_bytes, complete: size <= wide_window });
     }
-    if size <= wide_bytes {
-        return Ok(Proof { rows: Some(Vec::new()), seen, window_bytes: wide_bytes });
+    // an empty result proves "no agent" only for the bytes actually scanned: when the widening handle could not be obtained
+    // `wide_window` is the default tail, and a file longer than that is unknown, never complete
+    if size <= wide_window {
+        return Ok(Proof { rows: Some(Vec::new()), seen, window_bytes: wide_bytes, complete: true });
     }
     Ok(none(seen, wide_bytes))
 }
@@ -1704,4 +2241,27 @@ pub fn agent_count_proof(path: &str, opts: &Opts) -> Res<Proof> {
 /// or one longer than the widened window with no agent found in it).
 pub fn running_agents_or_null(path: &str, opts: &Opts) -> Res<Option<Vec<Row>>> {
     Ok(agent_count_proof(path, opts)?.rows)
+}
+
+/// A test hook fired between a proof's first scan and its completeness check, so a test can swap or truncate the file there.
+#[cfg(test)]
+pub(crate) mod test_seam {
+    use std::cell::RefCell;
+    thread_local! { static HOOK: RefCell<Option<Box<dyn FnOnce()>>> = const { RefCell::new(None) }; }
+    thread_local! { static CLONE_FAILS_AT: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) }; }
+    /// Makes the handle duplication of a window read of exactly `max` bytes fail, as descriptor exhaustion (EMFILE) would.
+    pub(crate) fn fail_clone_at(max: Option<u64>) {
+        CLONE_FAILS_AT.with(|c| c.set(max));
+    }
+    pub(super) fn clone_fails_at(max: u64) -> bool {
+        CLONE_FAILS_AT.with(|c| c.get() == Some(max))
+    }
+    pub(crate) fn set(f: Box<dyn FnOnce()>) {
+        HOOK.with(|h| *h.borrow_mut() = Some(f));
+    }
+    pub(super) fn fire() {
+        if let Some(f) = HOOK.with(|h| h.borrow_mut().take()) {
+            f();
+        }
+    }
 }

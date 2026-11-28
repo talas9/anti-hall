@@ -115,6 +115,15 @@ value = ["UserPromptSubmit", "UserPromptExpansion", "SessionStart", "PostModelSw
 doc = "Text placed between the block reasons of several hooks that block the same event, when they are joined into the one block the dispatcher answers (the host shows the model every hook's block reason; Claude Code gives each Stop/SubagentStop block its own message)."
 value = "\n\n"
 
+[dispatch.stop_advisory_chars]
+doc = "Most characters of the other hooks' advisories folded into a Stop or SubagentStop block reason (#516): the model reads only the reason there, never a systemMessage or context. Folds only while nudges.enabled is on. The text is cut at a word; 0 = nothing is folded, not even the header."
+value = 2000
+min = 0
+
+[dispatch.msg_stop_advisories]
+doc = "The part of a Stop or SubagentStop block reason that carries the advisories of the hooks that did not block. Placeholders: {text}."
+value = "Also from other hooks:\n{text}"
+
 [dispatch.message_joiner]
 doc = "Text placed between the systemMessage values of several hooks when they are joined into one."
 value = "\n"
@@ -130,6 +139,30 @@ value = "joined context is {len} characters, over the {cap} the host delivers in
 [dispatch.guard_events]
 doc = "Events whose hooks can block (guards): PreToolUse and PermissionRequest decide a tool call (Claude ignores exit 2 on PermissionRequest, so a fail-closed exit 2 there is harmless, and the event stays listed so a hook registered on it later is guarded from the start), Stop and SubagentStop can refuse to let the agent finish. When the dispatcher cannot run the Node hook of such an event it fails CLOSED (exit 2 with dispatch.msg_fail_closed): a deferral there must never read as an allow (D74)."
 value = ["PreToolUse", "PermissionRequest", "Stop", "SubagentStop"]
+
+[script.notice_guard_events_only]
+doc = "1 = the guard-down notice (script.msg_guard_down) is shown only for a check that failed open on a guard event (dispatch.guard_events: PreToolUse, PermissionRequest, Stop, SubagentStop), where a call went through unchecked. A check that failed open on any other event (UserPromptSubmit, SessionStart, PostToolUse ...) is advisory: its dropped answer is only a missing hint, so the drop is logged and counted (script.notice_suppressed_counter) and the user is told nothing. 0 = every failed-open check tells the user, as before."
+value = 1
+min = 0
+max = 1
+
+[script.notice_suppressed_counter]
+doc = "The status counter group (status.advisory.<group>.<check>) that counts a failed-open check whose guard-down notice was not shown because the event is not a guard event (script.notice_guard_events_only)."
+value = "notice_suppressed"
+
+[script.notice_why_rules]
+doc = "How the guard-down notice names a failure in one short line. The first rule whose `contains` is found in the failure text gives its `text`; a failure that matches none and is a single short line (script.notice_why_max_chars) is told as it is, else script.notice_why_default. The full text (a script stack, the limits) goes to the log only."
+value = [ { contains = "cpu limit", text = "it ran past its CPU limit" }, { contains = "wall-clock backstop", text = "it ran past its time limit" }, { contains = "request deadline", text = "it ran past the request deadline" } ]
+
+[script.notice_why_max_chars]
+doc = "Longest single-line failure text the guard-down notice tells as it is; anything longer or multi-line is told as script.notice_why_default."
+value = 80
+min = 20
+max = 400
+
+[script.notice_why_default]
+doc = "What the guard-down notice says when a failure has no short rule and is not a single short line."
+value = "it hit an internal error"
 
 [dispatch.stop_events]
 doc = "Guard events whose exit 2 keeps the agent running instead of denying one call (Stop, SubagentStop). A fail-closed block there must be bounded, or an agent whose hooks cannot run could never finish: the payload's stop_hook_active true fails open, and so do more than dispatch.stop_block_cap consecutive fail-closed blocks in one session (the Node Stop hooks make the same stop_hook_active check)."
@@ -176,19 +209,50 @@ doc = "Printed on stderr (exit 0) when a Stop or SubagentStop would fail closed 
 value = "anti-hall: the engine could not run the guards for {event} ({why}) and cannot count its blocks, so the agent is let finish rather than risk a loop. Repair the install (`doctor --repair`)."
 
 [dispatch.spill_over_cap]
-doc = "1 = a SessionStart (or any event that cannot block) whose joined additionalContext is over dispatch.context_cap is delivered natively: the hooks' contexts that fit stay inline whole and in hook order, the rest is written to a file under dispatch.spill_dir and a pointer line (dispatch.msg_spill_pointer) names it, so nothing is cut and no Node hook runs. The host would spill an over-cap value itself but keeps only about 2000 characters of it inline. 0 = deliver the join and let the host spill it. Used only when the join is exactly the hooks' contexts joined by dispatch.context_joiner and the file can be written; otherwise the previous answer stands."
+doc = "1 = a SessionStart (or any event that cannot block) whose joined additionalContext is over dispatch.context_cap is delivered natively: the hooks' contexts that fit stay inline whole and in priority order (dispatch.context_priority), the rest is written to a file under dispatch.spill_dir and a pointer line (dispatch.msg_spill_pointer) names it, so nothing is cut and no Node hook runs. The host would spill an over-cap value itself but keeps only about 2000 characters of it inline. 0 = deliver the join and let the host spill it. Used only when the join is exactly the hooks' contexts joined by dispatch.context_joiner and the file can be written; otherwise the previous answer stands."
 value = 1
 env = "AH_ENGINE_SPILL_OVER_CAP"
 min = 0
 max = 1
+
+[dispatch.priority_order]
+doc = "1 = the hooks of an event that cannot block are combined in priority order (dispatch.context_priority, highest first, hook order among equals): the context an over-cap join keeps inline is the most important, and what goes to the spill file is the least (#311). 0 = hook order, as before."
+value = 1
+env = "AH_ENGINE_PRIORITY_ORDER"
+min = 0
+max = 1
+
+[dispatch.context_priority_default]
+doc = "The priority of a hook entry that has no row in dispatch.context_priority."
+value = 50
+min = 0
+max = 1000
+
+[dispatch.context_pin_priority]
+doc = "A hook entry at or above this priority is pinned: it is placed first and is meant to stay inline. A pinned context that still had to spill (the pinned ones alone are over the cap) is counted in `status` delivery.pinned_spills and logged, so the cap or the priorities can be tuned."
+value = 80
+min = 0
+max = 1000
+
+[dispatch.context_priority]
+doc = "Per hook entry id (a variant suffix after ':' or '#' takes its base name's row), the priority of its additionalContext in the combined output of an event that cannot block: protocol and role text and the reminders an agent must act on are pinned (>= dispatch.context_pin_priority), housekeeping notices are lowest. Blocks and decisions are not contexts and are never spilled."
+value = { "rule-digest" = 93, "verify-first" = 95, "verify-first-full" = 95, "verify-first-orch" = 90, "verify-first-orch-codex" = 90, "verify-first-subagent" = 95, "devswarm-child-role" = 90, "engine-role-note" = 85, "handover-resume" = 90, "auto-handover" = 90, "task-tracker" = 85, "devswarm-parent-inbox" = 85, "devswarm-child-turn" = 85, "devswarm-rt-advisory" = 80, "agent-reminders" = 80, "limit-conserve-inject" = 70, "version-alert" = 60, "switch-notice" = 60, "defect-nudge" = 40, "handover-hygiene" = 30, "procwatch-advisory" = 30, "gh-rt-advisory" = 30, "repo-self-drift" = 30, "fable-availability" = 25, "codex-availability" = 25, "devswarm-version" = 25, "claude-cli-version" = 25, "jev-review-reminder" = 20, "jev-weekly-scorecard" = 10 }
+
+[dispatch.spill_label]
+doc = "Telemetry label (kind spill, status delivery.spills_by_event) of an over-cap spill whose file holds only context below dispatch.context_pin_priority."
+value = "dispatcher"
+
+[dispatch.spill_pinned_label]
+doc = "Telemetry label of an over-cap spill whose file holds a context at or above dispatch.context_pin_priority (counted in status delivery.pinned_spills)."
+value = "dispatcher-pinned"
 
 [dispatch.spill_dir]
 doc = "The directory under the state dir that holds the over-cap context files (mode 0600, one per spilled event)."
 value = "context-spill"
 
 [dispatch.spill_file]
-doc = "File name of one spilled context. Placeholders: {event} (letters and digits of the hook event), {ts} (milliseconds), {pid}."
-value = "{event}-{ts}-{pid}.txt"
+doc = "File name of one spilled context. Placeholders: {event} (letters and digits of the hook event), {ts} (milliseconds), {pid}, {seq} (a per-process counter: the daemon dispatches on several threads, so two same-millisecond spills never share a name)."
+value = "{event}-{ts}-{pid}-{seq}.txt"
 
 [dispatch.spill_stale_s]
 doc = "Age at which a spilled context file is removed. A session reads its file soon after it starts, so a week is generous; the file only holds text the hooks print again at the next start."
@@ -232,12 +296,44 @@ doc = "The reason a hook entry ends as one that could not run: the dispatcher la
 value = "no hook command is launched; the built-in check did not answer"
 
 [dispatch.failure_mode]
-doc = "What a GUARD event does when the engine cannot decide, per path: `budget` (the event's budget_ms passed before every hook could start), `infra` (an unreadable payload or map, an entry whose check gave no answer, a lost table row, no engine answer) and `panic` (the dispatcher hit an internal error). `closed` blocks (exit 2, dispatch.msg_fail_closed, bounded on Stop events by dispatch.stop_block_cap), `open` lets the call through with a loud stderr line (dispatch.msg_no_node_open). A panic is `open` because a bug of the engine's own must not lock the user out of every tool."
-value = { budget = "closed", infra = "closed", panic = "open" }
+doc = "What a GUARD event does when the engine cannot decide, per path: `budget` (the event's budget_ms passed before every hook could start), `infra` (an unreadable payload or map, an entry whose check gave no answer, a lost table row, no engine answer), `panic` (the dispatcher hit an internal error) and `capacity` (no check could run for lack of capacity: the daemon shed the request with a BUSY reply, a full queue or a rate limit, or a scripted check hit its wall-clock backstop, script.wall_limit_factor, while its thread waited for a core). `closed` blocks (exit 2, dispatch.msg_fail_closed, bounded on Stop events by dispatch.stop_block_cap), `open` lets the call through with a loud stderr line (dispatch.msg_no_node_open). A panic is `open` because a bug of the engine's own must not lock the user out of every tool. `capacity` is `open`: under load it decides INSTEAD of each check's failure mode (script.failure_mode_by_check), so a loaded machine never turns every safety guard into a block of every tool call (P0 2026-11-20: six read-only Bash calls refused by five guards at once), the same as a daemon that gave no reply in time; told once per session (msg.engine_unreachable_why_busy) and counted (dispatch:capacity). A check that ran and failed (an exception, a bad verdict, its CPU limit) still takes its own failure mode; an ERR reply still takes `infra`. `closed` = the capacity no-answer takes each check's failure mode, as before."
+value = { budget = "closed", infra = "closed", panic = "open", capacity = "open" }
 
 [dispatch.msg_no_node_skipped]
 doc = "Printed on stderr (exit 0) when an event that cannot block is skipped because the engine cannot decide it and no Node hooks exist. Placeholders: {event}, {why}."
 value = "anti-hall: the {event} hooks were skipped ({why}); run `ah-engine doctor` if it keeps happening"
+
+[dispatch.capacity_hold]
+doc = "Risk classes of a guard call that no check could decide for lack of capacity (dispatch.failure_mode `capacity`: a BUSY reply, a late reply, a slow-streak marker files.daemon_slow_marker, a script starved of a core). Blocks must protect, not disrupt: a read-only call or a reversible local change always passes (with the once-per-session notice); only a call whose `field` of tool_input, for a tool in `tools` (Claude Code and Codex both name their shell tool Bash), matches one of `rules` (name = regular expression, case-insensitive, matched anywhere in the command) is held, exit 2 with dispatch.msg_capacity_hold (the rule, a reason and a retry hint): an irreversible or shared-remote action (a push, a merge, a gh pr/issue/release text that could carry an AI credit, a gh api write, a recursive delete, a deploy, a publish, a money-moving call, an eFuse write, a dropped table or deleted rows, a pipe into a shell). Rule config-write holds a write into the agent configuration (a redirection, tee, or the target of cp, mv, ln, install or rsync, into ~/.claude, ~/.codex, ~/.anti-hall except its work/ and history/ directories, $CLAUDE_CONFIG_DIR, $CODEX_HOME, any .claude/settings*.json or .mcp.json; ~, $HOME, ${HOME} and /Users/<name> spellings). A plain read that only names the words passes: a command the whole of which matches `read_only` (its first word a read-only reader such as echo, printf, grep, rg, cat, git log/show/diff or gh pr view, its words split by spaces or tabs only, and no ; & | ` $ ( ) < > or newline after it, so nothing is chained, substituted or redirected) and does not match `read_only_unless` (a reader flag that runs a command, such as rg --pre). A command no check could read is held too (#920): a script run by path (./x.sh, bash x.sh, node x.js) is read when at most script.max_bytes and matched by the same rules (a script too big or unreadable is held under script.rule_unread when the command matches script.risky), the code of an interpreter one-liner (python -c, node -e, perl -e, ruby -e) is read by the inline-* rules (a recursive-delete or push API, an exec of a built command string), a gh subcommand outside gh.known (a gh alias) is held under gh.rule, and a command name outside unknown.known that is no binary on PATH (a shell alias or function defined earlier in the session) is held under unknown.rule (unknown.path_lookup 0: any name outside the list; unknown.path_env names the environment variable that holds the search path). The parsed read exemption (`parsed`) passes a list of such reads too, read word by word the shell's way: the list is split at the `seps` separators (a `|` joins a pipeline; any other separator, a heredoc or a substitution $(..), a backtick or <(..) exempts nothing); a `skip` command (cd, pushd, sleep) alone in its pipeline is dropped; an argument may hold `$NAME` or `${NAME}` of a `vars` variable (an environment path or name, never a flag; read as `placeholder`), while `${..}` with an operator, `${!x}`, $1, $@ and any other variable exempt nothing, so a value can not smuggle in a reader flag that runs a command; an assignment alone in its pipeline is dropped and its variable resolves later in the list (#971: any value the reading resolves, a literal ID=abc or S=/tmp/x, an unquoted use only a value with no space or glob character, which the shell would split; an assignment of an `assign_deny` variable or of a `vars` one exempts nothing, and one after && or ||, before & or in a pipeline, or after an `assigners` command such as printf -v, leaves its variable unknown), but only a value that is the engine's own binary (`programs`, a leading $HOME/, `${HOME}/` or the home path read as ~/, `home_env`) lets its variable stand as a command word (E=\"$HOME/.anti-hall/ah-engine/bin/ah-engine\"; \"$E\" mesh send ..; an assignment in front of a command, E=x \"$E\", resolves nothing, as in the shell); each pipeline must then match `read_only` (minus `read_only_unless`) as a whole, or be the engine program with one of its local, reversible `verbs` (its leading words, `*` = any one word, and the flags, words that start with -, that must stand as a whole word after it: config set --check is a dry run; agents nudge <child> stop is left out), each redirection (#971: operator and target joined, 2>&1, >/dev/null, >>/tmp/x, the target's assigned variables resolved, no `vars` variable) matching `redirs` and not `redirs_unless` (an allow list: fd duplication, /dev/null in or out and files under /tmp; a config file, a relative path, a .. or a .git path is held), and a pipe tail that matches `read_only` or, the whole of it, `tail_ok` (jq, yq, python3 -m json.tool, cut, tr, single-quoted arguments allowed: filters that run no code; python3 -c does). A word with no expansion outside single quotes is its text (a $, a backtick or <( in a single-quoted message is data), and the value of a `text_opts` option (--message, --summary) with no unquoted expansion and, inside double quotes, nothing but text and plain $NAME, ${NAME} or $1 is data, whatever it holds (#971 review: no substitution, operator, flag, subscript or modifier: zsh ${(e)X}, bash ${X@P} and an arithmetic subscript ${Z[Y]} or zsh $Z[Y] run code; a missing value or a redirection in its place exempts nothing). An unquoted ( ) < or > inside a word (a zsh multi-name function a b () .., a glob qualifier *(e:..:), a redirection joined to a word x>f), an assignment value the reading can not resolve (a substitution, a backtick, ${x:=..}, whether or not it runs), a pipeline that starts with an assignment (X=1 | git push: read as a whole), an unreadable cd, an assigning expansion and an append or element assignment (zsh commands[x]=, fpath+=) exempt nothing and mask nothing from there on. A reader spelled by a `bin_dirs` path (/usr/bin/grep) reads as its name. A list the exemption can not pass as a whole has each engine-local call it would pass (verb, tail and redirections as above) replaced by `mask` (a no-op command; empty = off) and the rest decided as without them, so an engine-local call is never the reason a list is held (counted capacity_hold parsed_mask; ah-hook: capacity_parsed_mask); a pipeline it can not vouch for, or one with a command off the `inert` allow list (commands that never assign a shell variable; zsh print -v and integer do), leaves every variable unknown, a call that writes a file (a redirection that does not match `redirs_inert`: fd duplication, /dev/null) is never masked (#971 review: a later command may run or load what it wrote, however spelled: bash /tmp/x/\"r.sh\", cd /tmp/x; sh < r.sh), and in the parsed read exemption it passes only as the one writer of the list beside engine-local calls that write nothing and reads that match `after_write` (no git or gh: a repo config written under /tmp can run a pager), and from a command word (or one behind a script.wrappers word) that assigns a denied variable, is an `assigners` command (export, eval, source, function, alias, hash; zsh autoload, setopt, emulate, trap, zmodload, enable, print, integer, float, functions) or defines a function on, no later call is masked. Any other call of the engine program (`unlisted_rule`, empty = off; a verb not on the list, such as config set without --check or agents stop, or one in a list the exemption can not read) is held under that rule with dispatch.msg_capacity_hold_engine. Only a command word counts as a call (after wrappers, assignments and redirections, at the top level of the command): an argument that only names the engine (pgrep -f 'ah-engine serve') is no call, but the code a `shells` shell runs (bash -c '..', eval ..) is the call's own, `passes` levels deep. The read-only verbs follow the command registry (cmd.* read_only and read_only_args): version, status, telemetry summary/events/rollup/actions, agents status, devswarm status/line, mesh unread/read/dump, config validate/history; config explain only reads the files. Counted capacity_hold parsed_read (ah-hook: capacity_parsed_read). Empty `seps` = off. The exemption is the only way past a rule: a spelling it does not know is held (a false hold costs a retry, a false pass costs the action). An empty `read_only` exempts nothing; a `read_only` or `read_only_unless` that does not compile exempts nothing. Both the engine and the ah-hook launcher apply the same keys (Unicode and ASCII builds); a rule that does not compile is skipped and logged (capacity_hold_rule). An empty `rules` lets every capacity no-answer through. #907: with `normalise` 1 the command is also read the way the shell reads it before the rules and the read exemption see it: in-word quotes and backslashes are dropped (g\"i\"t pu\\sh = git push), only an UNQUOTED separator splits a command (a quoted ; & | or newline inside an argument is data, so it neither ends nor hides a command), and the rules match the raw text and this normalised text (a command the reading can not balance, a quote or a substitution left open, is held under rule `unreadable` unless the read exemption passes its raw text: matched quote-blind, any such tail would switch the reading off; empty = match the raw text only). `text` names the free text a command publishes: the values of `opts` (--body, --title, --notes, --body-file ...) of a `verb` (gh) `subs` command (pr, issue, release; gh api is not one) are data and are not matched, unless the value holds a substitution that could run something; the command words themselves (gh pr merge, gh issue create) still are. `git` holds a git subcommand that is not in `known` (git's own subcommands, which an alias can not shadow: so a config alias or an external git-<name> command), held under rule `rule` without reading any git config; `opts_with_arg` are the global options that take the next word, `wrappers` the words that run another command. 0 = match the raw text only. Both the engine and the ah-hook launcher read the same keys; each hold decided only by the normalised text, and each text value that kept a rule from matching, is counted (capacity_hold normalised / text_exempt). The reading follows what the shell does that a word list misses: an unquoted # at the start of a word comments out the rest of its line (a quote in it opens nothing), a heredoc body is data up to its delimiter line (what an unquoted one substitutes, $(..) or a backtick, is read as a command, `body_depth` levels deep, 0 = not at all), <(..) and >(..) run a command (a gh value that is one is not data), $\"..\" is a quoted word, \\u and \\U spell a character in $'..', a brace list {a,b} expands to words (at most `brace_cap`, 0 = not expanded), an arithmetic << is a shift and no heredoc, a substitution inside double quotes opens a new quoting context, a git command can open with ( { ! $( <( or a backtick or sit in an assignment's substitution, and git in any case is git (a case-insensitive file system runs it). `passes` (0 = once) is how many levels deep a word that holds a space, a newline or a separator is read again as the value the shell passes on (quoted newlines intact, a substitution's body unwrapped), so a string a nested shell runs (sh -c '..', eval \"..\", env -S '..', git -c core.pager='..') is read like a command too; each re-reading is matched as well. The rules shell-heredoc, interpreter-heredoc, pipe-to-interpreter, dynamic-command and exec-list-dynamic are off by default (removed from `rules`, `inline_rules` and `script.raw_rules`; `script.body_skip` empty): they held safe local work under load; the wrapper words of pipe-to-shell take option values (sudo -u root sh, xargs -n 1 sh; a || is no pipe) and the gh subcommand rules allow options before the action (gh pr -R o/r merge). #920: under load a script run by path (./x.sh, bash x.sh, source x, an interpreter named by its path, a command after a find `script.markers` word such as -exec) is read when at most `script.max_bytes` and matched by the same rules (held as `script.rule_prefix` + the rule), and the scripts it runs in turn, `script.depth` levels; at most `script.max_refs` scripts are read in all. A relative path is read from the payload's `script.cwd_field` and from each directory a `script.cd_commands` command changes to; a leading ~ is the variable `script.home_env`. A text script over max_bytes and at most `script.scan_bytes` is matched as written by the rules named in `script.scan_rules`; a bigger, binary or unreadable one is held as `script.rule_unread` only when the command matches `script.risky`. `script.wrappers` are the words that run the command after them for this reading and the unknown-name one (git.wrappers without find, source and ., whose next word is no command). An interpreter one-liner (`script.interpreters` with one of `script.inline_flags`) is matched by `inline_rules` (counted inline_code); a gh subcommand outside `gh.known` is held as `gh.rule`; a plain command name outside `unknown.known` that is no executable on the `unknown.path_env` path (`unknown.path_lookup` 0 = no lookup) is held as `unknown.rule` (a shell alias or function); with `unknown.risky_only` 1 (#969) only when the command also matches `script.risky` (push, deploy, delete ...), so an unknown name that names nothing risky passes under load. The engine's own binary (`parsed.programs`) named by its path is never read as a script (counted engine_program): it is far over script.max_bytes and would be held as unread whenever its arguments name a risky word. #928 (blocks protect, not disrupt): a recursive delete of a variable is never exempt (fail closed: `rm -rf \"$t\"` stays held under load, whatever made `$t`). Instead `script.trusted` lists scripts the owner vouches for: each entry is (`path`: a repo-relative path glob, `*` one path component, `**` any depth; `sha256`: the hash of the file's content). A script run by path whose real path, relative to the nearest parent holding `unknown.repo_marker`, matches an entry's glob AND whose content (at most `script.trusted_max_bytes`) hashes to the entry's sha256 is trusted: its body is not matched (counted capacity_hold trusted_script; ah-hook: capacity_trusted_script). Any edit changes the hash, so the script is checked like any other again; the list is never refreshed by itself: `ah-engine capacity-hashes` prints the current hash of each entry's file (and of any path given) for the owner to paste in. The command text itself is still matched. A project-local tool's file is read as a script run by path is. A tool name outside unknown.known that is an executable in a `unknown.local_dirs` directory (.venv/bin, node_modules/.bin, target/debug) of the cwd, a cd target or their parents up to the repo root (the nearest parent holding `unknown.repo_marker`), with the real path inside that root, is known (counted local_tool). `script.wrapper_opts` names, per wrapper word, the options that take the next word as their value (sudo -u bob, env -u X, timeout -s KILL), so that value is not read as the command (counted wrapper_opt). `script.wrapper_split_opts` names, per wrapper word, the options whose value is itself a command line (env -S './x.sh', also spelled --split-string=VALUE or -SVALUE): that value is read again as a command, so a script it names is read like one run by path. Rule dynamic-command-risky holds a variable in command position whose arguments look risky ($CMD push) in a script too (`script.body_skip` names rules skipped in script bodies; `script.raw_rules` are matched on the script as written too, since the shell reading drops the quotes that tell a name from a variable)."
+value = { tools = ["Bash"], field = "command", read_only = '\A[ \t]*(?:echo|printf|grep|egrep|fgrep|rg|cat|head|tail|wc|jq|yq|ls|ps|pgrep|du|df|uptime|stat|which|git[ \t]+(?:log|show|diff|status|ls-remote|fetch|rev-parse)|gh[ \t]+(?:pr[ \t]+(?:view|checks|list|diff|status)|run[ \t]+(?:list|view)|issue[ \t]+(?:view|list|status)|api))(?:[ \t][^;&|`$()<>\r\n]*)?(?:[ \t]*\|[ \t]*(?:echo|printf|grep|egrep|fgrep|rg|cat|head|tail|wc|jq|yq|ls|cut|tr|column|nl|tac|rev)(?:[ \t][^;&|`$()<>\r\n]*)?)*\z', read_only_unless = '--pre\b|--upload-pack|--receive-pack|--output\b|--ext-diff|--textconv|\bgh[ \t]+api\b[^|]*(?:[ \t]-[a-zA-Z]*[XfF]|[ \t]--(?:method|field|raw-field|input)\b)', rules = { config-write = "(?:>|<>)[>|]?[ \\t]*['\"]?[^\\s;&|<>'\"]*?(?:(?:~|\\$\\{?HOME\\}?|/Users/[^/\\s;&|'\"]+|/home/[^/\\s;&|'\"]+|/root)/(?:\\.(?:claude|codex)\\b|\\.anti-hall(?:/(?:[^wh]|w(?:[^o]|\\z)|wo(?:[^r]|\\z)|wor(?:[^k]|\\z)|work(?:[^/]|\\z)|h(?:[^i]|\\z)|hi(?:[^s]|\\z)|his(?:[^t]|\\z)|hist(?:[^o]|\\z)|histo(?:[^r]|\\z)|histor(?:[^y]|\\z)|history(?:[^/]|\\z)|(?:work|history)/[^\\s;&|]*\\.\\.|\\z)|[^/]|\\z))|\\$\\{?(?:CLAUDE_CONFIG_DIR|CODEX_HOME)\\b|\\.claude/settings[^/\\s;&|]*\\.json|\\.mcp\\.json)|\\btee\\b[^|;&\\n]*?[\\s'\"=][^\\s;&|<>'\"]*?(?:(?:~|\\$\\{?HOME\\}?|/Users/[^/\\s;&|'\"]+|/home/[^/\\s;&|'\"]+|/root)/(?:\\.(?:claude|codex)\\b|\\.anti-hall(?:/(?:[^wh]|w(?:[^o]|\\z)|wo(?:[^r]|\\z)|wor(?:[^k]|\\z)|work(?:[^/]|\\z)|h(?:[^i]|\\z)|hi(?:[^s]|\\z)|his(?:[^t]|\\z)|hist(?:[^o]|\\z)|histo(?:[^r]|\\z)|histor(?:[^y]|\\z)|history(?:[^/]|\\z)|(?:work|history)/[^\\s;&|]*\\.\\.|\\z)|[^/]|\\z))|\\$\\{?(?:CLAUDE_CONFIG_DIR|CODEX_HOME)\\b|\\.claude/settings[^/\\s;&|]*\\.json|\\.mcp\\.json)|\\b(?:cp|mv|ln|install|rsync)\\b[^|;&\\n]*[\\s'\"=][^\\s;&|<>'\"]*?(?:(?:~|\\$\\{?HOME\\}?|/Users/[^/\\s;&|'\"]+|/home/[^/\\s;&|'\"]+|/root)/(?:\\.(?:claude|codex)\\b|\\.anti-hall(?:/(?:[^wh]|w(?:[^o]|\\z)|wo(?:[^r]|\\z)|wor(?:[^k]|\\z)|work(?:[^/]|\\z)|h(?:[^i]|\\z)|hi(?:[^s]|\\z)|his(?:[^t]|\\z)|hist(?:[^o]|\\z)|histo(?:[^r]|\\z)|histor(?:[^y]|\\z)|history(?:[^/]|\\z)|(?:work|history)/[^\\s;&|]*\\.\\.|\\z)|[^/]|\\z))|\\$\\{?(?:CLAUDE_CONFIG_DIR|CODEX_HOME)\\b|\\.claude/settings[^/\\s;&|]*\\.json|\\.mcp\\.json)[^\\s;&|'\"]*['\"]?[ \\t]*(?:\\z|[;&|\\n)])|\\b(?:cp|mv|ln|install)\\b[^|;&\\n]*\\s(?:-t[ \\t]*|--target-directory[= \\t]+)['\"]?[^\\s;&|<>'\"]*?(?:(?:~|\\$\\{?HOME\\}?|/Users/[^/\\s;&|'\"]+|/home/[^/\\s;&|'\"]+|/root)/(?:\\.(?:claude|codex)\\b|\\.anti-hall(?:/(?:[^wh]|w(?:[^o]|\\z)|wo(?:[^r]|\\z)|wor(?:[^k]|\\z)|work(?:[^/]|\\z)|h(?:[^i]|\\z)|hi(?:[^s]|\\z)|his(?:[^t]|\\z)|hist(?:[^o]|\\z)|histo(?:[^r]|\\z)|histor(?:[^y]|\\z)|history(?:[^/]|\\z)|(?:work|history)/[^\\s;&|]*\\.\\.|\\z)|[^/]|\\z))|\\$\\{?(?:CLAUDE_CONFIG_DIR|CODEX_HOME)\\b|\\.claude/settings[^/\\s;&|]*\\.json|\\.mcp\\.json)", git-push = '\bgit\b[^|;&\n]*\bpush\b', git-destroy = '\bgit\b[^|;&\n]*\b(reset\s+--hard|clean\s+-[a-z]*f|branch\s+-[a-z]*D|filter-(branch|repo)|update-ref\s+-d)', gh-remote-change = '\bgh\b[^|;&\n]*\b(pr(\s+-\S+(\s+[^-\s|;&]\S*)?)*\s+(merge|close|create|edit|comment|review)|issue(\s+-\S+(\s+[^-\s|;&]\S*)?)*\s+(create|edit|comment|close|delete|transfer)|release(\s+-\S+(\s+[^-\s|;&]\S*)?)*\s+(create|delete|edit|upload)|repo(\s+-\S+(\s+[^-\s|;&]\S*)?)*\s+(delete|archive|rename|edit)|secret(\s+-\S+(\s+[^-\s|;&]\S*)?)*\s+(set|delete)|workflow(\s+-\S+(\s+[^-\s|;&]\S*)?)*\s+run|api\b[^|;&\n]*((-[a-z]*X|--method)[\s=]*(DELETE|POST|PATCH|PUT)\b|\s(-[a-z]*f|--field|--raw-field|--input)))', recursive-delete = '\brm\b[^|;&\n]*\s(-[a-z]*[rf][a-z]*|--recursive|--force)\b', deploy = '\b(firebase|gcloud|gsutil|vercel|netlify|flyctl|fly|kubectl|terraform|helm|aws)\b[^|;&\n]*\b(deploy|apply|delete|destroy|rm)\b', publish = '\b(npm|pnpm|yarn|cargo|twine|gem)\s+(publish|yank|unpublish)\b', money = '\bstripe\s+([a-z_]+\s+)?(create|update|delete|cancel|capture|pay|post|refund)\b|\bapi\.(stripe|revenuecat)\.com\b', efuse = '\b(espefuse(\.py)?|esptool(\.py)?|idf\.py)\b[^|;&\n]*\b(burn|write[_-]protect|read[_-]protect)', sql-drop = '\b(DROP\s+(TABLE|DATABASE|SCHEMA)|TRUNCATE\s+TABLE|DELETE\s+FROM)\b', pipe-to-shell = '(?:\A|[^|])\|\s*(\S*/)?((sudo|doas|env|xargs|nohup|command|exec|nice|timeout|stdbuf|time|setsid|busybox)(\s+(-\S+(\s+[^-\s|;&]\S*)?|[A-Za-z_][A-Za-z0-9_]*=\S*|[0-9]\S*))*\s+(\S*/)?)*(ba|z|da|k)?sh\b', inline-delete-api = '\b(?:python[0-9.]*|node|nodejs|deno|bun|perl|ruby|php)\b(?:\s+-\S+)*?\s+(?:-[a-zA-Z]*[ceEp]|--eval|--print)\b[^|;&\n]*(?:rmtree|remove_tree|rm_rf|rm_r\b|rimraf|removedirs|FileUtils\.(?:rm_r|remove_dir|remove_entry)|File::Path|recursive\s*:\s*true)', inline-push-api = '\b(?:python[0-9.]*|node|nodejs|deno|bun|perl|ruby|php)\b(?:\s+-\S+)*?\s+(?:-[a-zA-Z]*[ceEp]|--eval|--print)\b[^|;&\n]*(?:porcelain\.push\b|(?:pygit2|dulwich|isomorphic-git|simple-?git|nodegit|Rugged|Git::Raw)\b[^|;&\n]*\bpush\b)', inline-exec-dynamic = '\b(?:python[0-9.]*|node|nodejs|deno|bun|perl|ruby|php)\b(?:\s+-\S+)*?\s+(?:-[a-zA-Z]*[ceEp]|--eval|--print)\b[^|;&\n]*(?:os\.(?:system|popen|exec[lv][a-z]*|spawn[lv][a-z]*)|subprocess\.(?:run|call|check_call|check_output|Popen|getoutput)|execSync|execFileSync|execFile|spawnSync|\bexec|\bspawn|\bsystem|\bpopen|\beval)\s*\(\s*(?:[A-Za-z_$\x60]|[\x22\x27][^\x22\x27]*[\x22\x27]\s*(?:[+%.]\s*[A-Za-z_$(\x22\x27]|\.(?:format|join|concat)\b)|\[\s*[A-Za-z_$]|[^)\n]*?[\x22\x27]\s*(?:[+%]\s*[\x22\x27A-Za-z_$(]|\.\s*[\x22\x27]))', find-exec-run = '\bfind\b[^|;&\n]*\s-(?:exec|execdir|ok|okdir)\s+(?:\S*/)?(?:(?:(?:ba|z|da|k)?sh|python[0-9.]*|node|nodejs|deno|bun|perl|ruby|php)(?:\s+-\S+)*\s+)?\{\}', dynamic-command-risky = '(\A|[;&|\n(\x60])[ \t]*([A-Za-z_][A-Za-z0-9_]*=[^ \t\n;&|]*[ \t]+)*((then|do|else|elif|if|while|until|!|\{|sudo|doas|env|exec|command|time|nohup|xargs|eval)[ \t]+)*[\x22]?\$\{?[A-Za-z_][A-Za-z0-9_]*\}?[\x22]?[ \t]+[^;&|\n]*(?:\b(?:push|merge|deploy|publish|destroy|delete|drop|apply|rm|reset)\b|\s--(?:force|hard|delete|recursive)\b)' }, parsed = { after_write = '\A[ \t]*(?:echo|printf|grep|egrep|fgrep|rg|cat|head|tail|wc|ls|ps|pgrep|du|df|uptime|stat|which)(?:[ \t][^;&|`$()<>\r\n]*)?(?:[ \t]*\|[ \t]*(?:echo|printf|grep|egrep|fgrep|rg|cat|head|tail|wc|ls|cut|tr|column|nl|tac|rev)(?:[ \t][^;&|`$()<>\r\n]*)?)*\z', assign_deny = ["PATH", "path", "IFS", "ENV", "BASH_ENV", "BASH_*", "CDPATH", "cdpath", "FPATH", "fpath", "module_path", "manpath", "PS4", "SHELLOPTS", "BASHOPTS", "PROMPT_COMMAND", "GLOBIGNORE", "ZDOTDIR", "SHELL", "LD_*", "DYLD_*", "AH_*", "ANTIHALL_*", "GIT_*", "commands", "functions", "aliases", "galiases", "saliases", "builtins", "options", "parameters", "nameddirs", "dis_*"], assigners = ["printf", "read", "readarray", "mapfile", "export", "declare", "typeset", "local", "readonly", "unset", "let", "getopts", "eval", "source", ".", "for", "select", "vared", "zparseopts", "function", "alias", "hash", "autoload", "unfunction", "unalias", "unhash", "enable", "disable", "zmodload", "setopt", "unsetopt", "emulate", "trap", "print", "integer", "float", "functions"], bin_dirs = ["/usr/bin/", "/bin/"], inert = ["echo", "sleep", "true", "cat", "grep", "egrep", "fgrep", "rg", "head", "tail", "wc", "ls", "ps", "pgrep", "du", "df", "date", "uptime", "stat", "which", "git", "gh", "jq", "cut", "tr", "sort", "uniq", "find", "python3", "python", "node"], mask = "true", redirs = '\A(?:[0-9]*>&(?:[0-9]+|-)|[0-9]*<&-|[0-9]*</dev/null|(?:[0-9]*|&)>>?\|?(?:/dev/null|/(?:private/)?tmp/[A-Za-z0-9._/+=@%,:-]+))\z', redirs_inert = '\A(?:[0-9]*>&(?:[0-9]+|-)|[0-9]*<&-|[0-9]*</dev/null|(?:[0-9]*|&)>>?\|?/dev/null)\z', redirs_unless = '(?:\A|/)\.\.(?:/|\z)|/\.git(?:/|\z)', text_opts = ["--message", "--summary", "--text", "--reason", "--note"], seps = ["&&", ";", "\n", "||", "&"], skip = ["cd", "pushd", "sleep"], vars = ["HOME", "PWD", "OLDPWD", "TMPDIR", "USER", "LOGNAME", "CLAUDE_PROJECT_DIR", "CLAUDE_PLUGIN_ROOT", "CLAUDE_CONFIG_DIR", "CODEX_HOME"], placeholder = "_", unlisted_rule = "engine-unlisted", shells = ["sh", "bash", "zsh", "dash", "ksh", "eval"], tail_ok = '\A[ \t]*(?:jq|yq|python3?[ \t]+-m[ \t]+json\.tool|head|tail|wc|grep|cat|cut|tr)(?:[ \t](?:[^;&|`$()<>\r\n\x27]|\x27[^\x27]*\x27)*)?(?:[ \t]*\|[ \t]*(?:jq|yq|python3?[ \t]+-m[ \t]+json\.tool|head|tail|wc|grep|cat|cut|tr)(?:[ \t](?:[^;&|`$()<>\r\n\x27]|\x27[^\x27]*\x27)*)?)*\z', home_env = "HOME", programs = ["ah-engine", "~/.anti-hall/ah-engine/bin/ah-engine"], verbs = ["mesh send", "mesh read", "mesh inbox read-primary", "mesh inbox peek-primary", "mesh inbox ack-primary", "mesh inbox tick", "mesh inbox", "mesh roster", "mesh help", "config heal --check", "defect report", "defect list", "defect show", "defect recurring", "defect similar", "query", "metrics", "telemetry actions", "devswarm ledger", "devswarm advisory", "mesh heartbeat", "version", "telemetry summary", "telemetry events", "agents status", "devswarm status", "devswarm line", "mesh unread", "mesh dump", "status", "config show", "config explain", "config validate", "config history", "config set --check", "agents nudge * msg", "agents nudge * snooze", "agents nudge * other"] }, inline_rules = ["inline-delete-api", "inline-push-api", "inline-exec-dynamic"], normalise = 1, passes = 3, brace_cap = 64, body_depth = 2, unreadable = "unreadable-command", text = { verb = "gh", subs = ["pr", "issue", "release"], opts = ["--body", "-b", "--title", "-t", "--notes", "-n", "--subject", "--message", "--body-file", "-F", "--notes-file", "--notes-from-tag"] }, git = { rule = "git-unknown-subcommand", known = ["status", "log", "show", "diff", "add", "commit", "branch", "checkout", "switch", "restore", "stash", "rev-parse", "rev-list", "ls-files", "ls-tree", "ls-remote", "blame", "describe", "fetch", "pull", "merge", "rebase", "cherry-pick", "revert", "tag", "remote", "config", "init", "clone", "worktree", "submodule", "grep", "shortlog", "bisect", "apply", "am", "format-patch", "mv", "rm", "reset", "clean", "show-ref", "cat-file", "count-objects", "fsck", "gc", "reflog", "notes", "archive", "diff-tree", "diff-index", "for-each-ref", "merge-base", "name-rev", "symbolic-ref", "update-index", "write-tree", "hash-object", "var", "help", "version", "maintenance", "sparse-checkout", "range-diff", "whatchanged", "check-ignore", "check-attr", "mergetool", "difftool", "cherry", "verify-commit", "verify-tag", "bundle", "prune", "repack", "pack-refs", "unpack-file", "rerere", "annotate", "get-tar-commit-id", "stripspace", "column", "interpret-trailers", "mailinfo", "mailsplit", "fast-export", "fast-import", "commit-tree", "read-tree", "update-ref", "replace", "credential", "sh-setup", "request-pull", "send-email", "instaweb", "citool", "gui", "gitk", "scalar", "backfill", "hook", "last-modified", "repo", "refs", "history"], opts_with_arg = ["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--exec-path", "--config-env", "--super-prefix", "--attr-source"], wrappers = ["if", "then", "else", "elif", "do", "while", "until", "!", "{", "eval", "source", ".", "sudo", "doas", "env", "time", "nohup", "command", "builtin", "exec", "xargs", "nice", "ionice", "timeout", "flock", "parallel", "stdbuf", "watch", "script", "arch", "caffeinate", "setsid", "unbuffer", "chronic", "find", "-exec", "-execdir"] }, gh = { rule = "gh-unknown-subcommand", known = ["pr", "issue", "release", "repo", "secret", "variable", "workflow", "run", "api", "auth", "browse", "codespace", "discussion", "gist", "label", "org", "project", "ruleset", "search", "ssh-key", "gpg-key", "status", "cache", "config", "extension", "alias", "completion", "help", "version", "agent-task", "attestation", "copilot", "licenses", "preview", "skill", "accessibility", "actions", "environment", "exit-codes", "formatting", "mintty", "reference", "telemetry"], opts_with_arg = [] }, script = { trusted_max_bytes = 262144, trusted = [ { path = "ah-engine/test.sh", sha256 = "2c664a6330aea6b4321bbeed0a1606c5b7db7ced6311cb3245f032729a285fe2" }, { path = "ah-engine/tests/wrapper.sh", sha256 = "be7e8e95343dfc539572f80a0525431cdf156502f23f9bcd83e3dec423461d03" } ], max_bytes = 65536, max_refs = 4, cwd_field = "cwd", rule_prefix = "script:", rule_unread = "script-unread", risky = '(?:deploy|release|publish|push|destroy|delete|wipe|purge|nuke|force|migrat|reset|uninstall|teardown|prod(?:uction)?(?:[^a-z]|\z))', interpreters = ["sh", "bash", "zsh", "dash", "ksh", "python", "python3", "python3.9", "python3.10", "python3.11", "python3.12", "python3.13", "node", "nodejs", "perl", "ruby", "php", "deno", "bun", "source", "."], inline_flags = ["-c", "-e", "-E", "-lc", "-ic", "-pe", "-ne", "-p", "--eval", "--print"], wrappers = ["if", "then", "else", "elif", "do", "while", "until", "!", "{", "eval", "sudo", "doas", "env", "time", "nohup", "command", "builtin", "exec", "xargs", "nice", "ionice", "timeout", "flock", "parallel", "stdbuf", "watch", "script", "arch", "caffeinate", "setsid", "unbuffer", "chronic"], markers = ["-exec", "-execdir", "-ok", "-okdir"], cd_commands = ["cd", "pushd"], wrapper_opts = { sudo = ["-u", "-g", "-h", "-p", "-C", "-D", "-R", "-T", "-U", "-r", "-t", "--user", "--group", "--host", "--prompt", "--chdir", "--chroot", "--role", "--type"], doas = ["-u", "-C"], env = ["-u", "-S", "-C", "--unset", "--chdir", "--split-string"], nice = ["-n", "--adjustment"], ionice = ["-c", "-n", "-p", "-P", "-u"], timeout = ["-s", "-k", "--signal", "--kill-after"], xargs = ["-n", "-I", "-L", "-P", "-s", "-d", "-E", "-a", "--max-args", "--replace"], flock = ["-w", "-E", "--timeout", "--conflict-exit-code"], stdbuf = ["-i", "-o", "-e"], watch = ["-n"], parallel = ["-j", "-n", "-S", "-a"] }, wrapper_split_opts = { env = ["-S", "--split-string"] }, home_env = "HOME", depth = 2, scan_bytes = 1048576, body_skip = [], raw_rules = [], scan_rules = ["git-push", "git-destroy", "gh-remote-change", "recursive-delete", "deploy", "publish", "money", "efuse", "sql-drop"] }, unknown = { rule = "unknown-command", risky_only = 1, path_lookup = 1, path_env = "PATH", local_dirs = [".venv/bin", "venv/bin", "node_modules/.bin", "target/debug", "target/release"], repo_marker = ".git", known = ["alias", "unalias", "bg", "bind", "break", "builtin", "caller", "case", "cd", "command", "compgen", "complete", "continue", "declare", "dirs", "disown", "do", "done", "echo", "elif", "else", "enable", "esac", "eval", "exec", "exit", "export", "false", "fc", "fg", "fi", "for", "function", "getopts", "hash", "help", "history", "if", "in", "jobs", "let", "local", "logout", "mapfile", "popd", "printf", "pushd", "pwd", "read", "readarray", "readonly", "return", "select", "set", "shift", "shopt", "source", "suspend", "test", "then", "time", "times", "trap", "true", "type", "typeset", "ulimit", "umask", "unset", "until", "wait", "while", "awk", "basename", "bat", "cat", "chmod", "chown", "cksum", "column", "comm", "cp", "curl", "cut", "date", "dd", "df", "diff", "dirname", "du", "env", "expr", "fd", "file", "find", "fmt", "fold", "free", "grep", "egrep", "fgrep", "gzip", "gunzip", "head", "hexdump", "hostname", "id", "jq", "kill", "less", "ln", "ls", "lsof", "md5", "md5sum", "mkdir", "more", "mv", "nice", "nl", "nohup", "od", "open", "paste", "pgrep", "ps", "readlink", "realpath", "rg", "rev", "rm", "rmdir", "sed", "seq", "sha1sum", "sha256sum", "shasum", "sleep", "sort", "split", "stat", "strings", "sudo", "tac", "tail", "tar", "tee", "timeout", "top", "touch", "tr", "tree", "uname", "uniq", "unzip", "uptime", "wc", "wget", "which", "whoami", "xargs", "xxd", "yes", "zip", "git", "gh", "cargo", "rustc", "rustup", "npm", "npx", "pnpm", "yarn", "node", "nodejs", "bun", "deno", "python", "python3", "pip", "pip3", "uv", "make", "cmake", "ninja", "go", "java", "javac", "mvn", "gradle", "dart", "flutter", "swift", "xcodebuild", "docker", "kubectl", "terraform", "gcloud", "firebase", "aws", "claude", "codex", "ah-engine", "ah-hook", "idf.py", "esptool.py", "espefuse.py", "sh", "bash", "zsh", "dash", "ksh", "perl", "ruby", "php", "lockf", "taskpolicy", "sqlite3", "brew", "osascript", "say", "pbcopy", "pbpaste", "code", "vim", "nano", "espefuse", "espsecure", "esptool", "pio", "platformio", "openocd", "ruff", "black", "pytest", "tsc", "eslint", "prettier", "ssh", "scp", "rsync", "tmux", "screen", "man", "patch", "watch", "sccache", "clang", "gcc", "cc", "ld", "ar", "nm", "objdump", "tput", "stty", "tty", "printenv", "locale", "nproc", "sysctl", "vm_stat", "diskutil", "launchctl", "defaults", "mdfind", "mktemp", "install", "getconf", "ping", "dig", "nslookup", "host", "nc", "ssh-keygen", "base64", "openssl", "iconv", "gawk", "ack", "ag", "fzf", "less", "z", "gdb", "lldb", "valgrind", "strace", "dtruss", "perf", "xcrun", "xcode-select", "simctl", "adb", "fastboot", "unrar", "7z", "bzip2", "xz", "zcat", "zgrep"] } }
+
+[dispatch.msg_capacity_hold]
+doc = "Stderr of a guard call held because no check could decide it for lack of capacity and it falls in a hold class (dispatch.capacity_hold). Placeholders: {tool}, {rule}."
+value = "anti-hall: the engine was too busy to check this {tool} call, and it is too risky to let through unchecked (hold rule {rule}: an irreversible or shared-remote action). Nothing ran. Retry it in a few seconds; read-only and local calls still go through while the machine is loaded."
+
+[dispatch.msg_capacity_hold_engine]
+doc = "#969: stderr of an engine call held because no check could decide it for lack of capacity and its verb is not one of the local, reversible ones (dispatch.capacity_hold parsed.verbs). Placeholders: {tool}, {rule}."
+value = "anti-hall: the engine was too busy to check this {tool} call, and it is an engine call that may write settings or stop agents (hold rule {rule}). Nothing ran. Retry it in a few seconds; the engine's read-only and local verbs (status, version, mesh send/read, inbox, heartbeat, config set --check) still go through while the machine is loaded."
+
+[dispatch.msg_capacity_hash_line]
+doc = "One line of `capacity-hashes`: the state of a trusted-scripts entry (or of a path given), its path and the file's current sha256. Placeholders: {state}, {path}, {sha256}."
+value = "{state}  {path}  {sha256}"
+
+[dispatch.msg_capacity_hash_match]
+doc = "State word of `capacity-hashes`: the file's hash is the entry's."
+value = "trusted"
+
+[dispatch.msg_capacity_hash_changed]
+doc = "State word of `capacity-hashes`: the file's hash differs from the entry's, so the script is checked like any other until the entry is refreshed."
+value = "changed"
+
+[dispatch.msg_capacity_hash_missing]
+doc = "State word of `capacity-hashes`: the entry's file is not found (or is a glob, read from the repo root of the current directory)."
+value = "missing"
+
+[dispatch.msg_capacity_hash_current]
+doc = "State word of `capacity-hashes`: a path given on the command line (no entry to compare); the entry to paste into script.trusted follows."
+value = "current"
 
 [dispatch.msg_no_node_open]
 doc = "Printed on stderr (exit 0) when a guard event is let through because the engine cannot decide it and its failure mode is open. Placeholders: {event}, {why}."
@@ -253,6 +349,22 @@ value = 75
 min = 1
 max = 255
 
+
+[dispatch.fail_open_setting]
+doc = "Non-safety guards pass when unanswered. Setting guards.failOpenNonSafety (default on): a guard event's entry whose check gave no answer (a late or missing daemon reply, a spent event budget) and that is not a safety guard (script.failure_mode_by_check lists the safety guards as `closed`: git, command, api-guard, edit-guard, ship-it-guard, merge-gate, compact-declaration-guard, devswarm-comms-guard, inbox-read-guard, ask-guard) is let through instead of blocking the tool call or holding the Stop. The pass is counted per check (status: advisory.fail_open) and told to the user once per session (script.msg_guard_down). Off = every unanswered guard entry blocks, as before."
+value = { section = "guards", key = "failOpenNonSafety", env = "ANTIHALL_FAIL_OPEN_NON_SAFETY", aliases = [], option = "", default = true }
+
+[dispatch.fail_open_counter]
+doc = "The status counter group (status.advisory.<group>.<check>) that counts the unanswered guard entries let through under guards.failOpenNonSafety."
+value = "fail_open"
+
+[dispatch.fail_open_notice_tag]
+doc = "The stamp tag of the could-not-run notice (a non-safety check let through unanswered, or a call passed because the daemon gave no reply): joined with the hook event, it is told at most once per session and event family, on stderr, and only once it is in the final answer."
+value = "dispatch-fail-open"
+
+[dispatch.msg_fail_open_log]
+doc = "Event-log detail of an unanswered non-safety guard entry that was let through. Placeholders: {check}, {event}."
+value = "{check} ({event}): no answer, not a safety guard: let through"
 
 [dispatch.msg_fail_closed]
 doc = "Printed on stderr (exit 2) when a guard event's Node hooks cannot run. Placeholders: {event}, {why}."
@@ -276,7 +388,7 @@ value = "entry {id} skipped: no runnable Node command"
 
 [dispatch.msg_skipped_entry_stderr]
 doc = "Printed on stderr when a non-guard event goes on without an entry that has no runnable Node command. Placeholders: {event}, {id}."
-value = "anti-hall: skipped {event} Node hook {id}: no runnable Node command"
+value = "anti-hall: skipped the {event} hook {id}: it has no runnable command on this install"
 
 [dispatch.msg_defer]
 doc = "Event-log detail when the dispatcher cannot answer an event and defers the whole call."
@@ -428,11 +540,11 @@ value = "the dispatch table has no well-formed row for {host} {event}: the Node 
 [dispatch.hooks_claude_UserPromptSubmit]
 doc = "The claude UserPromptSubmit hook entries, in dispatch order."
 value = [
-  { id = "verify-first", matcher = "", timeout = 10, check = "verify-first" },
   { id = "task-tracker", matcher = "", timeout = 10, check = "task-tracker" },
   { id = "idle-agent-sweep", matcher = "", timeout = 10, check = "idle-agent-sweep" },
   { id = "limit-conserve-inject", matcher = "", timeout = 10, check = "limit-conserve-inject" },
-  { id = "devswarm-parent-inbox", matcher = "", timeout = 10, check = "devswarm-parent-inbox", when = { all = [ { not = { env = "ANTIHALL_JUDGE_CHILD", equals = "1" } }, { not = { env = "DEVSWARM_SOURCE_BRANCH", regex = "\\S" } }, { not = { env = "DISABLE_ANTIHALL_DEVSWARM", equals = "1" } }, { setting = "devswarm.parentInbox" }, { any = [ { setting = "devswarm.supervisorMode", equals = "on" }, { all = [ { setting = "devswarm.supervisorMode", equals = "auto" }, { env = "DEVSWARM_REPO_ID", regex = "\\S" } ] } ] } ] } },
+  { id = "devswarm-parent-inbox", matcher = "", timeout = 10, check = "devswarm-parent-inbox", when = { all = [ { not = { setting = "guards.idleGate" } }, { not = { env = "ANTIHALL_JUDGE_CHILD", equals = "1" } }, { not = { env = "DEVSWARM_SOURCE_BRANCH", regex = "\\S" } }, { not = { env = "DISABLE_ANTIHALL_DEVSWARM", equals = "1" } }, { setting = "devswarm.parentInbox" }, { any = [ { setting = "devswarm.supervisorMode", equals = "on" }, { all = [ { setting = "devswarm.supervisorMode", equals = "auto" }, { env = "DEVSWARM_REPO_ID", regex = "\\S" } ] } ] } ] } },
+  { id = "idle-gate", matcher = "", timeout = 10, check = "devswarm-parent-inbox", when = { all = [ { setting = "guards.idleGate" }, { not = { env = "ANTIHALL_JUDGE_CHILD", equals = "1" } }, { not = { env = "DEVSWARM_SOURCE_BRANCH", regex = "\\S" } }, { not = { env = "DISABLE_ANTIHALL_DEVSWARM", equals = "1" } }, { setting = "devswarm.parentInbox" }, { any = [ { setting = "devswarm.supervisorMode", equals = "on" }, { all = [ { setting = "devswarm.supervisorMode", equals = "auto" }, { env = "DEVSWARM_REPO_ID", regex = "\\S" } ] } ] } ] } },
   { id = "devswarm-rt-advisory", matcher = "", timeout = 10, check = "devswarm-rt-advisory" },
   { id = "devswarm-child-turn", matcher = "", timeout = 10, check = "devswarm-child-turn", when = { all = [ { not = { env = "ANTIHALL_JUDGE_CHILD", equals = "1" } }, { env = "DEVSWARM_SOURCE_BRANCH", regex = "\\S" }, { not = { env = "DISABLE_ANTIHALL_DEVSWARM", equals = "1" } }, { setting = "devswarm.childTurn" }, { any = [ { setting = "devswarm.supervisorMode", equals = "on" }, { all = [ { setting = "devswarm.supervisorMode", equals = "auto" }, { env = "DEVSWARM_REPO_ID", regex = "\\S" } ] } ] } ] } },
   { id = "repair-on-reload", matcher = "", timeout = 10, check = "repair-on-reload" },
@@ -441,6 +553,7 @@ value = [
   { id = "agent-reminders", matcher = "", timeout = 10, check = "agent-reminders" },
   { id = "gh-rt-advisory", matcher = "", timeout = 10, check = "gh-rt-advisory" },
   { id = "switch-notice", matcher = "", timeout = 10, check = "switch-notice" },
+  { id = "afk-mode", matcher = "", timeout = 10, check = "afk-mode", when = { setting = "afk.enabled" } },
 ]
 
 [dispatch.hooks_claude_TaskCreated]
@@ -472,6 +585,8 @@ value = [
 doc = "The claude SessionStart hook entries, in dispatch order."
 value = [
   { id = "verify-first-full", matcher = "", timeout = 10, check = "verify-first-full" },
+  { id = "rule-digest", matcher = "", timeout = 10, check = "rule-digest" },
+  { id = "session-banner", matcher = "", timeout = 10, check = "session-banner" },
   { id = "verify-first-orch:host=claude", matcher = "", timeout = 10, check = "verify-first-orch" },
   { id = "devswarm-child-role", matcher = "", timeout = 10, check = "devswarm-child-role" },
   { id = "version-alert", matcher = "", timeout = 10, check = "version-alert" },
@@ -496,10 +611,13 @@ value = [
 doc = "The claude Stop hook entries, in dispatch order."
 value = [
   { id = "task-guard", matcher = "", timeout = 30, check = "task-guard" },
+  { id = "task-pair-guard:stop", matcher = "", timeout = 30, check = "task-pair-guard" },
   { id = "tasklist-guard", matcher = "", timeout = 30, check = "tasklist-guard" },
   { id = "speculation-guard", matcher = "", timeout = 30, check = "speculation-guard" },
   { id = "speculation-judge", matcher = "", timeout = 30, check = "speculation-judge" },
   { id = "claim-ledger", matcher = "", timeout = 30, check = "claim-ledger" },
+  { id = "claim-evidence-guard", matcher = "", timeout = 30, check = "claim-evidence-guard" },
+  { id = "reply-length-guard", matcher = "", timeout = 30, check = "reply-length-guard" },
   { id = "codex-nudge", matcher = "", timeout = 30, check = "codex-nudge" },
   { id = "devswarm-parent-gate", matcher = "", timeout = 30, check = "devswarm-parent-gate", when = { all = [ { not = { env = "ANTIHALL_JUDGE_CHILD", equals = "1" } }, { not = { all = [ { setting = "devswarm.supervisorMode", exists = true }, { not = { all = [ { not = { env = "DEVSWARM_SOURCE_BRANCH", regex = "\\S" } }, { not = { env = "DISABLE_ANTIHALL_DEVSWARM", equals = "1" } }, { setting = "devswarm.parentGate" }, { any = [ { setting = "devswarm.supervisorMode", equals = "on" }, { all = [ { setting = "devswarm.supervisorMode", equals = "auto" }, { env = "DEVSWARM_REPO_ID", regex = "\\S" } ] } ] } ] } } ] } } ] } },
   { id = "devswarm-child-gate", matcher = "", timeout = 30, check = "devswarm-child-gate" },
@@ -507,6 +625,8 @@ value = [
   { id = "silent-agent-nudge", matcher = "", timeout = 30, check = "silent-agent-nudge" },
   { id = "compact-advice-guard", matcher = "", timeout = 30, check = "compact-advice-guard" },
   { id = "sibling-sweep", matcher = "", timeout = 10, check = "sibling-sweep" },
+  { id = "advisor-guard:stop", matcher = "", timeout = 10, check = "advisor-guard" },
+  { id = "afk-mode:stop", matcher = "", timeout = 10, check = "afk-mode", when = { setting = "afk.enabled" } },
 ]
 
 [dispatch.hooks_claude_PreToolUse]
@@ -529,9 +649,11 @@ value = [
   { id = "model-routing-guard#2", matcher = "Task", timeout = 10, check = "model-routing" },
   { id = "swarm-guard#2", matcher = "Task", timeout = 10, check = "swarm-guard" },
   { id = "phase-tracker#2", matcher = "Task", timeout = 10, check = "phase-tracker" },
+  { id = "task-pair-guard", matcher = "Agent|Task", timeout = 10, check = "task-pair-guard" },
   { id = "orch-on-spawn", matcher = "Agent|Task|Workflow", timeout = 10, check = "orch-on-spawn" },
   { id = "devswarm-comms-guard", matcher = "SendMessage", timeout = 10, check = "devswarm-comms-guard" },
   { id = "ask-guard", matcher = "AskUserQuestion", timeout = 10, check = "ask-guard" },
+  { id = "tasklist-hygiene", matcher = "TaskCreate|TaskUpdate", timeout = 10, check = "tasklist-hygiene" },
   { id = "stale-agent-stop-note", matcher = "TaskStop", timeout = 10, check = "stale-agent-stop-note" },
   { id = "procwatch-advisory", matcher = "Bash", timeout = 10, check = "procwatch-advisory" },
   { id = "engine-role-guard", matcher = "Bash", timeout = 10, check = "engine-role-guard" },
@@ -541,7 +663,11 @@ value = [
   { id = "queued-wait-guard", matcher = "Bash", timeout = 10, check = "queued-wait-guard" },
   { id = "lane-test-guard", matcher = "Bash", timeout = 10, check = "lane-test-guard" },
   { id = "wide-search-guard", matcher = "Bash", timeout = 10, check = "wide-search-guard" },
+  { id = "cache-ttl-wait-guard", matcher = "Bash|Monitor|TaskOutput", timeout = 10, check = "cache-ttl-wait-guard" },
   { id = "switch-notice", matcher = "", timeout = 10, check = "switch-notice" },
+  { id = "advisor-guard", matcher = "Write|Edit|MultiEdit|ExitPlanMode", timeout = 10, check = "advisor-guard" },
+  { id = "advisor-guard:dispatch", matcher = "Agent|Task", timeout = 10, check = "advisor-guard" },
+  { id = "afk-mode:pre", matcher = "AskUserQuestion", timeout = 10, check = "afk-mode", when = { setting = "afk.enabled" } },
 ]
 
 [dispatch.hooks_claude_PostToolUse]
@@ -554,14 +680,19 @@ value = [
   { id = "devswarm-child-drain", matcher = "Bash", timeout = 10, check = "devswarm-child-drain" },
   { id = "coordinator-work-guard:post", matcher = "Bash", timeout = 10, check = "coordinator-work-guard" },
   { id = "codex-quota-detect", matcher = "Agent", timeout = 10, check = "codex-quota-detect" },
+  { id = "task-pair-guard:post", matcher = "Agent|Task", timeout = 10, check = "task-pair-guard" },
   { id = "dispatch-tier", matcher = "TaskCreate|TaskUpdate", timeout = 10, check = "dispatch-tier" },
+  { id = "tasklist-hygiene:post", matcher = "TaskCreate|TaskUpdate", timeout = 10, check = "tasklist-hygiene" },
   { id = "agent-reminders", matcher = "", timeout = 10, check = "agent-reminders" },
+  { id = "advisor-guard:pass", matcher = "Bash", timeout = 10, check = "advisor-guard" },
+  { id = "afk-mode:post", matcher = "", timeout = 10, check = "afk-mode", when = { setting = "afk.enabled" } },
 ]
 
 [dispatch.hooks_claude_PostToolUseFailure]
 doc = "The claude PostToolUseFailure hook entries, in dispatch order."
 value = [
   { id = "failure-root-cause-nudge", matcher = "Bash", timeout = 10, check = "failure-root-cause-nudge" },
+  { id = "advisor-guard:failure", matcher = "Bash", timeout = 10, check = "advisor-guard" },
 ]
 
 [dispatch.hooks_claude_PreCompact]
@@ -574,6 +705,7 @@ value = [
 doc = "The claude SessionEnd hook entries, in dispatch order."
 value = [
   { id = "session-end-mcp-reaper", matcher = "", timeout = 5, check = "session-end-mcp-reaper" },
+  { id = "session-summary", matcher = "", timeout = 5, check = "session-summary" },
 ]
 
 # ---- codex ----
@@ -582,6 +714,8 @@ value = [
 doc = "The codex SessionStart hook entries, in dispatch order."
 value = [
   { id = "verify-first-full", matcher = "", timeout = 10, check = "verify-first-full" },
+  { id = "rule-digest", matcher = "", timeout = 10, check = "rule-digest" },
+  { id = "session-banner", matcher = "", timeout = 10, check = "session-banner" },
   { id = "verify-first-orch", matcher = "", timeout = 10, check = "verify-first-orch-codex" },
   { id = "devswarm-child-role", matcher = "", timeout = 10, check = "devswarm-child-role" },
   { id = "version-alert", matcher = "", timeout = 10, check = "version-alert" },
@@ -599,16 +733,17 @@ value = [
   { id = "repair-on-reload", matcher = "", timeout = 10, check = "repair-on-reload" },
   { id = "procwatch-advisory", matcher = "", timeout = 10, check = "procwatch-advisory" },
   { id = "engine-role-note", matcher = "", timeout = 10, check = "engine-role-note" },
+  { id = "afk-mode:start", matcher = "", timeout = 10, check = "afk-mode", when = { setting = "afk.enabled" } },
 ]
 
 [dispatch.hooks_codex_UserPromptSubmit]
 doc = "The codex UserPromptSubmit hook entries, in dispatch order."
 value = [
-  { id = "verify-first", matcher = "", timeout = 10, check = "verify-first" },
   { id = "task-tracker", matcher = "", timeout = 10, check = "task-tracker" },
   { id = "idle-agent-sweep", matcher = "", timeout = 10, check = "idle-agent-sweep" },
   { id = "limit-conserve-inject", matcher = "", timeout = 10, check = "limit-conserve-inject" },
-  { id = "devswarm-parent-inbox", matcher = "", timeout = 10, check = "devswarm-parent-inbox", when = { all = [ { not = { env = "ANTIHALL_JUDGE_CHILD", equals = "1" } }, { not = { env = "DEVSWARM_SOURCE_BRANCH", regex = "\\S" } }, { not = { env = "DISABLE_ANTIHALL_DEVSWARM", equals = "1" } }, { setting = "devswarm.parentInbox" }, { any = [ { setting = "devswarm.supervisorMode", equals = "on" }, { all = [ { setting = "devswarm.supervisorMode", equals = "auto" }, { env = "DEVSWARM_REPO_ID", regex = "\\S" } ] } ] } ] } },
+  { id = "devswarm-parent-inbox", matcher = "", timeout = 10, check = "devswarm-parent-inbox", when = { all = [ { not = { setting = "guards.idleGate" } }, { not = { env = "ANTIHALL_JUDGE_CHILD", equals = "1" } }, { not = { env = "DEVSWARM_SOURCE_BRANCH", regex = "\\S" } }, { not = { env = "DISABLE_ANTIHALL_DEVSWARM", equals = "1" } }, { setting = "devswarm.parentInbox" }, { any = [ { setting = "devswarm.supervisorMode", equals = "on" }, { all = [ { setting = "devswarm.supervisorMode", equals = "auto" }, { env = "DEVSWARM_REPO_ID", regex = "\\S" } ] } ] } ] } },
+  { id = "idle-gate", matcher = "", timeout = 10, check = "devswarm-parent-inbox", when = { all = [ { setting = "guards.idleGate" }, { not = { env = "ANTIHALL_JUDGE_CHILD", equals = "1" } }, { not = { env = "DEVSWARM_SOURCE_BRANCH", regex = "\\S" } }, { not = { env = "DISABLE_ANTIHALL_DEVSWARM", equals = "1" } }, { setting = "devswarm.parentInbox" }, { any = [ { setting = "devswarm.supervisorMode", equals = "on" }, { all = [ { setting = "devswarm.supervisorMode", equals = "auto" }, { env = "DEVSWARM_REPO_ID", regex = "\\S" } ] } ] } ] } },
   { id = "devswarm-rt-advisory", matcher = "", timeout = 10, check = "devswarm-rt-advisory" },
   { id = "devswarm-child-turn", matcher = "", timeout = 10, check = "devswarm-child-turn", when = { all = [ { not = { env = "ANTIHALL_JUDGE_CHILD", equals = "1" } }, { env = "DEVSWARM_SOURCE_BRANCH", regex = "\\S" }, { not = { env = "DISABLE_ANTIHALL_DEVSWARM", equals = "1" } }, { setting = "devswarm.childTurn" }, { any = [ { setting = "devswarm.supervisorMode", equals = "on" }, { all = [ { setting = "devswarm.supervisorMode", equals = "auto" }, { env = "DEVSWARM_REPO_ID", regex = "\\S" } ] } ] } ] } },
   { id = "repair-on-reload", matcher = "", timeout = 10, check = "repair-on-reload" },
@@ -617,6 +752,7 @@ value = [
   { id = "agent-reminders", matcher = "", timeout = 10, check = "agent-reminders" },
   { id = "gh-rt-advisory", matcher = "", timeout = 10, check = "gh-rt-advisory" },
   { id = "switch-notice", matcher = "", timeout = 10, check = "switch-notice" },
+  { id = "afk-mode", matcher = "", timeout = 10, check = "afk-mode", when = { setting = "afk.enabled" } },
 ]
 
 [dispatch.hooks_codex_PreToolUse]
@@ -640,6 +776,7 @@ value = [
   { id = "queued-wait-guard", matcher = "Bash", timeout = 10, check = "queued-wait-guard" },
   { id = "lane-test-guard", matcher = "Bash", timeout = 10, check = "lane-test-guard" },
   { id = "wide-search-guard", matcher = "Bash", timeout = 10, check = "wide-search-guard" },
+  { id = "cache-ttl-wait-guard", matcher = "Bash", timeout = 10, check = "cache-ttl-wait-guard" },
   { id = "switch-notice", matcher = "", timeout = 10, check = "switch-notice" },
 ]
 
@@ -651,12 +788,14 @@ value = [
   { id = "speculation-guard", matcher = "", timeout = 30, check = "speculation-guard" },
   { id = "speculation-judge", matcher = "", timeout = 30, check = "speculation-judge" },
   { id = "claim-ledger", matcher = "", timeout = 30, check = "claim-ledger" },
+  { id = "reply-length-guard", matcher = "", timeout = 30, check = "reply-length-guard" },
   { id = "devswarm-parent-gate", matcher = "", timeout = 30, check = "devswarm-parent-gate", when = { all = [ { not = { env = "ANTIHALL_JUDGE_CHILD", equals = "1" } }, { not = { all = [ { setting = "devswarm.supervisorMode", exists = true }, { not = { all = [ { not = { env = "DEVSWARM_SOURCE_BRANCH", regex = "\\S" } }, { not = { env = "DISABLE_ANTIHALL_DEVSWARM", equals = "1" } }, { setting = "devswarm.parentGate" }, { any = [ { setting = "devswarm.supervisorMode", equals = "on" }, { all = [ { setting = "devswarm.supervisorMode", equals = "auto" }, { env = "DEVSWARM_REPO_ID", regex = "\\S" } ] } ] } ] } } ] } } ] } },
   { id = "devswarm-child-gate", matcher = "", timeout = 30, check = "devswarm-child-gate" },
   { id = "auto-handover-pause-nag", matcher = "", timeout = 30, check = "auto-handover-pause-nag" },
   { id = "silent-agent-nudge", matcher = "", timeout = 30, check = "silent-agent-nudge" },
   { id = "compact-advice-guard", matcher = "", timeout = 30, check = "compact-advice-guard" },
   { id = "sibling-sweep", matcher = "", timeout = 10, check = "sibling-sweep" },
+  { id = "afk-mode:stop", matcher = "", timeout = 10, check = "afk-mode", when = { setting = "afk.enabled" } },
 ]
 
 [dispatch.hooks_codex_SubagentStop]
@@ -679,8 +818,17 @@ value = [
   { id = "devswarm-parent-reply-tracker", matcher = "Bash", timeout = 10, check = "devswarm-parent-reply-tracker" },
   { id = "devswarm-child-drain", matcher = "Bash", timeout = 10, check = "devswarm-child-drain" },
   { id = "agent-reminders", matcher = "", timeout = 10, check = "agent-reminders" },
+  { id = "afk-mode:post", matcher = "", timeout = 10, check = "afk-mode", when = { setting = "afk.enabled" } },
 ]
 
 [dispatch.msg_unparsed]
 doc = "Deferral reason (event log, counted with the other dispatch fallbacks) when the payload is not readable as JSON, so the Node hooks decide (D74). Placeholder: {len} (bytes read)."
 value = "payload not readable as JSON ({len} bytes): the Node hooks decide"
+
+[script.failure_risk_weighted]
+doc = "The `closed` guards that are risk-weighted (GH #945, blocks protect, not disrupt): when one of them cannot answer (a cut call, a starved script, a late or missing daemon reply, a spent budget) it still fails closed for a call in a hold class of dispatch.capacity_hold (a push, a merge, a recursive delete, a deploy, a publish ...), but a call outside every hold class (a plain read: ls, ps, grep, gh pr checks, git ls-remote ...) passes, counted under script.risk_open_counter and told once per session. Only a call of a tool listed in dispatch.capacity_hold.tools is judged; any other call keeps the check's failure mode. A guard not listed fails closed for every call. Empty = every closed guard fails closed for every call."
+value = ["git", "command"]
+
+[script.risk_open_counter]
+doc = "The status counter group (status.advisory.<group>.<check>) that counts a read-only call a risk-weighted closed guard (script.failure_risk_weighted) let through because it could not answer."
+value = "risk_open"

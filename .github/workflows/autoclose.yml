@@ -1,0 +1,46 @@
+name: autoclose
+
+# GitHub only auto-closes issues named by closing keywords when a PR merges into the default
+# branch. PRs here merge into dev, so this closes the referenced open issues of THIS repo when a PR
+# merges into the configured base. It never reopens, never touches other repos, ignores
+# Refs / Part of, and runs only base-branch code (the PR text is data). Trigger is pull_request:
+# Dependabot-triggered runs get a read-only token, so they cannot close issues (accepted).
+# The job-level `if` cannot read the env context, so its base literal must match AUTOCLOSE_BASE
+# and on.pull_request.branches (the script re-checks AUTOCLOSE_BASE).
+on:
+  pull_request:
+    branches: [dev]
+    types: [closed]
+
+permissions: {}
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+env:
+  # The only place these are defined.
+  AUTOCLOSE_BASE: dev
+  AUTOCLOSE_KEYWORDS: close, closes, closed, fix, fixes, fixed, resolve, resolves, resolved
+  AUTOCLOSE_REF_KEYWORDS: refs, part of
+  AUTOCLOSE_COMMENT: "Fixed on {base} by #{pr} ({sha}); closed automatically because {base} is not the default branch."
+
+jobs:
+  close-issues:
+    if: github.event.pull_request.merged == true && github.event.pull_request.base.ref == 'dev'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ github.event.pull_request.base.ref }}
+          sparse-checkout: .github/scripts
+          persist-credentials: false
+      - uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            await require(process.env.GITHUB_WORKSPACE + '/.github/scripts/autoclose.js').run({ github, context, core });

@@ -22,7 +22,7 @@ pub mod leak;
 mod measure;
 mod registry;
 
-pub use cache::BoundedCache;
+pub use cache::{BoundedCache, Trim};
 pub use measure::{Delta, measure};
 pub use registry::{Action, Admit, Budget, Event, Instance, Kind, Owner, Registry, Restart, Spec};
 

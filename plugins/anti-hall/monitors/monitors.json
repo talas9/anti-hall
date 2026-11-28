@@ -1,14 +1,8 @@
 [
   {
-    "name": "devswarm-wake-watch",
-    "command": "AH_ENGINE_PLUGIN_ROOT=\"${CLAUDE_PLUGIN_ROOT}\" exec \"$HOME/.anti-hall/ah-engine/bin/ah-engine\" devswarm wake-watch --auto",
-    "description": "DevSwarm idle-wake: watches this workspace's own mailbox (read-only, poll-based) and emits a stdout line the instant new direct mesh mail lands, waking an idle session with lower latency than the cron fallback. Additive only \u2014 never disarms or replaces the unconditional CronCreate fallback (the engine owns the cron fallback).",
-    "when": "always"
-  },
-  {
-    "name": "agent-wake-watch",
+    "name": "wake-watch",
     "command": "AH_ENGINE_PLUGIN_ROOT=\"${CLAUDE_PLUGIN_ROOT}\" exec \"$HOME/.anti-hall/ah-engine/bin/ah-engine\" agents wake-watch --auto",
-    "description": "Session wake: stays silent until the agent tracker queues a wake row for this session (an agent idle with an open task, looping or burning tokens, or a watched background process that ended), then prints one line so an idle session is woken. Reads one small file of its own session; no tokens while quiet. Off with agents.wakeWatch.",
+    "description": "Session wake, one Monitor for both sources: stays silent until the agent tracker queues a wake row for this session (an agent idle with an open task, looping or burning tokens, or a watched background process that ended) or, in a DevSwarm workspace, until new direct mesh mail lands in its mailbox, then prints one line so an idle session is woken. Reads small files of its own session (read-only, poll-based); no tokens while quiet. Each source has its own switch: agents.wakeWatch for the agent rows, devswarm.wakeWatch for the mesh rows (off: no mesh rows). Additive only: never replaces the unconditional cron fallback. The old verbs `devswarm wake-watch` and `agents wake-watch` of the former two monitors both run this watcher.",
     "when": "always"
   }
 ]

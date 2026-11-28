@@ -16,15 +16,15 @@ doc = "One-line description of the devswarm-child-drain check in the generated r
 value = "DevSwarm child mailbox drain nudge: after a Bash call of a child workspace's main thread, tells the child how many parent messages it has not read (its durable inbox plus the mesh store) and how to drain them, throttled while the count is unchanged."
 
 [devswarm_gates.child_gate_setting]
-doc = "Where the devswarm-child-gate on/off switch is read from (devswarm.childGate, default on; no environment variable)."
+doc = "Check child reporting and inbox duties. Where the devswarm-child-gate on/off switch is read from (devswarm.childGate, default on; no environment variable)."
 value = { section = "devswarm", key = "childGate", env = "", aliases = [], option = "devswarm_child_gate", default = true }
 
 [devswarm_gates.reply_tracker_setting]
-doc = "Where the devswarm-parent-reply-tracker on/off switch is read from (devswarm.parentReplyTracker, default on; no environment variable)."
+doc = "Track parent replies. Where the devswarm-parent-reply-tracker on/off switch is read from (devswarm.parentReplyTracker, default on; no environment variable)."
 value = { section = "devswarm", key = "parentReplyTracker", env = "", aliases = [], option = "devswarm_parent_reply_tracker", default = true }
 
 [devswarm_gates.child_drain_setting]
-doc = "Where the devswarm-child-drain on/off switch is read from (devswarm.childDrain, default on; no environment variable)."
+doc = "Drain child messages. Where the devswarm-child-drain on/off switch is read from (devswarm.childDrain, default on; no environment variable)."
 value = { section = "devswarm", key = "childDrain", env = "", aliases = [], option = "devswarm_child_drain", default = true }
 
 [devswarm_gates.supervisor_mode]
@@ -132,16 +132,32 @@ doc = "Hex characters of the SHA-1 of the transcript path that key a session wit
 value = 16
 
 [devswarm_gates.cg_max_blocks]
-doc = "Blocks per stable kind and session before the child gate yields (MAX_BLOCKS); a kind re-opens only when its condition is observed cleared."
+doc = "Intentional per-stable-kind, per-session budget before the child gate yields (MAX_BLOCKS), rather than an owner-turn cap: a kind re-opens only when its condition is observed cleared. New owner turns alone must not re-arm an unresolved mailbox or heartbeat condition."
 value = 2
 
 [devswarm_gates.cg_reset_ms]
 doc = "The first Stop check's report window (RESET_MS): a report older than this before the session's first check does not satisfy it."
 value = 300000
 
+[devswarm_gates.cg_report_fresh_ms]
+doc = "How recent this child's latest heartbeat (`mesh heartbeat`, with or without --summary) or summary row must be to satisfy the report duty at a Stop, on top of a report sent this stop episode (#844: a heartbeat from the previous turn is not \"no heartbeat\"). 0 = only this episode's report counts."
+value = 900000
+min = 0
+max = 86400000
+
+[devswarm_gates.cg_report_skew_ms]
+doc = "How far in the future a heartbeat time may lie (clock skew) and still count for devswarm_gates.cg_report_fresh_ms; a later one is ignored."
+value = 60000
+min = 0
+max = 3600000
+
 [devswarm_gates.cg_tick_fresh_ms]
 doc = "How recent a zero-unread `inbox tick` marker must be to count as liveness proof for this Stop (TICK_MARKER_FRESH_MS)."
 value = 120000
+
+[devswarm_gates.cg_wake_marker_fresh_ms]
+doc = "How recent the `inbox tick` marker must be for its wake-prompt count (mesh_write.marker_native_wake_field) to be subtracted from the native pending count at this Stop. Longer than cg_tick_fresh_ms: a wake prompt stays pending natively until resolved, and the child's mailbox tick runs every 30 minutes; a marker older than this subtracts nothing."
+value = 2400000
 
 [devswarm_gates.cg_kind_cron]
 doc = "The stop-policy kind of the mailbox-cron-missing block."
@@ -188,7 +204,7 @@ doc = "Newest lines the cron-missing counter keeps."
 value = 500
 
 [devswarm_gates.cg_strict_setting]
-doc = "The setting devswarm.childGateStrict (on by default): when the durable inbox shows nothing, the gate also asks the native queue (`hivecontrol workspace message-count`). The engine answers only while it is unset."
+doc = "Check native unread when durable mail is empty. The setting devswarm.childGateStrict (on by default): when the durable inbox shows nothing, the gate also asks the native queue (`hivecontrol workspace message-count`). The engine answers only while it is unset."
 value = { section = "devswarm", key = "childGateStrict", env = "ANTIHALL_DEVSWARM_CHILD_GATE_STRICT", option = "", default = true }
 
 [devswarm_gates.cg_path_env]
@@ -215,13 +231,37 @@ value = "-?\\d+"
 doc = "Headline of the child gate block."
 value = "workspace reporting or inbox duties are unfinished."
 
+[devswarm_gates.cg_headline_duties]
+doc = "Headline of the child gate block when the unmet duties are known; {duties} is their names joined by cg_duty_sep. Kept short: the visible line is cut near 115 units."
+value = "workspace duty unfinished: {duties}."
+
+[devswarm_gates.cg_duty_sep]
+doc = "Joins the duty names in the child gate headline."
+value = "; "
+
+[devswarm_gates.cg_duty_cron]
+doc = "Duty name in the child gate headline: the mailbox tick cron job is not scheduled."
+value = "the mailbox tick cron is not armed"
+
+[devswarm_gates.cg_duty_report]
+doc = "Duty name in the child gate headline: no heartbeat or report was sent this episode."
+value = "no heartbeat or report sent"
+
+[devswarm_gates.cg_duty_inbox]
+doc = "Duty name in the child gate headline: unread parent mail."
+value = "unread parent messages"
+
+[devswarm_gates.cg_duty_unknown]
+doc = "Duty name in the child gate headline: the unread count could not be read."
+value = "inbox state unreadable"
+
 [devswarm_gates.cg_why]
 doc = "Why line of the child gate block."
 value = "Your parent orchestrator relies on your heartbeat and a drained inbox."
 
 [devswarm_gates.cg_wake_tick]
-doc = "The tick command of the child's mailbox-wake re-verify line: {id}."
-value = "`\"$CLI\" inbox tick {id} --child --quiet`"
+doc = "The tick command of the child's mailbox-wake re-verify line: {id}, {verb} (after the quoted $CLI binary path)."
+value = "`\"$CLI\" {verb} inbox tick {id} --child --quiet`"
 
 [devswarm_gates.cg_cron_missing_tick]
 doc = "The mailbox-cron-missing text when the last tick marker is too old: {m} (its age in whole minutes); the wake re-verify line follows."
@@ -257,7 +297,7 @@ value = "Heartbeat: before you stop, emit a heartbeat / self-report to your pare
 
 [devswarm_gates.cg_inbox_pending]
 doc = "The inbound line for known unread parent mail: {cli}, {id}."
-value = "Inbox: you have unpulled/unread parent message(s): run `{cli} inbox pull {id}` (or `inbox read` if already pulled), then `inbox ack` once addressed — BEFORE you stop. "
+value = "Inbox: you have unpulled/unread parent message(s): run `{cli} inbox pull {id}` (or `inbox read` if already pulled), then `inbox ack {id} --through <the ackThrough that read printed>` once addressed — BEFORE you stop. "
 
 [devswarm_gates.cg_inbox_native_only]
 doc = "The one-time inbound line when only the native probe is unknown and the report is satisfied: {cli}, {id}."
@@ -336,7 +376,7 @@ doc = "How far in the future a receipt file may be dated and still count (clock 
 value = 60000
 
 [devswarm_gates.rt_window_setting]
-doc = "The setting devswarm.receiptWindowMs: how recent a send receipt must be to credit a reply this turn. The engine answers only while it is unset."
+doc = "Reply receipt freshness in milliseconds. The setting devswarm.receiptWindowMs: how recent a send receipt must be to credit a reply this turn. The engine answers only while it is unset."
 value = { section = "devswarm", key = "receiptWindowMs", env = "ANTIHALL_DEVSWARM_RECEIPT_WINDOW_MS", option = "", default = 300000 }
 
 [devswarm_gates.rt_state_dir]
@@ -374,3 +414,35 @@ value = ".anti-hall/handovers/<YYYY-MM-DD>/<session_id>/HANDOVER.md"
 [devswarm_gates.cg_short_instead]
 doc = "Compact guard message text."
 value = "complete the pending workspace duty."
+
+[devswarm_gates.sw_cron_from_payload]
+doc = "Detect mailbox cron from the Stop payload. Switch devswarm.cronFromPayload (default on): the child Stop gate decides whether the mailbox tick cron exists from the Stop payload's session_crons list; a payload without the list keeps the age-based check. Off always uses the age-based check."
+value = { section = "devswarm", key = "cronFromPayload", env = "ANTIHALL_DEVSWARM_CRON_FROM_PAYLOAD", option = "", default = true }
+
+[devswarm_gates.cg_payload_crons_field]
+doc = "The Stop / SubagentStop payload field (Claude Code 2.1.145+) that lists the session's scheduled cron jobs: an array of {id, schedule, recurring, prompt}; empty when none is scheduled."
+value = "session_crons"
+
+[devswarm_gates.cg_payload_cron_prompt_field]
+doc = "The field of a session_crons entry that holds the prompt the job submits when it fires (capped by the host at 1000 characters)."
+value = "prompt"
+
+[devswarm_gates.cg_cron_prompt_re]
+doc = "The regular expression a session_crons prompt must match to be the mailbox tick of this workspace: the prompt BEGINS (after an optional `Mailbox tick:` lead-in, `run`, and quotes or backticks) with the command that runs it - `node <path> inbox tick <id>` or `ah-engine mesh inbox tick <id>` (bare executable or a path ending in ah-engine) - so a prompt that only mentions the words (`Do not run inbox tick`, `never run <cli> mesh inbox tick`) is not the tick job."
+value = '''^\s*(?:Mailbox tick:?\s*)?(?:run\s+)?[`'"]*(?:node\s+[`'"]?[^\s`'"]+[`'"]?\s+|[`'"]?(?:[^\s`'"]*/)?ah-engine[`'"]?\s+mesh\s+)inbox\s+tick\s+[^\s`'"]+'''
+
+[devswarm_gates.cg_payload_cron_recurring_field]
+doc = "The field of a session_crons entry that says the job repeats (true); a one-shot job is not a mailbox cron."
+value = "recurring"
+
+[devswarm_gates.cg_payload_cron_schedule_field]
+doc = "The field of a session_crons entry that holds its schedule; an entry with no schedule is not a live job."
+value = "schedule"
+
+[devswarm_gates.cg_cron_missing_payload]
+doc = "The mailbox-cron-missing text when the Stop payload's cron list is present and holds no mailbox tick job: {m} (age in whole minutes of the last tick marker or heartbeat); the wake re-verify line follows. No CronList step: the list is already known."
+value = "Mailbox cron missing: this session has no `inbox tick` cron (none of its scheduled jobs runs it; last sign of life {m}m ago) — `CronCreate` it with the tick prompt (see SessionStart directive); no `CronList` needed."
+
+[devswarm_gates.cg_cron_present_metric]
+doc = "The `source` label of waste_events_total (category forced_turn) for a Stop whose payload cron list holds the mailbox tick job although the tick marker is stale: the age-based check would have warned and sent the model to CronList."
+value = "cron_listed"

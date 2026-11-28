@@ -26,23 +26,45 @@ var text = {
     var lines = [p.what || '', p.why || '', p.instead || '', p.allowed || ''];
     if (p.override) lines.push(ah.cfg('guardkit.msg_labels').override + (typeof p.override === 'string' ? p.override : text.render(ah.cfg('guardkit.override_human'), { guard: guard })));
     lines = lines.concat(p.extra || []);
-    var instructions = ah.cfg('guardkit.long_instructions')[guard];
-    if (instructions) lines.push(instructions);
+    // #972 wave 2: the guard's whole catalog of long texts (every message it can give, by raw key, placeholders unfilled) was appended
+    // to every details file. Only the entries the caller names (p.longKeys) are added now, rendered with p.longArgs.
+    var catalog = ah.cfg('guardkit.long_instructions')[guard];
+    if (catalog && Array.isArray(p.longKeys)) {
+      var entries = text.catalogEntries(catalog);
+      for (var i = 0; i < p.longKeys.length; i++) {
+        var k = p.longKeys[i];
+        if (Object.prototype.hasOwnProperty.call(entries, k)) lines.push(text.render(entries[k], p.longArgs || {}));
+      }
+    }
     try { if (!ah.state.writeAtomic(rel, lines.filter(Boolean).join('\n\n') + '\n')) return null; } catch (e) { return null; }
     return '~/' + rel;
+  },
+  // The entries of a long-text catalog (`key: text`, separated by a blank line) as {key: text}.
+  catalogEntries: function (catalog) {
+    var out = {}, re = /(?:^|\n\n)([A-Za-z0-9_]+): /g, m, marks = [];
+    while ((m = re.exec(String(catalog))) !== null) marks.push({ key: m[1], start: m.index, body: re.lastIndex });
+    for (var i = 0; i < marks.length; i++) out[marks[i].key] = String(catalog).slice(marks[i].body, i + 1 < marks.length ? marks[i + 1].start : undefined);
+    return out;
   },
   message: function (kind, guard, p, session) {
     var icons = ah.cfg('guardkit.icons'), labels = ah.cfg('guardkit.msg_labels');
     var names = ah.cfg('guardkit.plain_names');
     var name = text.short(text.plain(names[guard] || String(guard).replace(/-/g, ' ')), 40);
     var what = text.plain(p.what || ''), action = text.plain(p.instead || '');
-    var prefix = (icons[kind] || icons.tip) + ' ' + name + ': ';
+    // GH #764: the order form is the one single-line form of the idle orders (prompt_emit.toml idle_order.msg_*): icon, "Do now:" and
+    // the action in one template, guardkit.order_form (placeholders {name}, {what}, {action}).
+    var ordered = kind === 'order', form = ordered ? ah.cfg('guardkit.order_form') : '';
+    var prefix = ordered ? '' : (icons[kind] || icons.tip) + ' ' + name + ': ';
     var needsDetails = !!p.details || action.length > 115 || ah.cfg('guardkit.details_actions').indexOf(action) !== -1;
     var path = p.skipSave ? p.savedDetails : text.saveDetails(guard, p, session);
     if (action.length > 115) action = path ? 'follow the saved instructions.' : 'restore access to the details folder and retry.';
     if (needsDetails && !path) action = 'restore access to the details folder and retry.';
     if (needsDetails && path) action += ' (details: ' + path + ')';
     var second = action ? '\n' + labels.instead + action : '';
+    if (ordered) {
+      var over = text.render(form, { name: name, what: '', action: action }).length;
+      return text.render(form, { name: name, what: text.short(what, Math.min(115, Math.max(20, 250 - over))), action: action }).replace(/\s+$/, '');
+    }
     // Bound dynamic claims, lists and names without cutting executable instructions or file paths.
     var room = 250 - prefix.length - second.length;
     if (room < 20) {
@@ -50,14 +72,25 @@ var text = {
       second = '\n' + labels.instead + action;
       room = 250 - prefix.length - second.length;
     }
-    return prefix + text.short(what, Math.min(115, room)) + second;
+    // a must-keep tail of the claim (the rule that fired, the named heavy segment: GH #417, #857) outranks the generic head: the head
+    // shows only when it fits whole beside the tail (a cut head reads as a stub, "this heavy…"), else the tail stands alone
+    var tail = typeof p.whatTail === 'string' ? text.plain(p.whatTail) : '', lim = Math.min(115, room);
+    if (tail) return prefix + (what && what.length + 1 + tail.length <= lim ? what + ' ' + tail : text.short(tail, lim)) + second;
+    return prefix + text.short(what, lim) + second;
   },
   detailsMessage: function (kind, guard, p, session) {
     var what = ah.cfg('guardkit.brief_what')[guard];
     var instead = ah.cfg('guardkit.brief_instead')[guard];
+    // an addition to the short action (Part C of GH #800): joined to it with a comma, the original text kept whole in the saved details
+    var base = instead;
+    if (instead && typeof p.briefInsteadExtra === 'string' && p.briefInsteadExtra) instead = instead.replace(/[.\s]+$/, '') + ', ' + p.briefInsteadExtra;
     // Save the complete original instructions, even when the short action needs no link.
     var path = text.saveDetails(guard, p, session);
-    return text.message(kind, guard, { what: what || p.what, instead: instead || p.instead, savedDetails: path, skipSave: true, details: !!p.details }, session);
+    var tail = typeof p.briefExtra === 'string' ? p.briefExtra : '';
+    var out = text.message(kind, guard, { what: what || p.what, whatTail: tail, instead: instead || p.instead, savedDetails: path, skipSave: true, details: !!p.details }, session);
+    // the named heavy segment outranks the action's addition when both do not fit (both stay whole in the saved details the link names)
+    if (tail && base !== instead && out.indexOf(text.plain(tail)) === -1) out = text.message(kind, guard, { what: what || p.what, whatTail: tail, instead: base, savedDetails: path, skipSave: true, details: !!p.details }, session);
+    return out;
   },
   // `io.blockDecision(reason)`: the JSON decision and a newline on stdout.
   blockJson: function (reason) { return JSON.stringify({ decision: 'block', reason: reason }) + '\n'; },

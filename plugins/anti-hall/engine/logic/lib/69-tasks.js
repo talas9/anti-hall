@@ -7,18 +7,190 @@ var tk = {
   safeKey: function (s) { return String(s).replace(/[^A-Za-z0-9_.-]/g, '_'); },
   // The tasks of a transcript tail ('guard' variant): an array of the engine's task records; a tail the engine cannot read exactly
   // (counted) keeps any known records and carries an uncertainty flag.
-  tasks: function (path) {
-    var r = ah.transcript.tasks(path, 'guard', ah.cfgNum('taskstate.tail_bytes'));
+  // With a home and a session id the session's task store answers first (the transcript tail of a long session misses the creates, and
+  // an old tail disagrees with the store); the transcript is read only when the session has no readable store.
+  tasks: function (path, home, sid) {
+    var r = tk.tasksOf(home, sid, path, 'guard');
     if (r.unsure) ah.unable('tasks:tail_unsure');
     var tasks = r.unreadable ? [] : (r.tasks || []);
     tasks.unsure = !!r.unsure;
     return tasks;
   },
+  // `{tasks, unsure, unreadable, store}` for one session: the store's list when the session has one, else the transcript reconstruction
+  // of `variant` ('guard' | 'state'). The one reader the guards share so none of them rebuilds from the transcript while a store exists.
+  // `strict` (GH #744, callers that ORDER something from the list): a store with a file the read dropped (unreadable, over the size cap,
+  // unparsable, or of an unmodelled shape) or one too big to list is an unknown state, `{unsure: true, unreadable: true}`, never a
+  // partial list read as the whole one. Every other caller keeps the lenient read, except that the NAMED list (GH #762) is THE list:
+  // when any of its files cannot be read exactly the list is unknown (unsure), never rebuilt from the transcript.
+  tasksOf: function (home, sid, path, variant, strict) {
+    var gaps = { n: 0, strict: !!strict }, st = tk.storeTasks(home, sid, gaps);
+    if (strict && gaps.n > 0) return { tasks: [], unsure: true, unreadable: true, store: true };
+    if (gaps.n > 0 && tk.namedList(home) !== null) return { tasks: st === null ? [] : tk.withStore([], st), unsure: true, unreadable: false, store: true };
+    if (st !== null) return { tasks: tk.withStore([], st), unsure: false, unreadable: false, store: true };
+    if (typeof path !== 'string') return { tasks: [], unsure: false, unreadable: true, store: false };
+    var r = ah.transcript.tasks(path, variant, ah.cfgNum('taskstate.tail_bytes'), 0, sid);
+    r.store = false;
+    return r;
+  },
+  // The open-task facts of the 'scan' variant (`openTaskIds`, `inProgressCount`) from the store, or null when the session has none. The
+  // store carries no priority, so every in-progress task counts (the transcript scan only counts the actionable priorities).
+  storeScan: function (home, sid) {
+    var st = tk.storeTasks(home, sid);
+    if (st === null) return null;
+    var ids = [], inProg = 0, prog = [];
+    tk.withStore([], st).forEach(function (t) {
+      if (!tk.isOpen(t)) return;
+      var s = tk.statusLc(t);
+      if (ah.cfg('taskstate.in_progress_statuses').indexOf(s) >= 0) { ids.push(t.id); inProg++; prog.push({ id: t.id, content: t.content, owner: t.owner }); } else if (ah.cfg('taskstate.pending_statuses').indexOf(s) >= 0) ids.push(t.id);
+    });
+    return { openTaskIds: ids, inProgressCount: inProg, inProgress: prog };
+  },
+  // GH #781: a resumed or shared session keeps its tasks in ANOTHER list; its own directory `own` (under `base`) then holds only a pointer file
+  // naming it. The pointer is followed one hop, and only to a valid id whose directory exists; any other pointer leaves the own directory.
+  // The ONE resolver every reader of a session's list directory uses (the shared task reader and the R-pair by-id reader).
+  followPointer: function (base, own) {
+    var ptr = ah.fs.readText(own + '/' + ah.cfg('taskstate.store_pointer_file'), ah.cfgNum('taskstate.store_pointer_max_bytes'));
+    var target = typeof ptr === 'string' ? ptr.trim() : '';
+    return target !== '' && new RegExp(ah.cfg('taskstate.list_id_re')).test(target) && ah.fs.isDir(base + target) ? base + target : own;
+  },
+  // The named task list id (taskstate.list_id_env holds a valid id whose store directory exists), else null.
+  namedList: function (home) {
+    if (!home) return null;
+    var id = ah.env.get(ah.cfg('taskstate.list_id_env'));
+    if (typeof id !== 'string' || !new RegExp(ah.cfg('taskstate.list_id_re')).test(id)) return null;
+    return ah.fs.isDir(home + '/' + ah.cfg('taskstate.store_base').join('/') + '/' + id) ? id : null;
+  },
+  // The task list in Claude Code's own store for the session (`<home>/<store_base>/<dir name>/<id>.json`): [] for a store directory that lists
+  // but holds no readable task (authoritative, no tasks: callers must not fall back to the transcript), or null when there is none or it
+  // cannot be read within the bounds. A long session's transcript tail no longer holds the creates, so the store is the source of
+  // what is done and open; the transcript's tasks only add what the store does not carry.
+  // `gaps` (optional `{n, strict}`): `gaps.n` counts what could not be read exactly (a file unreadable, over the cap or not a task record,
+  // a directory that exists and cannot be listed, too many files), so a caller can tell a complete list from a partial one; `gaps.strict`
+  // makes an unlistable directory end the read (null) instead of trying the next directory.
+  storeTasks: function (home, sid, gaps) {
+    var bad = 0; // files of the directory in hand that could not be read as a task (local: `gaps` is optional)
+    var gap = function () { bad++; if (gaps !== null && typeof gaps === 'object') gaps.n = (gaps.n || 0) + 1; };
+    if (!home || typeof sid !== 'string' || sid === '' || /[^A-Za-z0-9_-]/.test(sid)) return null;
+    var base = home + '/' + ah.cfg('taskstate.store_base').join('/') + '/', names = ah.cfg('taskstate.store_dir_names');
+    var suffix = ah.cfg('taskstate.store_file_suffix'), maxFiles = ah.cfgNum('taskstate.store_max_files'), maxBytes = ah.cfgNum('taskstate.store_file_max_bytes');
+    // the NAMED list (taskstate.list_id_env) is where Claude Code writes the session's tasks when it is set and its directory exists: it is
+    // THE list, and the session's own `session-<8>` directory is then stale or empty (a read of it would name another list's ids)
+    var named = tk.namedList(home), dirs = [];
+    if (named !== null) dirs.push(base + named);
+    else for (var j = 0; j < names.length; j++) {
+      dirs.push(tk.followPointer(base, base + text.render(names[j], { sid: sid, sid8: sid.slice(0, 8) })));
+    }
+    for (var i = 0; i < dirs.length; i++) {
+      var dir = dirs[i];
+      var files = ah.fs.readdir(dir);
+      if (files === null) {
+        // null is "absent" and also "present but unlistable" (unreadable, not a directory, or over the host's listing cap): a caller that
+        // counts gaps must tell them apart, so a directory that exists and cannot be listed (or the named list's) is a gap, never a store
+        // the session lacks.
+        if (gaps && (named !== null || ah.fs.realpathEx(dir).error !== 'NotFound')) { ah.unable('tasks:store_unlistable'); gap(); if (gaps.strict) return null; }
+        continue;
+      }
+      files = files.filter(function (f) { return f.length > suffix.length && f.slice(-suffix.length) === suffix; });
+      if (files.length > maxFiles) { ah.unable('tasks:store_big'); gap(); return null; }
+      var out = [];
+      bad = 0;
+      for (var k = 0; k < files.length; k++) {
+        var raw = ah.fs.readText(dir + '/' + files[k], maxBytes);
+        if (raw === null) { gap(); continue; }
+        var rec;
+        try { rec = JSON.parse(raw); } catch (e) { gap(); continue; }
+        if (rec === null || typeof rec !== 'object' || (typeof rec.id !== 'string' && typeof rec.id !== 'number') || typeof rec.status !== 'string') { gap(); continue; }
+        out.push({
+          id: String(rec.id), content: typeof rec.subject === 'string' ? rec.subject : String(rec.id),
+          description: typeof rec.description === 'string' ? rec.description : '', status: rec.status,
+          owner: typeof rec.owner === 'string' ? rec.owner.trim() : '',
+          // only a missing owner is "nobody": any other non-string value (a number, null, an object) is an owner that cannot be read
+          ownerUnknown: rec.owner !== undefined && typeof rec.owner !== 'string',
+          blockedBy: Array.isArray(rec.blockedBy) ? rec.blockedBy.map(String) : [],
+          blockedOn: rec.metadata !== null && typeof rec.metadata === 'object' && typeof rec.metadata.blockedOn === 'string' ? rec.metadata.blockedOn : undefined,
+        });
+      }
+      // a listable store directory is THE store, even with no task in it: never fall through to another alias's directory. But a directory
+      // whose every file was unreadable is not a proven empty list (an open task may sit in a file the read dropped): absent, so the
+      // transcript still answers; a caller that counts gaps sees them.
+      if (out.length === 0 && bad > 0) return null;
+      return out;
+    }
+    return null;
+  },
+  // The store's tasks laid over the transcript's: the store is the list (a task it lacks is gone), and for a task both hold the store
+  // gives subject, status, owner and blockers while the transcript keeps its other facts (blockedOn marker, time).
+  withStore: function (tasks, store) {
+    var byId = {};
+    tasks.forEach(function (t) { byId[t.id] = t; });
+    return store.map(function (s) {
+      var t = byId[s.id] || { id: s.id, priority: null, subjectUpdated: false, sinceMs: null };
+      t.content = s.content; t.description = t.description || s.description; t.status = s.status; t.owner = s.owner; t.ownerUnknown = s.ownerUnknown; t.blockedBy = s.blockedBy;
+      if (s.blockedOn !== undefined) t.blockedOn = s.blockedOn;
+      t.unknown = null; t.blockUnknown = false;
+      return t;
+    });
+  },
   statusLc: function (t) { return (t.status || '').toLowerCase(); },
-  isOpen: function (t) { return ah.cfg('taskstate.open_statuses').indexOf(tk.statusLc(t)) >= 0; },
+  // The backlog line (`T-∞ Backlog: …`, task_window.backlog_re) is an index of the backlog, not work: never an open task while the task
+  // window is on (GH #982).
+  isOpen: function (t) { return ah.cfg('taskstate.open_statuses').indexOf(tk.statusLc(t)) >= 0 && !tk.isBacklogLine(t); },
+  isBacklogLine: function (t) {
+    return !!t && typeof t.content === 'string' && jx.re('task_window.backlog_re').test(t.content) && ah.settings.bool('task_window.setting');
+  },
   isDone: function (t) { return ah.cfg('taskstate.done_statuses').indexOf(tk.statusLc(t)) >= 0; },
   // The blockedOn marker as the owner-blocked test reads it: a string trimmed and lowercased, else empty.
   blockedOnText: function (t) { return typeof t.blockedOn === 'string' ? t.blockedOn.trim().toLowerCase() : ''; },
+  // The task's blockedOn reason names the owner or a human ("owner", "NEEDS OWNER: x", "owner: deferred until y"): ah.ownerNamed, the
+  // matcher the agent tracker shares (GH #959), never an exact-value compare.
+  ownerHeld: function (t) { return ah.ownerNamed(t.blockedOn); },
+  // The agent rows every Stop gate reads task coverage from (#844: one source, so the idle-tasks check and the no-stop hold cannot
+  // disagree): the transcript scan's running agents (`scan`, ah.transcript.agents: id, description, spawnInput, shellKind) with the
+  // tracker's liveness, then every tracker row (`tracked`, ah.transcript.trackedAgents) by id and name. `scan` null or unsure: none.
+  coverRows: function (scan, tracked) {
+    var t = Array.isArray(tracked) ? tracked : [];
+    var rows = (scan === null || scan === undefined || scan.unsure ? [] : scan.rows || []).map(function (r) {
+      r.live = ah.transcript.trackedLiveness(r.id, t);
+      r.scanned = true; // the transcript itself shows it running (its liveness may still be unknown to the tracker)
+      return r;
+    });
+    t.forEach(function (r) { rows.push({ id: r.id, description: r.name, kind: r.kind, live: ah.transcript.trackedLiveness(r.id, t) }); });
+    return rows;
+  },
+  // The rows whose agent `owner` names: its id, its whole description, the name it was launched with, or (owner at least
+  // task_guard.owner_match_min long) a part of its description. The orchestrator itself (task_guard.coordinator_owner_re) names none.
+  matchingOwners: function (owner, rows) {
+    var o = (owner || '').trim().toLowerCase();
+    if (!o || rows === null || rows === undefined || jx.re('task_guard.coordinator_owner_re', 'i').test(o)) return [];
+    var min = ah.cfgNum('task_guard.owner_match_min'), nameKey = ah.cfg('task_guard.owner_name_key');
+    return rows.filter(function (r) {
+      var id = String(r.id || '').toLowerCase(), d = String(r.description || '').toLowerCase();
+      var nm = jx.isObj(r.spawnInput) && typeof r.spawnInput[nameKey] === 'string' ? r.spawnInput[nameKey].trim().toLowerCase() : '';
+      return o === id || (d !== '' && o === d) || (nm !== '' && o === nm) || (o.length >= min && d.indexOf(o) >= 0);
+    });
+  },
+  liveOwner: function (owner, rows) { return tk.matchingOwners(owner, rows).some(function (r) { return r.live === true; }); },
+  // A row a Stop hold may treat as running: the tracker says live, or the transcript shows it running and the tracker does not say it
+  // ended (an in-process teammate the tracker has no row for). Holding a stop is only an order to keep working: unknown is covered.
+  runningOrUnknown: function (r) { return r.live === true || (r.scanned === true && r.live !== false); },
+  attendedOwner: function (owner, rows) { return tk.matchingOwners(owner, rows).some(tk.runningOrUnknown); },
+  // A live background shell or Monitor among the rows (the transcript scan's shellKind; a tracker job row is kind
+  // agent_tracker.guard_job_kind): the work an in-progress task waits on.
+  bgLive: function (rows) {
+    var job = ah.cfg('agent_tracker.guard_job_kind');
+    return (rows || []).some(function (r) { return (typeof r.shellKind === 'string' && r.shellKind !== '' && r.live !== false) || (r.kind === job && r.live === true); });
+  },
+  // The task's blockedOn reason names a live agent row (its id or launch name, or a description of at least
+  // task_guard.owner_match_min characters): it waits on in-flight work, not on this session.
+  blockedOnLive: function (t, rows) {
+    var b = tk.blockedOnText(t), min = ah.cfgNum('task_guard.owner_match_min'), nameKey = ah.cfg('task_guard.owner_name_key');
+    if (b === '') return false;
+    return (rows || []).some(function (r) {
+      if (!tk.runningOrUnknown(r)) return false;
+      var nm = jx.isObj(r.spawnInput) && typeof r.spawnInput[nameKey] === 'string' ? r.spawnInput[nameKey].trim().toLowerCase() : '';
+      return [String(r.id || '').toLowerCase(), nm, String(r.description || '').toLowerCase()].some(function (k) { return k.length >= min && b.indexOf(k) >= 0; });
+    });
+  },
   // oneLine: control characters become spaces, white space runs collapse, the text is trimmed and cut to `max` UTF-16 units with an
   // ellipsis; a cut through a surrogate pair drops the half pair (a Rust string cannot hold one).
   oneLine: function (s, max) {

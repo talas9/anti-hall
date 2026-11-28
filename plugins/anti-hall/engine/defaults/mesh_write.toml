@@ -26,8 +26,8 @@ doc = "Prefix of a store-direct mesh message's dedupe hash (Node's meshMessageHa
 value = "mesh:"
 
 [mesh_write.messages_added_columns]
-doc = "The additive `messages` columns Node's ensureMessagesMeshColumns adds to an older table, in Node's order, as `name TYPE`."
-value = ["sender TEXT", "recipient TEXT", "mtype TEXT", "urgency TEXT", "is_heartbeat INTEGER", "seq INTEGER", "needs_reply INTEGER", "orig_hash TEXT", "instance_nonce TEXT"]
+doc = "The additive `messages` columns Node's ensureMessagesMeshColumns adds to an older table, in Node's order, as `name TYPE`, then the engine's own (chat_kind, wake_audience and sender_kind, GH #845: Node never writes them)."
+value = ["sender TEXT", "recipient TEXT", "mtype TEXT", "urgency TEXT", "is_heartbeat INTEGER", "seq INTEGER", "needs_reply INTEGER", "orig_hash TEXT", "instance_nonce TEXT", "chat_kind TEXT", "wake_audience TEXT", "sender_kind TEXT"]
 
 [mesh_write.write_seq_column]
 doc = "The registry's per-row write counter column (Node's ensureRegistryWriteSeqColumn)."
@@ -459,7 +459,7 @@ value = ["message", "message-file"]
 
 [mesh_write.boolean_only_flags]
 doc = "Flags that never take a value (Node's BOOLEAN_ONLY_FLAGS)."
-value = ["global", "force", "peek", "answers", "help", "ack-after-print", "quiet", "cc-primary", "short", "with-broadcasts"]
+value = ["global", "force", "peek", "answers", "help", "ack-after-print", "quiet", "cc-primary", "short", "with-broadcasts", "ack-only"]
 
 [mesh_write.verb_send]
 doc = "The send verb."
@@ -1083,6 +1083,18 @@ value = "sibling"
 doc = "The `k` of a read-receipt op that moves the NDJSON inbox cursor (Node's)."
 value = "nd"
 
+[mesh_write.op_broadcast]
+doc = "The `k` of a read-receipt op that moves the reader's broadcast cursor to the seq of the last broadcast the read listed (GH #845; never back, never past it)."
+value = "bc"
+
+[mesh_write.op_broadcast_version]
+doc = "The `opv` of a broadcast read-receipt op (GH #845 contract §6): its format version, so a later format can be told apart."
+value = 1
+
+[mesh_write.flag_broadcast_to]
+doc = "The `inbox ack` flag naming the seq of the last broadcast `inbox read` listed (`broadcastAckTarget`): the broadcast cursor moves through it and no further; without it the broadcast cursor stays."
+value = "broadcast-to"
+
 [mesh_write.ps_poll_ms]
 doc = "How often the process snapshot checks whether `ps` has finished."
 value = 5
@@ -1268,8 +1280,8 @@ doc = "Integers beyond this magnitude are not exact JavaScript numbers; node:sql
 value = 9007199254740991
 
 [mesh_write.hb_plan_hint]
-doc = "The `plan.hint` of a heartbeat --step for a workspace that has no plan; `{id}` is the workspace id."
-value = "no step plan for {id} — run `~/.anti-hall/ah-engine/bin/ah-engine mesh plan set {id} --steps \"1. …\\n2. …\"` first; the heartbeat itself was recorded"
+doc = "The `plan.hint` of a heartbeat --step for a workspace that has no plan; `{id}` is the workspace id. The --steps example uses ANSI-C quoting ($'…', bash and zsh; not POSIX sh) so it runs as printed (#965)."
+value = "no step plan for {id} — run `~/.anti-hall/ah-engine/bin/ah-engine mesh plan set {id} --steps $'1. …\\n2. …'` first; the heartbeat itself was recorded"
 
 [mesh_write.hb_plan_no_plan]
 doc = "The `plan.reason` of a heartbeat --step for a workspace that has no plan."
@@ -1501,6 +1513,10 @@ value = "tick {id}: unread {unread}, known {known}, meshGap {gap}, watcherArmed 
 doc = "The wake-tick marker directory under the DevSwarm state directory."
 value = "wake-tick"
 
+[mesh_write.marker_native_wake_field]
+doc = "The wake-tick marker field holding how many of the native queue's pending messages are the engine's own wake prompts (agent_tracker.wake_prefix tasks queued by `workspace reactivate-child`; the native queue keeps counting them until something accepts them, which nothing does). The child's pull writes it; the child gate (devswarm-child-gate.js) subtracts it from the native `message-count` while the marker is fresh, so a wake prompt is never unread mail."
+value = "nativeWake"
+
 [mesh_write.file_cron_found_mail]
 doc = "The cron-found-mail measurement file under the DevSwarm state directory."
 value = "cron-found-mail.jsonl"
@@ -1606,8 +1622,8 @@ doc = "The `v` of a read receipt record."
 value = 1
 
 [mesh_write.ack_command]
-doc = "The `ackCommand` of a read-primary result: `{cli}` is the JSON-quoted stable launcher path, `{id}` the workspace id, `{rid}` the receipt id."
-value = "{cli} inbox ack-primary {id} --receipt {rid}"
+doc = "The `ackCommand` of a read-primary result: `{bin}` is the engine binary path shell-quoted in POSIX single quotes (the quotes wrap the path only), `{verb}` the engine verb after it, `{id}` the workspace id, `{rid}` the receipt id."
+value = "{bin} {verb} inbox ack-primary {id} --receipt {rid}"
 
 [mesh_write.ack_hint]
 doc = "The `ackHint` of a read-primary result."
@@ -2050,8 +2066,8 @@ doc = "The pull subverb of `inbox`."
 value = "pull"
 
 [mesh_write.read_ack_hint]
-doc = "The `ackHint` of an `inbox read` that left mail unread: it advanced no cursor, and names the `inbox ack` that does. Placeholders: {total}, {nd}, {store} (unread counts) and {id}."
-value = "`inbox read` is READ-ONLY and advanced no cursor — these {total} unread row(s) ({nd} durable-NDJSON, {store} store) stay unread until `~/.anti-hall/ah-engine/bin/ah-engine mesh inbox ack {id}` consumes them. NOTE: a Primary's own `inbox read-primary` (acked via its `ackCommand`) folds ONLY its OWN descriptor's NDJSON channel, so another row's (e.g. a same-worktree twin's) durable inbox is only ever drained by acking THAT id explicitly."
+doc = "The `ackHint` of an `inbox read` that left mail unread: it advanced no cursor, and names the `inbox ack` that does. Placeholders: {total}, {nd}, {store} (unread counts), {id} and {through} (the read's `ackThrough` boundary)."
+value = "`inbox read` is READ-ONLY and advanced no cursor — these {total} unread row(s) ({nd} durable-NDJSON, {store} store) stay unread until `~/.anti-hall/ah-engine/bin/ah-engine mesh inbox ack {id} --through {through}` consumes them (exactly what this read showed; mail that arrives after it stays unread). NOTE: a Primary's own `inbox read-primary` (acked via its `ackCommand`) folds ONLY its OWN descriptor's NDJSON channel, so another row's (e.g. a same-worktree twin's) durable inbox is only ever drained by acking THAT id explicitly."
 
 [mesh_write.action_read]
 doc = "The `action` of an `inbox read` result."
@@ -3086,3 +3102,38 @@ value = ["count", "read", "ack", "pull", "tick", "messages", "read-primary", "ac
 [mesh_write.msg_inbox_needs_id]
 doc = "The error of an `inbox` subcommand given no workspace id by a caller that has none of its own. Placeholder: {sub}."
 value = "inbox {sub} needs a workspace id: `inbox {sub} <id>`. Run from a DevSwarm workspace session it reads the session's own id (DEVSWARM_BUILDER_ID), or the id of the checkout it is run in; this caller has neither."
+
+[metric.mesh_ack_command_rendered]
+doc = "ackCommand strings rendered by a read-primary (the quote wraps the engine binary path only; the verb follows it)."
+value = { kind = "counter", unit = "commands", labels = [] }
+
+[mesh_write.mm_reason_read]
+doc = "The `reason` label of mesh_read_peek_mismatch for a read-primary that printed no message while reporting a non-zero unread count."
+value = "read_empty_unread"
+
+[mesh_write.mm_reason_peek]
+doc = "The `reason` label of mesh_read_peek_mismatch for a peek-primary that listed no message while reporting a non-zero unread count."
+value = "peek_empty_unread"
+
+[mesh_write.mm_op]
+doc = "The op of the log entry written when a read or peek prints nothing but reports unread mail (#615)."
+value = "read-peek-mismatch"
+
+[mesh_write.mm_msg]
+doc = "The message of that log entry; the entry's context carries the id, the reason, the unread count, the printed count (0) and the time."
+value = "read printed no message but the unread count is not zero"
+
+[mesh_write.mm_log_interval_ms]
+doc = "The least time between two log lines of the read/peek mismatch (#615), per reason: a loop that keeps reading an empty mailbox that reports unread mail logs one line per interval; the counter mesh_read_peek_mismatch still counts every one. 0 logs every one."
+value = 60000
+min = 0
+max = 86400000
+unit = "ms"
+
+[mesh_write.mm_stamp_prefix]
+doc = "The prefix of the stamp file (in the log directory, the reason after it) that holds the time of the last mismatch log line, so the interval holds across mesh processes."
+value = "mm-warn-"
+
+[metric.mesh_read_peek_mismatch]
+doc = "Reads or peeks that returned no message while reporting a non-zero unread count (the #615 disagreement), by reason."
+value = { kind = "counter", unit = "reads", labels = ["reason"] }

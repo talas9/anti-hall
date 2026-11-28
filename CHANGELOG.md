@@ -6,6 +6,277 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.303.0
+
+First release since v0.301.1: it carries everything merged since then (the notes below and the Engine 0.3.x integration sections). Highlights of the last two engine builds (0.3.31, 0.3.32):
+
+- Mesh messages wake only the addressee: a broadcast or a mention wakes the workspaces it names, read and ack use an exact delivered boundary (mail that arrives between a read and its ack stays unread), and a broadcast backlog no longer crowds out mail that should wake the reader.
+- Sender identities: the human owner (`admin`) and the engine acting for the owner (`ah-engine`) rank above the Primary and are never stamped as it; agents cannot impersonate either (config `mesh_identity.toml`).
+- Overload: the daemon request path has a priority queue with adaptive limits and a per-session barrier, so control verbs and guards keep answering under load (#969); exact latency percentiles in status and metrics.
+- Crash-latch fixes: a watchdog exit, a hung-daemon kill or a memory-cap exit under load no longer latches the crash-loop cooldown, and a fresh cooldown holds risky calls instead of passing everything.
+- Fewer false "too busy" holds: under load the capacity fallback passes read-only and local commands, including the engine's own verbs (#969, #971).
+- Workspace child duties: roster flags become a Do-now order and a parent Stop-gate count, the child Stop gate honours its latest heartbeat, a teammate shut down through the protocol counts as stopped, and spawn repairs a submodule worktree whose branch is in use (#983).
+- Task list window and recurring-misfire tracking (#982, #972); OMC coexistence fixes (#981).
+- Build speed: `test-fast` and `release-fast` profiles, incremental thin-LTO release builds, and a version stamp that no longer recompiles the library on every commit.
+
+### Changes since v0.301.1
+
+- Archive no longer refuses on pure submodule checkout drift (#943). `ah-engine mesh archive` treats a `git status` entry for a submodule as unsaved work only when the submodule worktree is dirty (recursively), its HEAD is on no remote branch, or git cannot read it; a submodule that is clean and at a pushed commit passes and the answer lists it as `submoduleDrift`. Switch `devswarm.archiveIgnoreSubmoduleDrift` (default on); counter `archive_submodule_drift_passed`.
+- Capacity-hold false holds and passes (#928). Under load, `dispatch.capacity_hold` (engine and ah-hook alike) no longer holds a tool that only lives in a project-local tool dir inside the repo (`.venv/bin`, `node_modules/.bin`, `target/debug|release`; its file is read as a script run by path is), a command behind a wrapper option's value (`sudo -u bob cmd`, `env -u X`, `timeout -s KILL`), or a trusted script: `script.trusted` lists (repo-relative path glob, sha256 of the content) entries, seeded with `ah-engine/test.sh` and `ah-engine/tests/wrapper.sh`; a script run by path that matches an entry on both is not matched, and any edit changes the hash so it is checked like any other. The list is never refreshed by itself: `ah-engine capacity-hashes [<path>...]` prints the current hashes. A recursive delete of a variable is never exempt (the own-temp exemption of the first cut is gone: the review found 15 bypasses). It now also holds a variable in command position with risky arguments in a script (`$CMD push`) and an argv list or exec call that starts with a literal git/gh/rm and continues with a non-literal (`run(['git', op])`). Every list and rule is in `dispatch.capacity_hold` (`script.trusted`, `unknown.local_dirs`, `script.wrapper_opts`, `script.raw_rules`, rules `dynamic-command-risky` and `exec-list-dynamic`); counters capacity_hold trusted_script / local_tool / wrapper_opt (ah-hook: capacity_trusted_script, capacity_local_tool, capacity_wrapper_opt). Corpus cases for each in the shared capacity_hold_corpus.txt.
+- Capacity-hold residual gaps (#920). Under load, `dispatch.capacity_hold` (engine and ah-hook alike) now also holds: a script run by path (`./x.sh`, `bash x.sh`, `python3 x.py`, `node x.js`) whose contents (read when at most `script.max_bytes`, comments ignored) match a hold rule, and a script too big or unreadable to read when the command looks risky (`script.risky`); the code of an interpreter one-liner (`python -c`, `node -e`, `perl -e`, `ruby -e`) that does a recursive delete or a git-library push or execs a command string it builds (`inline-*` rules); a gh subcommand no list knows (a gh alias, `gh.known`); and a command name that is in no list (`unknown.known`) and is no binary on PATH (a shell alias or function defined earlier in the session). Review hardening: a script is also found behind an interpreter named by its path (`/bin/bash x.sh`), `source x.sh`, a `find -exec` word, a `cd` earlier in the command and a leading `~`, and the scripts it runs in turn are read (`script.depth`); a text script over `max_bytes` is matched as written up to `script.scan_bytes` (`script.scan_rules`); `find -exec` of a shell or `{}` is held (`find-exec-run`); a string concatenated inside an exec call's arguments is held (`inline-exec-dynamic`). `find src -name x`, `source env.sh`, `timeout 30s cargo test` and a test script that runs `$runner` no longer hold (`script.wrappers`, `script.body_skip`), and `a || sh x` is no pipe-to-shell (its script is read instead). Plain reads and local work still pass. Counters: `capacity_hold.{inline_code,script_read,script_unread,gh_unknown,unknown_command}` (engine status) and `capacity_{inline_code,script_read,script_unread,gh_unknown,unknown_command}` (ah-hook). Every word list, regex and limit is plugin config (`dispatch.capacity_hold`).
+- Capacity-hold bypasses (#907). Under load, `dispatch.capacity_hold` now reads a command the way the shell does before matching (engine and ah-hook alike, one shared module): in-word quotes and backslashes are dropped (`g"it" pu"sh"`, `r\m`), only an unquoted separator splits (a quoted `;` in `git -C "a;b" push` no longer hides the push), and a git subcommand git does not define (a config alias such as `git pf`, an external command) is held without reading git config. A script piped or heredoc'd into python, node, perl, ruby, deno, bun or php is held like a pipe into a shell. The free text of a `gh pr/issue/release` command (--body, --title, --notes, --body-file) is data: a force-push spelling quoted in it no longer blocks the call in git-guard or the hold, while `gh pr merge` and the other command words still do. New keys under `dispatch.capacity_hold` (`normalise`, `text`, `git`, two rules); counters `capacity_hold` normalised / text_exempt. Corpus and tests cover each case. The security review of the change added what the shell does that a word list misses: an unquoted `#` comments out the rest of its line and a heredoc body is data up to its delimiter (so a quote in either no longer swallows the next line), `<(..)`/`>(..)` count as running something (a gh value that is one is not data), `$"..."`, `\u`/`\U` in `$'..'` and brace lists `{a,b}` are read like bash reads them, git is found behind `(` `{` `!` `$(` a backtick, `if`/`then`/`do` and in any case (`GIT` runs git on macOS), and a string a nested shell runs (`sh -c '..'`, `eval "..."`, `env -S '..'`, `git -c core.pager='..'`) is read again as a command (`passes`, default 3). New rules: `dynamic-command` (a command word that holds `$x`, `$(..)`, a backtick or `<(..)`) and `shell-heredoc` (a heredoc or here-string into sh/bash/zsh); the gh rule allows options before the action (`gh pr -R o/r merge`) and the pipe rules allow wrapper option values (`sudo -u root sh`, `xargs -n 1 sh`).
+- Engine reliability (#910): the slow-streak hold (a daemon that stays slow, #901/#904) now has the same continuous-run cap as the failed-exchange hold, on every late reply (a single session's late replies never trip `client.slow_down_n` in time, yet each holds a risky call): past `client.load_hold_max_ms` with no OK reply the late reply marks the daemon down and the call passes (counted `client_marker down hold_expired`) instead of holding risky calls forever. Tests: every `env_clear()`ed engine child now passes its plugin root explicitly, and a guard test (`home_isolation`) fails when a test omits it (a scratch `CLAUDE_PLUGIN_ROOT` does not count) or reads the real HOME. Claude and Codex share the one engine.
+- Stalled and idle workspaces must converge or be archived (#876). (1) A child that reports working but has made no commit for `guards.stallOrderAfterMin` (default 60) minutes since the Primary first saw it working (`guards.stallOrder`, default on) is named to the Primary: a status check first, then, on the idle-order schedule and cap, an order to converge (finish and open its PR, with a next step and a deadline) or be archived. Counter: `idle_order{kind=workspace_stall}`. (2) The idle-workspace order now offers exactly converge or archive, and names `archive <id>` for a child verified merged. (3) Root cause of the archive-request that "never completes": the request is unread mail only the child can clear, and unread mail kept the child out of the idle order forever; a pending archive-request no longer silences it, and the request answer says it archived nothing and what it still needs. (4) `archive` (and the direct archive of `archive-request`) refuses a workspace whose worktree holds uncommitted changes, unpushed commits or an unreadable state, and reports which (`devswarm_cli.archive_work_guard`; counter `archive_refused_unsafe`); respawn parks the work on a pushed branch first, and its archive then refuses only a commit made after the park. A stalled child keeps its stall clock while unread mail silences it (the status check cannot re-arm the ladder), and a worktree git cannot date is unknown, never stalled. All texts and thresholds are plugin config; Claude and Codex share the engine logic.
+- Dogfood fixes (#900): (1) a mesh inbox read or ack piped through `python3 -I -c '...'` with a `$VAR` in the code is no longer counted as a file-changing step by the coordinator-work guard (python's `-I` was read as an option that takes a value; `command.script_value_flags` is now per interpreter family; counter `coordinator_work_mesh_read_pass`). (2) A send to a Primary seat no longer asks hivecontrol for a workspace it does not have, so the stored and verified message no longer reports `nativeWake: Workspace not found` (counter `native_wake_skipped`); no registry race was found. (3) The system memory pressure warning names the kernel signal and carries the swap in use (counter `resource_watch_pressure_warned`).
+- Token waste (#884, items 1 and 5): new `cache-ttl-wait-guard` orders a single call that waits past the prompt-cache window (default 270 s) to be split into waits of 240 s or less (advisory, never a block; Claude and Codex). Waste telemetry gains `cache_expiry` and `poke_turn` categories on `waste_events_total` and `waste_tokens_total`, shown in `ah-engine status`.
+- The subagent WORKER line and the queued-wait-guard remedies now ask for waits of 240 s or less (one key, `cache_wait.split_s`) instead of 540 s; the queued-wait block limit is unchanged.
+- Token waste (#884, items 2 to 4; #894): one wake per state change. A child workspace's wake-watch holds a new-mail line while the workspace has read none of its mail since its previous wake; held mail still unread after `devswarm.wakeWatchRewakeMs` (10 min) wakes it once more (`devswarm.wakeWatchCoalesce`, default on; counter `wake_watch_coalesced`). A tool-less woken turn is counted against its sender (`poke_turns_by_sender`). The post-handover new-work gate is sent on a state change and every `guards.handoverGateOnChangeRepeatS` (30 min) instead of on every prompt (`guards.handoverGateOnChange`, default on). A DevSwarm workspace past `autoHandover.workspaceMaxTokens` (150K) is ordered to start its next PR in a fresh session. Claude and Codex.
+- Telemetry: a hook reply whose `additionalContext` is empty now counts as an allow, not as an advisory decided and delivered. limit-conserve-inject and auto-handover print that empty line on every quiet prompt, which the delivery funnel had counted as about 12k deliveries a window (and as ignored rules).
+
+## Engine 0.3.32 (local integration build, wave A)
+
+- Hardening: crash-latch load exits, hung-worker kill with tombstone, RSS load rule, crash-loop hold, HdrHistogram p99 (feat/harden-latch-p99); overload priority queue, AIMD, session barrier (feat/harden-tower); build profiles test-fast and release-fast, OnceLock version (chore/split-step0-build).
+- Watchdog load scaling keeps `daemon.stuck_ms` 8000 x `daemon.watchdog_load_scale_max_permille` 4000: a call past the client deadline waits only while the daemon shows progress, so a stuck worker never holds a hook to its timeout; `the_time_bounds_nest` now requires only client deadline x load < stuck.
+
+## Engine 0.3.31 (local integration build)
+
+- #971 capacity hold: the engine's own local verbs pass under load whatever the spelling (engine and ah-hook); review fixes for the read exemption (inert allow list, write-then-run guard, `&>` regression lines, assigning expansions and bare `( ) < >` exempt nothing).
+- #982 task list window: write-time rule enforcement (`task_window.*` in task_guards.toml), tasks-reconcile skill.
+- #981 OMC coexistence: handover redirect over the edit allowlist, question-deny text and Stop question hold, usage-snapshot staleness, quiet auto-handover and compact advice on the OMC loop, `config explain` for settings keys, doctor OMC-text and usage sections.
+- #972 wave-2 guards: stale-stop agent-message envelope, gh `--body` backticks, block-details raw keys, claim-check attribution, blocker re-nag, runtime-nudge snooze, devswarm-comms repeat, idle nudge.
+- #969 daemon load: daemon QoS, progress-gate deadline, git-check CPU, wake coverage and broadcast wake policy.
+
+## Engine 0.3.30 (local integration build)
+
+- #972 tracker classes: wake-watch coverage, stale/stopped/snoozed rows, hold confirm-once, 0-outcomes per segment and in reports, STALLED drift.
+- #972 guard classes: idle-tasks lapsed vs missing plus blockedOn refresh, stale-agent-stop-note reports, git-guard script scan, `git pull --ff-only`.
+- #972 review rounds: Codex review fixes for both lanes (drift dedupe keys on the step's current subject, and the other round 2 and 3 findings).
+
+## Engine 0.3.29 (local integration build)
+
+- Guard deadlines: the launcher wall never exceeds the outer hook bound and shortens the late wait so the fallback always runs inside it; a caller deadline or load factor can only lower the configured ceiling; command words found in `env -S` values and script bodies count for engine-unlisted; `telemetry rollup` and `telemetry actions` are off the read-only list (#969).
+- DevSwarm and agent fixes: read-only routing no longer advises read-only agents for write work; mesh JSON keeps control characters valid; the Stop check pairs a pending task with its #id; plan hints print the ANSI-C `--steps` form that pastes into the shell (#965 items 4-7).
+
+## Engine 0.3.28 (local integration build)
+
+- Load-aware guard deadlines: on a loaded machine the hook launcher samples load per core once, fits a factor (1x to `daemon.load_scale_max_permille`) that keeps the whole cold plan inside the event's hook timeout, and passes it to the client and daemon, so a check under load gets more time instead of falling into the capacity hold. Counter `deadline_load_scaled` (#969).
+- The capacity hold counts only real command words as an engine call (a quoted mention such as `pgrep -fl 'ah-engine serve'` passes; `bash -c`/`eval` code still counts), lists more read-only engine verbs (version, telemetry summary, agents status, devswarm status, mesh unread) and has its own text for engine-unlisted (#969).
+
+## Engine 0.3.27 (local integration build)
+
+- Capacity hold review fixes: a pipe after an engine verb passes only into a read-only tail (config `parsed.tail_ok`), so inline code such as `python3 -c` is held; a `cd` carrying a redirection is no longer dropped; any engine call outside the local-verb list (config set without --check, agents stop) is held by the new rule `engine-unlisted` (#969).
+
+## Engine 0.3.26 (local integration build)
+
+- Under load the capacity hold no longer blocks safe calls: the engine binary is never read as a script, `cd X &&` and listed variable reads pass, engine-local verbs (mesh send/read/heartbeat, inbox, status, config explain/check) pass even when their message text names deploy or push, and unknown command names are held only when they look risky. Every irreversible class (push, reset, delete, deploy, publish, money, pipe-to-shell, inline code, heredocs) stays held. The daemon runs at nice 0, since it is on every tool call's critical path (#969).
+- The Codex role resolver reads its role phrases from config; on the 0.171 catalog wording the flagship and coding roles resolved to nothing and seats ran on the CLI default.
+
+## Engine 0.3.25 (local integration build)
+
+- The agent tracker ends a session's declared step when its task is deleted, not only when it is completed, so the idle alert no longer names a deleted task; the owner hold notice now says the Stop check still lists the task each time its hold runs out (#964).
+- The cache-TTL wait guard no longer tells sessions to split the engine's own wake watcher (the re-arm text asked for a 30 min Monitor); only the exact configured engine command is exempt. The DevSwarm wake hints name the full engine path (#965).
+
+## Engine 0.3.24 (local integration build)
+
+- The agent tracker no longer flags the owner's own Primary session as STALLED, a worker nobody can re-dispatch. Only the watcher's Primary classification exempts it; a child with a legacy primary- id still stalls (#962).
+
+## Engine 0.3.23 (local integration build)
+
+- Hold reminders count per task, and only the tasks actually named in the delivered text; an owner word anywhere in blockedOn ("NEEDS OWNER: …") is owner-held for the tracker and the Stop alike; idle_open_task stays quiet inside a live hold; the owner notice shows total blocked time and is due on total time blocked, so rewrites cannot starve it. The Node fallback matches exact owner values read from the engine TOML (#959).
+
+## Engine 0.3.22 (local integration build)
+
+- `hold_expired`: a rewritten blocker resets its count per task. A blocker held by the owner asks the session once, then goes to the owner as a notice at most once a day, with no re-nag (#958).
+
+## Engine 0.3.21 (local integration build)
+
+- Owner no-stop orders put the session in a no-stop mode: Stop is held while open work is uncovered. Under AFK, no-stop or open work there is no stopping-point or compact advice, only an incremental handover refresh (#958).
+- New `watcher_missing` tick signal; task-guard exemptions lapse after `nudges.hold.hold_max_ms` (#958).
+- Read-only calls pass under load; a closed guard that cannot answer fails open for reads and holds only risky calls (#945).
+
+## Engine 0.3.20 (local integration build)
+
+- Every signal about a main or workspace session also goes to that session's own wake feed while its watcher is armed; the parent copy is additional (#958).
+
+## Engine 0.3.19 (local integration build)
+
+- No silent flags (#958). A flag on an idle agent is delivered by the plain route, which the nudge loop no longer swallows. An undeliverable flag is counted and falls back to the parent or Primary. A 2 h watchdog delivers owned flags nobody acted on. Every clear records its reason. A `blockedOn` hold is bounded at 2 h, then sends a `hold_expired` reminder.
+
+## Engine 0.3.18 (local integration build)
+
+- New tick signal `lead_waiting_on_done`: an idle lead whose finished teammates still hold its work is woken by the engine, and the reminder escalates to an order if ignored (#958). Tasks owned by finished teammates are no longer exempt through `blockedOn`, and workspace sessions are woken directly for `watched_exit` and `idle_open_task`.
+
+## Engine 0.3.17 (local integration build)
+
+- Compliance signals treat a task with a stated `metadata.blockedOn` reason as correctly waiting (#958).
+
+## Engine 0.3.16 (local integration build)
+
+- An invalid regex in a setting no longer aborts the engine on the converted paths (#957): the caller fails safe, and the bad value is counted in `script_regex_invalid`. The swarm-guard cost tests assert the one-line guard notice (#953).
+
+## Engine 0.3.15 (local integration build)
+
+- Compliance nudges are evidence-gated and engine-initiated (#958). The tick reads the real task-list layout (`session-<8>`, named lists) and adds `stale_list`, `untracked_request` and `inprogress_waiting`. It counts background jobs, Monitors and wakeups as cover, and delivers through the wake feed so idle sessions are reached. Idle-wake, parallel, the escalation ladder and compliance are on by default. Static injections are removed: the verify-first per-prompt tip, the task-tracker timers, the limit keepalive and the per-spawn orchestration wall. Runtime nudges are measured from the last outcome, not total runtime.
+
+## Engine 0.3.14 (local integration build)
+
+Engine-only follow-up to the incremental transcript view (#953, second Codex check of 0.3.13). (1) The consumed-bytes rotation now advances at least one record on every call: with a budget no larger than the mandatory last record the old loop stopped before any other record and never moved. `transcript.view_verify_bytes` has a minimum of one default block (256 KiB) and its doc states the staleness bound: a same-length rewrite deep in the consumed part, that leaves the inode, the size, both fingerprints and the record nearest the read position untouched, can be served stale for at most `ceil(consumed bytes / max(block, budget - block))` calls. The rotation position also follows the records that leave the front of a sliding window, so none is skipped in a cycle. A rewrite of the bytes just before the read position is met on the first call (the existing digest of `transcript.evidence_fingerprint_bytes` there; now covered by a test). (2) DEFAULT CHANGE: `transcript.view_verify_bytes` goes from 4 MiB to 1 MiB, so a warm append-one-turn call on a 16 MiB window hashes about 0.96 MB instead of about 4.1 MB (CPU about 0.27 ms instead of about 1.0 ms), at the price of a deep same-length rewrite staying stale for up to 22 calls instead of 5. Tune it in the plugin TOML, no rebuild. (3) A view too big to keep is detected before its records are sealed (nothing is hashed for it) and the charge counts the shared items and the queue capacity, not only the text. (4) The emit-dedupe tail scan builds its view key with the length-prefixed `key_of`, not a separator join. A regression test now holds the 16 MiB warm-append read to the appended bytes plus a bounded verification.
+
+## Engine 0.3.13 (local integration build)
+
+Engine-only fixes to the incremental transcript view (#953, Codex review of PR #955). A rewrite of bytes the view had already consumed is now caught: the view seals each consumed block with a digest and re-hashes the one nearest the read position on every call plus the others in rotation, up to `transcript.view_verify_bytes` (4 MiB) per call, so a same-length edit of a middle line and a truncate that regrows keeping both ends are rebuilt, not served stale (the old check looked only at the inode, the size and the first and last 4 KiB). A regex a script hands `ah.transcript.features` that the engine cannot compile (for example a lookahead) raises a RegExp error to the script and is counted in `script_regex_invalid`; it no longer aborts the daemon. Idle expiry works: `BoundedCache::get` and `remove` now check a TTL against the current time (they checked against time 0, so an expired view or kept scan was reused and renewed). View cache keys are length-prefixed, so a needle list `["a\u001fb"]` no longer shares the key of `["a","b"]`.
+
+## Engine 0.3.12 (local integration build)
+
+Engine-only local build of current dev: one incremental transcript view (#953). The idle-teammate scan, `ah.fs.tailLines` with needles, `ah.transcript.grep` and the emit-dedupe tail read only the bytes appended since the last call instead of re-reading and re-parsing their whole window on every prompt.
+
+## Engine 0.3.11 (local integration build)
+
+Engine-only local build of current dev: a dropped advisory check on a non-guard event no longer shows the guard-down notice (counted as `notice_suppressed`), and the notice tells a failure in one short line instead of a script stack (#953).
+
+## Engine 0.3.10 (local integration build)
+
+Engine-only local build of current dev: archive passes gitlink-only submodule drift (#943).
+
+## Engine 0.3.9 (local integration build)
+
+Engine-only local build of current dev. Version bump only; changes since 0.3.8 are listed under Unreleased.
+
+Launcher (ah-hook) 0.3.1: capacity-hold parsing fixes from #929.
+
+## Engine 0.3.8 (local integration build)
+
+Engine-only local build of current dev. Version bump only; changes since 0.3.7 are listed under Unreleased.
+
+## Engine 0.3.7 (local integration build)
+
+Engine-only local build of current dev. Version bump only; changes since 0.3.6 are listed under Unreleased.
+
+## Engine 0.3.6 (local integration build)
+
+Engine-only local build of current dev. Version bump only; changes since 0.3.5 are listed under Unreleased.
+
+## Engine 0.3.5 (local integration build)
+
+Engine-only local build of current dev. Version bump only; changes since 0.3.4 are listed under Unreleased.
+
+## Engine 0.3.4 (local integration build)
+
+Engine-only local build of current dev. Version bump only; changes since 0.3.3 are listed under Unreleased.
+
+## Engine 0.3.3 (local integration build)
+
+Engine-only local build. Beyond dev it carries:
+
+- Command guard: the matching rule is named in the block message (#858).
+- Scheduling: a slow check no longer starves the guards behind it (#778).
+- Child gate: empty wake pings are ignored (fix/child-gate-wake-pings).
+- QuickJS: memory growth fixed (fix/quickjs-mem-growth).
+
+## Engine 0.3.2
+
+Engine-only release (hook client 0.3.0 and dashboard 0.2.0 unchanged). Engine fixes merged to dev since 0.3.1:
+
+- Funnel: exact per-check delivery funnel in status, dropped and ignored shares (#848).
+- AFK: presence suspends only the session the owner typed in; scheduled turns are no presence (#850).
+- Claim evidence: a publish tool's own result backs a published claim; a released lock, session or device is no shipped claim (#846).
+
+## Engine 0.3.1
+
+Engine-only release (hook client 0.3.0 and dashboard 0.2.0 unchanged). Engine fixes merged to dev since the 0.3.0 live build:
+
+- Perf: the deadline cut (#832) removes the fail-open storm seen at live scale.
+- Nudges: snoozes (#829) and runtime nudge fixes (#820).
+- Inbox and child gates: responsive unread inbox (#827), child-gate name duty (#834), gate unread (#812), parent-gate scope (#810), mailbox wake (#808).
+- Task guards: tasklist-guard fixes (#798, #837), idle-task pairing (#824), task pair owner (#788), merge-side pick (#785).
+- Guards: claim evidence (#825, #787), routing read-only shape (#831), speculation acks (#786), owner approval (#800), transcript protection (#805), edit-guard and defect caps (#784, #795), P0 canaries (#779).
+- Tunables and tests: tunables cache allow (#839), dev-red test fixes (#813, #821, #822), reference regeneration (#838).
+
+## 0.302.0
+
+### Summary
+
+- Components: this release ships engine 0.3.0, hook client 0.3.0 and dashboard 0.2.0 (plugin 0.302.0). The dashboard is unchanged. Minimum versions each component declares of the others are unchanged.
+- Task guards read tasks more reliably: a per-session task snapshot keeps tasks whose creates left the transcript tail, replayed API rows no longer create ghost tasks, and the task reader has a golden open-set gate with mutation proofs for every consumer.
+- Agents and nudges: a nudge escalation ladder with severity classes, stalled-agent / idle-wake / parallelism signals, a cap on concurrent background agents, and task-agent pairing (on), new opt-in rules (idle tasks, inline work, reply style, advisor rank) and AFK mode.
+- Safety and speed: the git guard lexes shell comments and arithmetic by bash rules, the snapshot lock is a kernel flock, and several hot paths (config reads, transcript fingerprinting, Stop scans) cost less per call.
+
+### Added
+
+- **Task snapshot.** The engine keeps one snapshot of each session's rebuilt task list, tied to its session and file generation, so task guards see tasks whose creates lie beyond the transcript tail. A completion in the gap after the snapshot is read, a renumbered list is followed, and a deleted task is dropped.
+- **Nudge escalation ladder** (`nudges.enabled`, off). Severity classes and Stop-block advisories as an explicit state machine (a guard's pass is absolute; a resolved fact clears its entry), with idle-wake (`nudges.idleWake`) and parallelism (`nudges.parallel`) signals, both off.
+- **Stalled-agent accounting** (`nudges.stall`, on). Stalled agents count CPU and skip builds and CI waits; the stalled block is capped per episode and names the worker and how it stalled.
+- **Jev pins its model version and caps its state.** The direct vendor gets a versioned model id (`jev.modelPin`, shipped `jev.model_pin`; set `jev-latest` to follow the moving alias, which the doctor warns about), and each question's state is cut to `jev.stateMaxTokens` (shipped 30000 estimated tokens) before it is sent, with the cut counted in telemetry. Skips are logged with their reason.
+- **Wake coalescing** (`agents.wakeCoalesceSeconds`, default 20, 0 = off). Wake rows arriving within the window print as one line counting rows per agent; the full rows still reach the reminder queue.
+- **Combined hook output in priority order (#311).** The hooks of an event that cannot block are joined by priority (`dispatch.context_priority`); an over-cap join spills but keeps the pinned context (priority at or above `dispatch.context_pin_priority`) inline, and spills are counted per event.
+- **Essential reminders are never shed (#312).** Checks listed in `diagnostics.shed_never` are not dropped under load, and the doctor reports it if one was shed.
+- **Agent cap** (`guards.maxConcurrentAgents`, default 6). A spawn over the cap is denied (#484).
+- **R-pair task-agent pairing** (`guards.pairRule`, on): every task is paired with the named agent working on it; `guards.pairRuleByTaskId` (on) accepts an unnamed spawn whose description starts with the id of an open task, on positive proof only.
+- **Opt-in guards (default off):** R-idle (`guards.idleRule`), R-inline (`guards.inlineRule`), R-style reply length (`guards.styleRule`, with `guards.replyMaxChars` 1200 and `guards.replyMaxLines` 18), the advisor rank exemption (`guards.advisorRank`) and a merge-gate clearing step (`guards.mergeGateClearStep`).
+- **AFK mode (#425):** a read-only `afk status`, a question prohibition and ExitPlanMode auto-approval.
+- **Advisor mode:** hard decisions (review, plan, retry) stay on the advisor; adherence monitoring; enforcement when the main model is not a flagship; the transcript read is capped and a short read stays silent and counted.
+- **Rule digests (#462):** an agent-visible digest generated from the enforced TOML, per host.
+- **Context budget:** a per-event budget that drops low-priority model text instead of spilling it (`context.injectGateNoSpill`, off), pure per-prompt reminders skipped on notice turns (`context.injectGateNoticeTurns`, off), a one-line role note for subagents, and a prompt digest of at most three lines.
+- **Stop advice** as `additionalContext`, stateless and bounded by the transcript; Stop channel bounds and whole-number limits (#568, #559).
+- **Tasklist hygiene check:** done tasks deleted, subject and open-count limits enforced; the compact or restart-ready declaration is refused while the task list or index is over the handover budgets.
+- **Engine currency report:** the engine reports when it lags the source checkout (#541).
+- **Hook client:** the thin client says once, on stderr, when the installed engine is older than the version the plugin pins (`launcher.stale_notice_on`, on).
+- **Upgrade notices you can see (`install.sessionstart_json_notice`, on).** Claude Code never shows the stderr of a hook that exits 0, so `hooks/install.sh` now also prints the SessionStart notice as JSON (`systemMessage` for you, `additionalContext` for the model), merged into the thin client's own SessionStart output (never a second JSON object, the client still runs). Three texts: the engine is not installed, the engine is installed without its hook client, and the installed engine is older than the plugin pins (names `ah-hook install -v` and `~/.anti-hall/ah-engine/bootstrap.log`) or cannot load the plugin's settings at all ("the guards are NOT running").
+- **An explicit `ah-hook install` reports** (`install.explicit_ignores_retry`, on): it ignores the 6 h retry window of an earlier automatic attempt, prints why it failed on stderr and exits non-zero (`install.explicit_fail_exit`, 1); `--auto` stays silent.
+- **Doctor for installs that come from the Node era (`doctor_l.probe_defaults_load`, `doctor_l.launcher_health_with_engine`, `doctor.codex_node_entries`, all on):** `ah-hook doctor` no longer hands over to an engine that answers `version` but cannot load the plugin's defaults (it reports that and the fix); it runs its install-health checks (Node entries, Node launchers in `~/.anti-hall/bin`, retired statusLine) beside the engine's doctor and keeps their failures in the exit code; the engine doctor names Codex hooks that still run Node-era scripts (`install-codex --global` replaces them, including the plugin-cache path form), no longer fails every install for a missing `statusline.js`, and treats "no statusLine" as information.
+- **Statusline:** a version chip and the weekly and 5h usage before the context percentage, shown by `ah-hook statusline`. The statusline installer is retired, so a statusLine exists only when you configure one that runs `ah-hook statusline`.
+- **Telemetry:** per-rule delivery funnel by model and project, nudge scope counters, counters for the config memo, tail reads, served requests and launcher notices; guard blocks keep their full text up to `telemetry.block_reason_chars` (default 2048); a child process's counts reach the daemon on exit without waiting on a lock.
+- **Doctor:** a plugin-name clash check.
+- **Test gates:** a reader open-set gate (golden property test, adapter section, mutation patches M1-M13) and a consumers axis covering the task-pair, tasklist, tracker, hygiene and compact-advice guards and the ladder.
+- **Supervised engine unit (#647).** The engine runs under a supervised unit that respawns it after a kill.
+- **`web.require_token` (#666).** A switch for the dashboard token; Host and Origin checks stay on and are counted.
+
+### Changed
+
+- **Idle orders for child workspaces and finished teammates (#744, `guards.idleOrder`, `guards.idleOrderAfterMin`, default on, 30 min).** A live child workspace idle past the threshold with no open step plan, no unread mail and no done ruling gets one order to the Primary (ask it to report, give it new work, or `archive-request <id>`); a Claude teammate that delivered its report and owns no open task gets one order to verify its result and stop it or reassign it. The order repeats on the escalating schedule `idle_order.steps_min` (30, 60, 120 min; last repeats), at most `idle_order.max_orders` times, and stops once the child is active, archived or stopped. Silent when the child is busy, waiting on a human, parked, focused, has unread mail or an open task. An idle task-less workspace no longer counts as live for the mailbox wake path, so the Stop gate and the prompt line stop demanding a watcher or cron for it. Counter `idle_order` (labels `kind`, `outcome` fired/acted_on/suppressed, `reason`). Texts, schedule and limits live in `prompt_emit.toml`. A fully done step plan no longer counts as open (the finish label is also given for it). Unknown task state, an owned teammate, an order inside its interval or past its cap are silent (never the plain stop tip); Codex has no task source and gets no order. A teammate idle with no idleReason (it said it waits on background work) for `idle_order.waiting_after_min` with no live tracker row, no open task and no later send or stop gets an order to check it (#515; kind `teammate_waiting`). Not covered (needs a host fact the scripts do not have): a workspace spawned by another Primary is not told apart (no spawner field on the descriptor or the app record).
+- **Completed tasks are ordered deleted, not tipped (#762, Claude only).** The completion line is now `Do now: ... TaskUpdate status=deleted #id`; a completed task that stays in the list past `guards.doneOrderAfterMin` (10) is ordered again at UserPromptSubmit on the `done_order.steps_min` schedule (10/30/60 min, capped by `done_order.max_orders`), and at Stop only with `handover.taskListEnforce = block`. Counters `completed_lingering`, `order_emitted`, `followed` under `tasklist_hygiene`; switch `guards.doneOrder`; texts in `task_guards.toml` (`done_order.*`).
+- **Action rules render as orders (#764).** The 22 rules that ask for an action now use the order form (`Do now: ...`) instead of a tip, and an idle teammate or subagent that owns an open task gets a resume-or-reassign order on the idle-order schedule; an idle spell that starts after the last order restarts the schedule.
+- **Inbox advisories speak only on change (#756, #709).** The child-inbox and Primary-inbox advisories repeat only when the unread set changes or after a cooldown, not on every prompt.
+- **Stop accepts a nudge answer given before its first sight of a re-escalation (#752, #751).** The new generation is anchored at the tracker's send time instead of the Stop's own clock.
+- **Rules that never reached the agent (#766, #764).** Never-shed reminders are listed in `diagnostics.shed_never`; a missing Jev key is no longer counted as a failure in the Jev report; the coordinator-work-guard text matches what it counts; a silent-agent-nudge script error is logged with its message.
+- **Nudge wording:** the tracker wording and the one-line role note ship on (kill switches kept); the tracker speaks on change, and DISPATCH NOW skips held tasks. Orchestration rules are sent whole once per session, short after compaction or resume.
+- **Performance:** `ah.cfg` / `ah.settings` reads cost one host call per check call; the snapshot fingerprint hashes the transcript range in the engine; the snapshot lock is a persistent kernel `flock` (the lock-file protocol stays as kill switch and fallback); git spawns skip the macOS developer-tools shim; the Stop scan keeps its windows.
+- The SessionStart line states it is information, not an error (#597).
+- Docs are aligned with the engine-only runtime: stale Node script names replaced in guides and skills, backup directory mentions reworded, model KB re-audited.
+- Dependencies: `ureq` 3.5.0, `notify` 8.2.1, `arc-swap` 1.9.3.
+- **Parked roster and unknown token display (#709).** Explicitly closed, done, held or waiting-on-human children show `parked`; stale-status, NOT DRAINING and stall flags are hidden while real unread mail and burn remain visible (`devswarm.parkedDisplay`). A missing, stale or not fully sampled roster token source shows `tok ?` (`devswarm.tokenUnknown`, `devswarm.tokenFreshMs`). Global quiet-tick and statusline missing-data handling await the Rust freeze.
+- **Smarter child-gate cron check, tracker skip and waste warning (#709, PR-A2b).** The child Stop gate reads the payload's `session_crons` instead of judging from the age of the last tick marker and sending the model to `CronList` (`devswarm.cronFromPayload`, default on; a payload without the list keeps the old check). The task tracker is silent on a cron-delivered turn while the open-task list is unchanged (`context.taskTrackerSkipScheduled`, default on). New counters `waste_tokens_total` (estimated tokens of the text left out) and `waste_warnings_total`, and one advisory per waste level change per session (`guards.wasteWarn`, `guards.wasteWarnWindowMin`, `guards.wasteWarnTokens`; a constant rate warns once; `waste.hysteresis_pct` keeps a rate flapping around a threshold from warning twice, and an unwritable record means no warning). The cron check accepts only a recurring, scheduled, unexpired job whose prompt runs the tick command, and the scheduled-turn skip needs the matching record to be provably the current turn's and the list fingerprint covers blockers and subjects (review fixes).
+- **Smarter idle nudges (#709, PR-A2).** A scheduled (cron) turn no longer counts toward the keepalive that re-shows an unchanged advisory block (`guards.keepaliveCountsScheduled`, default off) and a wall-clock floor (`guards.injectionRepeatMinS`, 7200 s) re-shows it now and then; the Primary's unread-mail keepalives (2 and 10) are `devswarm_parent.nudge_keepalive` / `urgent_keepalive`. The low-disk warning repeats only on a level change, a fall of 5 GB or after 6 h (`diskWatch.repeatOnChangeOnly`, `repeatDropGb`, `repeatSeconds`). The claim-evidence guard skips markdown table header rows (`guards.claimEvidenceMaskTableHeader`). `gcloud config get-value` is no longer a heavy command. The statusline reads `context_window.context_window_size`. The model-armed Monitor text no longer mentions a `persistent` parameter the tool does not have. New counter `waste_events_total`.
+- **The Primary's mailbox cron runs only while a child workspace is alive (#709, `devswarm.wakeCronOnlyWithChild`, default on).** Each cron tick is a full model turn that re-reads the whole context, so a tick with no child to hear is pure cost. The SessionStart directive of a Claude Primary now arms the Monitor wake-watch alone; when no live child remains the Primary gets one order to `CronDelete` the `inbox tick` job (it rides the next prompt, a tick's own turn included, so sessions that armed the cron earlier stop ticking after the plugin updates); the next live child is asked for the cron back at once. After a mid-turn spawn the Monitor carries delivery until it lapses; the Stop gate re-arms both the Monitor and the cron when the watcher is dead. `false` restores the always-armed cron. Counter `devswarm_cron_ctl` (label `action`). Claude only (Codex has no scheduler tool).
+- **Context size is the last `message` iteration, not the summed top-level usage (#709).** A message that holds an advisor call reports the SUM of its main-model requests at the top level; the auto-handover readers took that sum as the context and fired at about 386K against a 500K ceiling. `ctxbudget.usage_context_iteration_types` (default `["message"]`) names the iterations that count; billing readers keep the sum. Codex: the reader now takes `last_token_usage` (the last request) instead of the cumulative `total_token_usage`, which passes the model window in a long rollout (`ctxbudget.codex_usage_key`).
+- **Apple silicon only; Linux and Apple Intel are coming soon (owner decision 2026-11-10, #708).** The supported-systems line in the README, the Codex README, the plugin README, `llms.txt` and the update skill now reads: macOS on Apple silicon is supported; Linux (including WSL), Apple Intel and native Windows are coming soon, not supported or tested. CI: the pull-request and `dev`/`main` push gates (`fmt`, `lint`, `quick`, `launcher`, `rust`, `no-node`, `doc-check`) and the informational, nightly and weekly jobs run on `macos-latest` (arm64) only; the Linux matrix legs, the x86_64 Apple Intel cross check runs on a manual dispatch or a `v*` tag only; the other-target prebuilt binaries (`ah-engine-bins`) build on a manual dispatch only; the full-tier gate (`test.sh`, clippy, doctests, `cargo doc`) runs on macOS; the weekly dependency refresh is dispatch-only; the nightly fuzz schedule is paused (dispatch only). `tests-passed` and `privacy-scan` keep their names. No product code was removed.
+- **ask-guard denies AskUserQuestion in DevSwarm sessions (GH #694).** A child workspace and the Primary never open the question tool: the call is refused with the route to use instead (the mesh for a child, the progress file's NEEDS OWNER line for the Primary). Switches `guards.denyChildQuestions` and `guards.denyPrimaryQuestions`, default on; counter `ask_guard_denied`. Claude only: Codex has no ask tool.
+- **Transcript windows are read in fixed blocks, one at a time.** Every transcript tail read goes through one reader (`transcript::scan`) that holds one block plus the line being assembled, so a few requests on a long session no longer raise the heap by tens of MB. The bound on concurrent reads is `transcript.max_concurrent_scans` (default 1); a request that gets no turn before its deadline reads anyway and is counted in `transcript_scan_turn_bypassed`, so the turn never changes a verdict. The setting `tail_start_bytes` is removed (nothing reads it; a leftover key in a user file is ignored).
+- **Large tool results are no longer copied several times over, and the agent scan stops holding every launch prompt.** The agent tracker reads a transcript line by line (a line over `agent_scan.max_line_bytes` is read past and marks the read partial; a window cut inside a multi-byte character no longer drops the whole read); the agent scan, the idle sweep and the transcript store borrow a result's text instead of cloning it (a stored task result keeps only its first `transcript.result_parse_max_bytes`); `tailEntries` / `rangeEntries` cut each line down to the named paths as it is read, skipping the rest unbuilt; `tailLines` writes its answer as it reads; the teammate and Codex-agent sweeps read lines with a bound and answer unsure past it; the agent scan's kept walk keys call and result ids by a 128-bit digest and releases a call's input once it is answered unless a launch or a retained result names it (1.1 MB to 20 KB per walk on a 700 MB session). On the memory gate (real 664 MB transcript, 4 sessions, 60 s): heap delta 8.9 MB to 1.3-4.2 MB; the generated 300 MB transcript with 6 MiB results: heap bursts 972 to 1 (control 1).
+- **One wake-watch Monitor instead of two.** `monitors/monitors.json` arms a single `wake-watch` entry (`agents wake-watch --auto`) that streams the agent tracker's wake rows and, in a DevSwarm session, the mesh wake lines from one process. `agents.wakeWatch` and `devswarm.wakeWatch` stay separate switches (off: that source prints nothing). `devswarm wake-watch` remains as a deprecated alias (note on stderr). The re-arm line now names the one command, and is held back when the session has no live child or background task (`limits.monitor_min_bg` = 1, #614). New counters: `merged_watch_rows{source}`, `monitor_nag_suppressed{reason}`. #181 (phantom mesh mail) was investigated and its cause not proven; it stays open.
+- **Command Center redesign.** Ten views become six: Agents (home), Health (with Topology as a toggle), Logs, Settings, Accounts and Updates. Telemetry and Impact are the two tabs of one Reports view, and the Live decision graph has its own view; both ship switched off and stay in the page. The nav is read from `web.screens` (order, label, icon, `enabled`), not compiled in. The Graph tab, the header search, the Send box and the Switch account card are behind `web.switches` (all off); `web.strip_pills` sets the figures of the top strip (the lifetime request count is off); `web.ribbon_window_s` and `web.ribbon_buckets` shape the new decision ribbon on the agents view. The look is a graphite ramp with one amber accent for block, stale and needs-you (red only for an engine that is down), Inter and JetBrains Mono, no gradients, glows or looping motion. Every decision shows as one of the engine's four words (allow, advise, block, defer). Copy fixes: sentence-case labels, no trailing periods on short strings, correct detail-tile labels, no hardcoded "Jev" label. Views load with a skeleton of their final layout; after `web.load_timeout_ms` the skeleton becomes an error line naming the endpoint with a retry, and a view whose data stops updating (`web.stale_after_ms`) says "Stale since HH:MM". Impact: figures sit in a right-aligned column outside the bars, a change is plain signed text (the good direction per group is `webtel.impact_good`; prevention is neutral), rows that are zero in both periods collapse into one line, and the footnotes are one muted line.
+- **Command Center light theme (#685).** A designed light theme from the same tokens as dark, with a three-state theme switch.
+- **Faster guard scripts and task reads.** Guard logic no longer builds strings one character at a time or rescans heredoc bodies (#643, #656, #660); one task reconstruction serves all Stop checks per transcript state (#645).
+- **Dead wake-watch re-arm prompt (#672).** A dead wake-watch is re-armed by an automatic prompt.
+
+### Fixed
+
+- **Subagents no longer pause on a wait dead end (#760, #755).** `queued-wait-guard` allows a wait bounded by `timeout N` (N up to `queued_wait.bounded_max_s`, 540 s) and `gh pr checks --watch` / `gh run watch`; an unbounded wait is blocked with a fail-closed rule that says to bound it or message the lead, never to just end the turn.
+- **Upgrading from the 0.300 bootstrap no longer leaves the engine stuck.** `hooks/install.sh --download` with an older managed engine and no hook client used to print "installed", keep the old engine and write a marker for the new version, so `ah-hook install` then did nothing for good. It now keeps the engine, installs the client, records what is really installed and hands over to `ah-hook install` (one implementation of the swap, `.prev` copies kept). The state directory is created with mode 700. Doctor texts no longer claim a Node fallback that a published install does not have (`bin_missing`, `lock_no_asset`, `breaker`, the skipped-hook line), and the retired-launcher text says what `--repair` really does (moves them to `retired/`, nothing is deleted).
+- **Task guards:** only conversation rows feed the task model, so replayed API rows no longer make ghost tasks (#599); the ladder reads the open-task fact from the list task-guard reads; R-pair pairs by agent name as a multiset, reads only an explicit leading task reference, and an unreadable or other-owner task denies.
+- **Git guard:** shell comments are no command, an escaped break cannot hide a live command, arithmetic parentheses and `$$` are tracked, a harmless output tail or plain env assignment keeps a push scoped (#506, #591).
+- **Swarm guard:** a bare fresh-clone statement fails safe, and any negation keeps the shared-tree note (#487).
+- **Style guard:** fenced code and tables follow CommonMark and GFM block rules.
+- **Settings:** a number outside the f64 range invalidates its own key, not the whole file (#569); a key registered on both stores with the same type and default is one setting.
+- **Engine:** the event-log exit flush never blocks (#572); a snapshot write needs a positively held lock on every path; telemetry exit paths are inert unless a marked scheduled child; archived DevSwarm children stay quiet.
+- **Tests:** deflaked agent-cli snapshot-kill, scheduler idle-gate and golden-harness clock and temp-root drift.
+- **Guard false positives:** block caps reset per owner turn (#319); read-only remote commands and owner-wait tasks no longer block (#321); command-family misfires fixed (#641); hedge phrases match on word boundaries (#730); a `/dev/null` redirect counts as a file change and a PR check rollup backs a checks claim (#674); a log count backs a pass claim only as a pass count (#638).
+- **Burn breaker** lets a worker commit and read (#397, #472).
+- **Rules:** never-shed reminders, a Jev no-key report and the coordinator-work-guard text (#764); a loaded host no longer fails the Stop guards open (#684).
+- **Engine:** shed and overflowing requests answer a clean BUSY (#388, #394); requests whose client hung up are skipped (#411); SIGINT drains like SIGTERM (#204); the daemon recycles before its data-segment limit (#400); a deadline cut answers by check policy (#463); the silent-agent nudge no longer loads the whole agent state (#721), and applies nudge answers past the reconcile budget (#725); closed DevSwarm children skip roster enrichment (#747).
+- **Launcher and Codex:** the cold-start wait fits long state-dir paths (#639); retired Codex hook launchers are rewritten to `ah-hook` (#320).
+- **Mesh:** `ackCommand` quoting (#626), read/peek mismatch telemetry (#615), activity-line hysteresis (#632).
+
 ## 0.301.1
 
 ### Summary

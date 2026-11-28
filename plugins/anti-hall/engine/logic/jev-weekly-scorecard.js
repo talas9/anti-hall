@@ -36,6 +36,6 @@ function decide(p, opts) {
   ah.state.op(ah.home(), 'write', ah.cfg('session_gates.anti_hall_dir') + '/' + ah.cfg('jev_weekly.latch_file'), '{' + JSON.stringify(key) + ':' + Math.floor(now) + '}');
   var c = pickCandidate(card);
   if (c === null) return 'allow';
-  var msg = text.message('tip', ah.cfg('jev_weekly.guard'), { what: text.render(ah.cfg('jev_weekly.notice_what'), { id: c.id, to: c.to }), instead: ah.cfg('jev_weekly.notice_instead') });
+  var msg = text.message('order', ah.cfg('jev_weekly.guard'), { what: text.render(ah.cfg('jev_weekly.notice_what'), { id: c.id, to: c.to }), instead: ah.cfg('jev_weekly.notice_instead') });
   return { advisory: text.advisoryJson(gates.eventName(p), msg) };
 }

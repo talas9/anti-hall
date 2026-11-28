@@ -7,7 +7,7 @@ description: Where anti-hall's settings live and the three ways to change them.
 
 Every anti-hall setting lives in one file, `~/.anti-hall/settings.json`, grouped into
 sections such as `guards`, `safety`, `autoHandover` and `statusline`. Nearly every hook
-has an on/off switch there; `settings.js show` lists the few parts that have none, and why. The full list, with defaults, is the
+has an on/off switch there; `ah-engine settings show` lists the few parts that have none, and why. The full list, with defaults, is the
 [Settings reference](../../plugins/anti-hall/engine/defaults/settings_cli.toml).
 
 ## Three ways to change a setting
@@ -54,7 +54,7 @@ From highest to lowest:
 4. an older per-feature config file (for example `~/.anti-hall/jev.json`);
 5. the default.
 
-The **Source** column of `settings.js show` tells you which one answered.
+The **Source** column of `ah-engine settings show` tells you which one answered.
 
 !!! note "A `/config` value equal to the default"
     The `/config` panel cannot tell "set to the default" apart from "never set". To pin a

@@ -73,7 +73,6 @@ TaskStop	10	node --no-concurrent-recompilation --no-concurrent-sparkplug "${CLAU
 @TaskCreated	10
 *	10	node "${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/task-lifecycle-log.js"
 @UserPromptSubmit	10
-*	10	node --no-concurrent-recompilation --no-concurrent-sparkplug "${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/verify-first.js"
 *	10	node --no-concurrent-recompilation --no-concurrent-sparkplug "${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/task-tracker.js"
 *	10	node "${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/idle-agent-sweep.js"
 *	10	node --no-concurrent-recompilation --no-concurrent-sparkplug "${CLAUDE_PLUGIN_ROOT}/../anti-hall-node/hooks/limit-conserve-inject.js"

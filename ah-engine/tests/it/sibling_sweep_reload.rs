@@ -28,7 +28,7 @@ fn live(home: &str, key: &str) -> u64 {
 
 #[test]
 fn an_edited_shipped_default_reaches_the_sibling_sweep_settings_after_a_reload() {
-    let root = std::env::temp_dir().join(format!("ah-sweep-reload-{}", std::process::id()));
+    let root = crate::common::testtmp::path(format!("ah-sweep-reload-{}", std::process::id()));
     ah_engine::discard::harmless(std::fs::remove_dir_all(&root));
     copy_tree(&Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall/engine/defaults"), &root.join("engine/defaults"));
     defaults::reload(Some(&root)).unwrap();

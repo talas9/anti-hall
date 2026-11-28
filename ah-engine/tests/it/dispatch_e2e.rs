@@ -22,7 +22,7 @@ struct Env {
 
 impl Env {
     fn new(name: &str) -> Env {
-        let dir = std::env::temp_dir().join(format!("ahd-e2e-{name}-{}", std::process::id()));
+        let dir = crate::common::testtmp::path(format!("ahd-e2e-{name}-{}", std::process::id()));
         ah_engine::discard::harmless(std::fs::remove_dir_all(&dir));
         std::fs::create_dir_all(dir.join("home")).unwrap();
         Env { dir }
@@ -86,6 +86,8 @@ impl Env {
             .env("PATH", path_without_codex())
             .env("HOME", self.dir.join("home"))
             .env("AH_ENGINE_DIR", self.state())
+            // the state dir lives under the parent's temp dir: the daemon must see the same temp root to count it scratch
+            .env("TMPDIR", std::env::temp_dir())
             .env("AH_ENGINE_VERSION", "dispatch-e2e")
             .env("ANTIHALL_JEV_RECOMMEND_NOTICE", "false") // the session gate answers the notice itself; these tests probe the Node fallback
             .env("ANTIHALL_ROLE_NOTE", "0") // the role note is injected at every SessionStart; these tests probe the Node fallback and the exact bytes
@@ -134,6 +136,8 @@ impl Env {
             .env("PATH", path_without_codex())
             .env("HOME", self.dir.join("home"))
             .env("AH_ENGINE_DIR", self.state())
+            // the state dir lives under the parent's temp dir: the daemon must see the same temp root to count it scratch
+            .env("TMPDIR", std::env::temp_dir())
             .env("AH_ENGINE_VERSION", "dispatch-e2e")
             .env("AH_ENGINE_DISPATCH_IN_PROCESS", if in_process { "1" } else { "0" })
             // DevSwarm active, together with a SessionStart payload that names no working directory, makes the native
@@ -326,18 +330,210 @@ fn the_built_in_check_blocks_in_process_and_through_the_daemon() {
     assert_eq!(code, 2, "in-process: the git check blocks although git-guard's Node command says nothing");
     assert!(out.is_empty() && err.contains("force push"), "{out:?} {err:?}");
     // the first daemon call starts the daemon and answers through Node (D5); later calls are answered by the daemon
+    // Poll until the daemon answers with the native guard message itself: any exit 2 is not readiness on its own.
     let mut last = (0, String::new(), String::new());
-    for _ in 0..50 {
+    let until = Instant::now() + common::scaled(Duration::from_secs(30));
+    while Instant::now() < until {
         last = e.run(&args, false, &p, true);
-        if last.0 == 2 {
+        if last.0 == 2 && last.2 == err {
             break;
         }
-        std::thread::sleep(std::time::Duration::from_millis(50));
+        std::thread::sleep(Duration::from_millis(50));
     }
     let metrics = e.run(&["metrics", "--json"], false, "", true).1;
     e.stop();
     assert_eq!((last.0, last.2.as_str()), (2, err.as_str()), "daemon: same block, byte for byte");
     assert!(metrics.contains("dispatch_checks") && metrics.contains("decided"), "the daemon counts what it answered: {metrics}");
+}
+
+/// B1: a real hook call through the daemon (a force push on a Bash PreToolUse payload that names its model) lands in the funnel
+/// as one decided and delivered answer of the git check, labelled with the payload's model family and the project, on the block
+/// channel, and `telemetry funnel --by model,project` reads it back.
+#[test]
+fn a_real_hook_call_is_counted_in_the_funnel_by_model_project_and_channel() {
+    let e = Env::new("funnel");
+    let map = e.map(&[("merge-gate", CTX_MERGE_GATE)]);
+    let args = ["hook", "--event", "PreToolUse", "--fallback-map", map.to_str().unwrap()];
+    let p = serde_json::json!({
+        "session_id": "e2e-funnel", "cwd": e.dir, "hook_event_name": "PreToolUse", "tool_name": "Bash", "model": "claude-opus-4-8",
+        "tool_input": {"command": "git push --force origin main"},
+    })
+    .to_string();
+    let until = Instant::now() + common::scaled(Duration::from_secs(30));
+    let mut row = serde_json::Value::Null;
+    while Instant::now() < until {
+        e.run(&args, false, &p, true);
+        let (code, out, _) = e.run(&["telemetry", "funnel", "--by", "model,project", "--json"], false, "", true);
+        if code == 0
+            && let Ok(v) = serde_json::from_str::<serde_json::Value>(&out)
+            && let Some(r) = v["funnel"]["rows"].as_array().and_then(|rows| rows.iter().find(|r| r["check"] == "git" && r["delivered"].as_u64() > Some(0)))
+        {
+            row = r.clone();
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let status = e.run(&["status", "--json"], false, "", true).1;
+    e.stop();
+    assert!(!row.is_null(), "the git check's answer reached the funnel: {status}");
+    assert_eq!(row["model"], "opus", "the payload's model id is read to its family: {row}");
+    assert!(row["decided"].as_u64() >= Some(1) && row["delivered"].as_u64() >= Some(1), "{row}");
+    assert!(row["channels"]["block"].as_u64() >= Some(1), "a force push is blocked: {row}");
+    let status: serde_json::Value = serde_json::from_str(&status).unwrap();
+    assert_eq!(status["delivery"]["funnel"]["enabled"], true, "status --json carries the funnel block: {status}");
+    assert!(status["delivery"]["funnel"]["totals"]["decided"].as_u64() >= Some(1), "{status}");
+}
+
+impl Env {
+    /// Calls a quiet event until the daemon the hook client starts is running, so the calls after it are all served by it.
+    fn warm_daemon(&self) {
+        let until = Instant::now() + common::scaled(Duration::from_secs(30));
+        while Instant::now() < until {
+            let map = self.map(&[]);
+            let warm = bash("echo warm", &self.dir).replace("\"e2e\"", "\"warm\"");
+            self.run(&["hook", "--event", "PreToolUse", "--fallback-map", map.to_str().unwrap()], false, &warm, true);
+            let (code, out, _) = self.run(&["status", "--json"], false, "", true);
+            if code == 0 && serde_json::from_str::<serde_json::Value>(&out).is_ok_and(|v| v["running"] == true) {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+        }
+        panic!("no daemon came up");
+    }
+
+    fn funnel(&self) -> serde_json::Value {
+        let (code, out, err) = self.run(&["telemetry", "funnel", "--by", "model,project", "--json"], false, "", true);
+        assert_eq!(code, 0, "{err}");
+        serde_json::from_str(&out).unwrap()
+    }
+
+    fn config(&self, text: &str) {
+        std::fs::create_dir_all(self.state()).unwrap();
+        std::fs::write(self.state().join("config.toml"), text).unwrap();
+    }
+}
+
+/// Sum of one funnel stage over the rows of `check`.
+fn stage_sum(f: &serde_json::Value, check: &str, stage: &str) -> u64 {
+    f["funnel"]["rows"].as_array().unwrap().iter().filter(|r| r["check"] == check).map(|r| r[stage].as_u64().unwrap_or(0)).sum()
+}
+
+fn channel_sum(f: &serde_json::Value, check: &str) -> u64 {
+    f["funnel"]["rows"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|r| r["check"] == check)
+        .flat_map(|r| r["channels"].as_object().unwrap().values().map(|n| n.as_u64().unwrap_or(0)))
+        .sum()
+}
+
+/// Review finding 1 of PR 553: an entry in `shadow` mode runs, but the client drops its answer. Real UserPromptSubmit input,
+/// `[events.UserPromptSubmit] mode = "shadow"`: nothing reaches the agent (empty stdout and stderr, exit 0), and the funnel counts
+/// the answers as decided and suppressed, never delivered and in no channel.
+#[test]
+fn a_shadowed_answer_is_decided_and_suppressed_never_delivered() {
+    let e = Env::new("funnel-shadow");
+    e.config("[events.UserPromptSubmit]\nmode = \"shadow\"\n");
+    e.warm_daemon();
+    let p = serde_json::json!({"session_id": "shadow", "cwd": e.dir, "hook_event_name": "UserPromptSubmit", "prompt": "hello", "model": "claude-opus-4-8"})
+        .to_string();
+    let (code, out, err) = e.run(&["hook", "--event", "UserPromptSubmit"], false, &p, true);
+    let until = Instant::now() + common::scaled(Duration::from_secs(30));
+    let mut f = e.funnel();
+    while stage_sum(&f, "task-tracker", "suppressed") == 0 && Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(100));
+        f = e.funnel();
+    }
+    e.stop();
+    assert_eq!((code, out.as_str(), err.as_str()), (0, "", ""), "shadow: nothing reaches the agent");
+    for check in ["task-tracker"] {
+        assert_eq!(stage_sum(&f, check, "decided"), 1, "{check}: {f}");
+        assert_eq!(stage_sum(&f, check, "suppressed"), 1, "{check}: {f}");
+        assert_eq!(stage_sum(&f, check, "delivered"), 0, "{check} is not delivered: {f}");
+        assert_eq!(channel_sum(&f, check), 0, "{check} is in no channel: {f}");
+    }
+}
+
+/// GH #894: a quiet UserPromptSubmit check whose reply is an empty `additionalContext` (auto-handover and limit-conserve-inject print
+/// that line on every quiet prompt) says nothing: it is never decided or delivered in the funnel, so it can never be counted as ignored.
+#[test]
+fn an_empty_additional_context_is_never_decided_or_delivered() {
+    let e = Env::new("funnel-empty-ctx");
+    e.warm_daemon();
+    let p = serde_json::json!({"session_id": "empty-ctx", "cwd": e.dir, "hook_event_name": "UserPromptSubmit", "prompt": "hello", "model": "claude-opus-4-8"})
+        .to_string();
+    let (code, _, err) = e.run(&["hook", "--event", "UserPromptSubmit"], false, &p, true);
+    let until = Instant::now() + common::scaled(Duration::from_secs(30));
+    let mut f = e.funnel();
+    while stage_sum(&f, "task-tracker", "delivered") == 0 && Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(100));
+        f = e.funnel();
+    }
+    std::thread::sleep(Duration::from_millis(500));
+    let f = e.funnel();
+    e.stop();
+    assert_eq!(code, 0, "{err}");
+    assert!(stage_sum(&f, "task-tracker", "delivered") >= 1, "a check that says something is delivered: {f}");
+    for check in ["auto-handover", "limit-conserve-inject"] {
+        assert_eq!((stage_sum(&f, check, "decided"), stage_sum(&f, check, "delivered")), (0, 0), "{check} said nothing: {f}");
+    }
+}
+
+/// Review finding 4 of PR 553: one block is exactly one decided and one delivered answer, on the block channel, in the funnel and in
+/// the unsplit `status` ledger. (The reviewer's "twice" was two force pushes: two calls, two counts.)
+#[test]
+fn one_block_is_one_decided_and_one_delivered_answer() {
+    let e = Env::new("funnel-one-block");
+    e.warm_daemon();
+    let p = serde_json::json!({
+        "session_id": "one-block", "cwd": e.dir, "hook_event_name": "PreToolUse", "tool_name": "Bash", "model": "claude-opus-4-8",
+        "tool_input": {"command": "git push --force origin main"},
+    })
+    .to_string();
+    let (code, _, err) = e.run(&["hook", "--event", "PreToolUse"], false, &p, true);
+    let until = Instant::now() + common::scaled(Duration::from_secs(30));
+    let mut f = e.funnel();
+    while stage_sum(&f, "git", "delivered") == 0 && Instant::now() < until {
+        std::thread::sleep(Duration::from_millis(100));
+        f = e.funnel();
+    }
+    std::thread::sleep(Duration::from_millis(500)); // a second count, if one were coming, would be in by now
+    let f2 = e.funnel();
+    let status: serde_json::Value = serde_json::from_str(&e.run(&["status", "--json"], false, "", true).1).unwrap();
+    e.stop();
+    assert_eq!(code, 2, "a force push is blocked: {err}");
+    assert_eq!((stage_sum(&f2, "git", "decided"), stage_sum(&f2, "git", "delivered")), (1, 1), "{f2}");
+    assert_eq!(channel_sum(&f2, "git"), 1, "{f2}");
+    assert_eq!(status["delivery"]["per_check"]["git"]["decided"], 1, "{status}");
+    assert_eq!(status["delivery"]["per_check"]["git"]["delivered"], 1, "{status}");
+}
+
+/// The funnel only counts: with `delivery.funnel_enabled` 1 and 0 the same real hook payloads (a prompt, a force push, a shadowed
+/// prompt) give byte-identical stdout, stderr and exit code.
+#[test]
+fn the_funnel_switch_changes_no_hook_output() {
+    let run = |on: u8, shadow: bool| {
+        let e = Env::new(&format!("funnel-parity-{on}-{shadow}"));
+        let cfg = if shadow { "[events.UserPromptSubmit]\nmode = \"shadow\"\n" } else { "" };
+        e.config(&format!("{cfg}[delivery]\nfunnel_enabled = {on}\n"));
+        e.warm_daemon();
+        let cwd = "/";
+        let prompt =
+            serde_json::json!({"session_id": "parity", "cwd": cwd, "hook_event_name": "UserPromptSubmit", "prompt": "hello", "model": "claude-opus-4-8"})
+                .to_string();
+        let push = serde_json::json!({
+            "session_id": "parity", "cwd": cwd, "hook_event_name": "PreToolUse", "tool_name": "Bash", "model": "claude-opus-4-8",
+            "tool_input": {"command": "git push --force origin main"},
+        })
+        .to_string();
+        let got = (e.run(&["hook", "--event", "UserPromptSubmit"], false, &prompt, true), e.run(&["hook", "--event", "PreToolUse"], false, &push, true));
+        e.stop();
+        got
+    };
+    for shadow in [false, true] {
+        assert_eq!(run(1, shadow), run(0, shadow), "shadow={shadow}: the switch must not change any output");
+    }
 }
 
 /// The three agent controls are answered by the dispatcher itself: their Node commands (which would print `NODE-RAN`) are
@@ -402,6 +598,53 @@ fn the_agent_controls_are_answered_by_the_dispatcher() {
     let reply: serde_json::Value = serde_json::from_str(&out).unwrap();
     assert_eq!(reply["decision"], "block", "{out:?} {err:?}");
     assert!(reply["reason"].as_str().unwrap().contains(&what) && !err.contains("NODE-RAN"), "{out:?} {err:?}");
+}
+
+/// #443 review P1: a Stop must not block on an incomplete agent scan. A small successful Agent launch (90 minutes silent), then a
+/// completion notice for that agent padded past `agent_scan.max_line_bytes`: the scan skips the notice, so it is unknown and the
+/// nudge judges no transcript agent. The same launch with a normal-size completion is complete (nothing running), and the launch
+/// alone is a genuinely silent agent that still blocks (the existing test above). Any oversize line, noise included, does the same.
+#[test]
+fn a_stop_does_not_block_on_an_agent_scan_that_skipped_an_oversize_line() {
+    let e = Env::new("oversize-stop");
+    let ids: Vec<String> = ah_engine::dispatch::table::entries("claude", "Stop").into_iter().map(|x| x.id).collect();
+    let m: serde_json::Map<String, serde_json::Value> = ids.iter().map(|id| (id.clone(), "true".into())).collect();
+    let map = e.dir.join("stop-map.json");
+    std::fs::write(&map, serde_json::json!({ "Stop": m }).to_string()).unwrap();
+    let stop_args = ["hook", "--event", "Stop", "--fallback-map", map.to_str().unwrap()];
+    let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_millis();
+    let ts = ah_engine::checks::agent_scan::iso_utc((now - 5_400_000) as f64);
+    let launch = serde_json::json!({"type": "user", "message": {"role": "user", "content": [{"tool_use_id": "tu_1", "type": "tool_result", "content": [{"type": "text", "text": "Async agent launched successfully.\nagentId: a1b2c3d4e5f601 (x)\noutput_file: /nonexistent/out.txt\n"}]}]}, "timestamp": ts});
+    let big = 5 * 1024 * 1024;
+    let note = |pad: usize| {
+        let text = format!(
+            "<task-notification>\n<task-id>a1b2c3d4e5f601</task-id>\n<status>completed</status>\n<summary>{}</summary>\n</task-notification>",
+            "p".repeat(pad)
+        );
+        serde_json::json!({"type": "user", "message": {"role": "user", "content": text}, "timestamp": ts}).to_string()
+    };
+    let noise =
+        serde_json::json!({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "text", "text": "n".repeat(big)}]}, "timestamp": ts})
+            .to_string();
+    let run = |name: &str, body: String| {
+        let t = e.dir.join(name);
+        std::fs::write(&t, body).unwrap();
+        let p = serde_json::json!({"session_id": "e2e", "cwd": e.dir, "hook_event_name": "Stop", "transcript_path": t}).to_string();
+        e.run(&stop_args, true, &p, true)
+    };
+    // Codex's input: the completion is padded past the bound, so it is skipped; the scan is unknown, the Stop is not blocked
+    let got = run("padded.jsonl", format!("{launch}\n{}\n", note(big)));
+    assert_eq!((got.0, got.1.as_str()), (0, ""), "padded completion: {got:?}");
+    // the same completion at a normal size: complete scan, the agent is done, nothing to block
+    let got = run("small.jsonl", format!("{launch}\n{}\n", note(10)));
+    assert_eq!((got.0, got.1.as_str()), (0, ""), "small completion: {got:?}");
+    // an unrelated oversize line also makes the scan unknown (the safe side): a silent launch is not judged
+    let got = run("noise.jsonl", format!("{launch}\n{noise}\n"));
+    assert_eq!((got.0, got.1.as_str()), (0, ""), "unrelated oversize line: {got:?}");
+    // a complete scan with a genuinely silent agent still blocks
+    let got = run("silent.jsonl", format!("{launch}\n"));
+    e.stop();
+    assert!(got.1.contains("\"decision\":\"block\""), "complete scan, silent agent: {got:?}");
 }
 
 #[test]
@@ -530,14 +773,31 @@ fn over_cap_guard_with_unrunnable_node_hooks_fails_closed() {
     assert!(e.dispatch_temp_files().is_empty(), "temp payload files left behind: {:?}", e.dispatch_temp_files());
 }
 
+/// An over-cap Stop cannot be sent to the engine, so its guards give no answer. Under the default `guards.failOpenNonSafety` (e1851674)
+/// no Stop guard is a safety guard (script.failure_mode_by_check lists none; a test holds that), so each unanswered entry is let through
+/// (exit 0, never holding the agent), on record as `dispatch_fail_open`.
 #[test]
-fn over_cap_stop_active_fails_closed_up_to_the_cap_then_lets_the_agent_go() {
+fn over_cap_stop_active_fails_open_by_default_and_is_logged() {
     let e = Env::new("stdin-stop-active");
-    // a Stop payload over the stdin cap cannot be sent to the engine, so its hooks cannot run: the engine's own fail-closed block is
-    // bounded by the stop-loop cap (the agent is held `dispatch.stop_block_cap` times, then let go), never an endless loop
     let payload = stop_payload_len(ah_engine::defaults::num("client.max_stdin") as usize + 4097);
     let cap = ah_engine::defaults::num("dispatch.stop_block_cap") as usize;
     let codes: Vec<i32> = (0..cap + 2).map(|_| e.run(&["hook", "--event", "Stop"], true, &payload, true).0).collect();
+    assert_eq!(codes, vec![0; cap + 2], "an over-cap Stop is never held while the setting is on");
+    let log = std::fs::read_to_string(e.state().join("ah-engine.log")).unwrap_or_default();
+    assert!(log.contains("dispatch_fail_open"), "the pass is on record: {log}");
+    assert!(e.dispatch_temp_files().is_empty(), "temp payload files left behind: {:?}", e.dispatch_temp_files());
+}
+
+/// With `guards.failOpenNonSafety` off the old contract holds: the engine's own fail-closed block is bounded by the stop-loop cap (the
+/// agent is held `dispatch.stop_block_cap` times, then let go), never an endless loop. No Stop guard is a safety guard, so this is the
+/// only way an unanswered Stop guard blocks.
+#[test]
+fn over_cap_stop_active_fails_closed_up_to_the_cap_when_fail_open_is_off() {
+    let e = Env::new("stdin-stop-active-off");
+    let payload = stop_payload_len(ah_engine::defaults::num("client.max_stdin") as usize + 4097);
+    let cap = ah_engine::defaults::num("dispatch.stop_block_cap") as usize;
+    let off = [("ANTIHALL_FAIL_OPEN_NON_SAFETY", "0")];
+    let codes: Vec<i32> = (0..cap + 2).map(|_| e.run_with(&["hook", "--event", "Stop"], true, &payload, true, &off).0).collect();
     let want: Vec<i32> = (0..cap + 2).map(|i| if i < cap { 2 } else { 0 }).collect();
     assert_eq!(codes, want, "an over-cap Stop is held up to the cap, then let go");
     assert!(e.dispatch_temp_files().is_empty(), "temp payload files left behind: {:?}", e.dispatch_temp_files());
@@ -951,7 +1211,7 @@ fn a_repeated_task_reminder_is_cut_through_the_daemon_and_a_new_session_starts_w
     let tr = e.dir.join("tr.jsonl");
     std::fs::write(&tr, format!("{}\n", serde_json::json!({"type": "user", "message": {"role": "user", "content": "hello"}}))).unwrap();
     let args = ["hook", "--event", "UserPromptSubmit"];
-    let on = [("ANTIHALL_INJECT_GATE_TASK_EVERY", "3")];
+    let on = [("ANTIHALL_INJECT_GATE_TASK_EVERY", "3"), ("ANTIHALL_TASK_TRACKER_TERSE", "0")]; // the full wording the marker reads: the terse wording ships on
     warm(&e, &args, &on);
     let marker = ah_engine::defaults::text("task_tracker.what_full");
     let seen: Vec<String> = (0..5).map(|_| context_of(&e.run_with(&args, false, &ups_payload_tr("sess-on", &tr), true, &on).1)).collect();
@@ -967,6 +1227,60 @@ fn a_repeated_task_reminder_is_cut_through_the_daemon_and_a_new_session_starts_w
     let other = context_of(&e.run_with(&args, false, &ups_payload_tr("sess-b", &tr), true, &on).1);
     e.stop();
     assert!(first.contains(marker) && other.contains(marker), "{first:?} {other:?}");
+}
+
+/// The value of the counter `name` in a `metrics --json` document whose labels hold every `want` pair (summed), 0 when absent.
+fn counter_in(metrics: &str, name: &str, want: &[(&str, &str)]) -> u64 {
+    let v: serde_json::Value = serde_json::from_str(metrics.trim()).unwrap_or_else(|e| panic!("metrics --json is not JSON ({e}): {metrics}"));
+    v["metrics"]["counters"]
+        .as_array()
+        .map(|rows| {
+            rows.iter().filter(|r| r["name"] == name && want.iter().all(|(l, x)| r["labels"][*l] == *x)).map(|r| r["value"].as_u64().unwrap_or(0)).sum()
+        })
+        .unwrap_or(0)
+}
+
+/// Plan v3 L05 C3 review P1: the notice-turn counters are bumped where the plan is made (the hook client), so they must reach the
+/// DAEMON's metrics, the only ones `ah-engine metrics --json` and the snapshots show. Every notice kind is counted
+/// (`notice_turn_matched{kind}`) with the switch off and on; the skipped reminders (`notice_turn_skipped{kind,check}`) only with it on.
+#[test]
+fn notice_turn_counters_reach_the_daemons_metrics_with_the_switch_off_and_on() {
+    let notices = [
+        ("notification", "<task-notification>\n<task-id>b1</task-id>\n<status>completed</status>\n</task-notification>"),
+        ("mesh_tick", "/Users/someone/.anti-hall/ah-engine/bin/ah-engine mesh inbox tick primary-xxxx --quiet"),
+        ("goal_checkin", "Goal check-in: how is the goal going?"),
+        ("peer", "<cross-session-message from=\"abc\">hello</cross-session-message>"),
+        ("teammate", "<teammate-message teammate_id=\"w1\">done</teammate-message>"),
+    ];
+    let args = ["hook", "--event", "UserPromptSubmit", "--host", "claude"];
+    let e = Env::new("notice-counters");
+    warm(&e, &args, &[]);
+    let send = |kind: &str, prompt: &str, on: bool| {
+        let payload = serde_json::json!({"session_id": format!("notice-{kind}"), "hook_event_name": "UserPromptSubmit", "prompt": prompt}).to_string();
+        let extra: &[(&str, &str)] = if on { &[("ANTIHALL_NOTICE_TURNS", "1")] } else { &[] };
+        let (code, _, err) = e.run_with(&args, false, &payload, true, extra);
+        assert_eq!((code, err.as_str()), (0, ""), "{kind}");
+    };
+    let metrics = || e.run(&["metrics", "--json"], false, "", true).1;
+    for (kind, prompt) in notices {
+        send(kind, prompt, false);
+    }
+    let m = metrics();
+    for (kind, _) in notices {
+        assert_eq!(counter_in(&m, "notice_turn_matched", &[("kind", kind)]), 1, "{kind}: counted with the switch off: {m}");
+    }
+    assert_eq!(counter_in(&m, "notice_turn_skipped", &[]), 0, "nothing is skipped with the switch off: {m}");
+    for (kind, prompt) in notices {
+        send(kind, prompt, true);
+    }
+    let m = metrics();
+    e.stop();
+    for (kind, _) in notices {
+        assert_eq!(counter_in(&m, "notice_turn_matched", &[("kind", kind)]), 2, "{kind}: counted again with the switch on: {m}");
+        for check in ["task-tracker", "procwatch-advisory", "gh-rt-advisory", "switch-notice"] {
+            assert_eq!(counter_in(&m, "notice_turn_skipped", &[("kind", kind), ("check", check)]), 1, "{kind}/{check}: skipped once: {m}");
+        }
+    }
 }
 
 /// Copy `from` into `to`, recursively.
@@ -1031,7 +1345,9 @@ fn two_built_in_blocks_both_reach_the_host_in_table_order() {
     assert_eq!(code, 2, "{out:?} {err:?}");
     let (git_at, command_at) = (
         err.find(ah_engine::defaults::raw("git.msg_force_push").str_field("what")),
-        err.find(ah_engine::defaults::raw("guardkit.brief_what").str_field("command-guard")),
+        // the command guard's reason opens with its plain name (guardkit.plain_names): since #857 its rule note outranks the generic
+        // headline (guardkit.brief_what) when both do not fit one line, so the headline is not a marker of this reason
+        err.find(&format!("{}:", ah_engine::defaults::raw("guardkit.plain_names").str_field("command-guard"))),
     );
     assert!(git_at.is_some() && command_at.is_some() && git_at < command_at, "both reasons, in table order: {err:?}");
 }
@@ -1042,7 +1358,7 @@ fn a_reminder_that_is_cut_is_no_output_not_an_empty_context() {
     let tr = e.dir.join("tr.jsonl");
     std::fs::write(&tr, format!("{}\n", serde_json::json!({"type": "user", "message": {"role": "user", "content": "hello"}}))).unwrap();
     let args = ["hook", "--event", "UserPromptSubmit"];
-    let on = [("ANTIHALL_INJECT_GATE_TASK_EVERY", "3")];
+    let on = [("ANTIHALL_INJECT_GATE_TASK_EVERY", "3"), ("ANTIHALL_TASK_TRACKER_TERSE", "0")]; // the full wording the marker reads: the terse wording ships on
     warm(&e, &args, &on);
     let first = e.run_with(&args, false, &ups_payload_tr("sess-empty", &tr), true, &on);
     let second = e.run_with(&args, false, &ups_payload_tr("sess-empty", &tr), true, &on);
@@ -1203,8 +1519,21 @@ fn scripted_daemon_gated(e: &Env, script: Vec<(u64, ah_engine::frame::Kind, &'st
     let alive = Arc::new(AtomicBool::new(true));
     let seen = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let (a, s) = (Arc::clone(&alive), Arc::clone(&seen));
+    // a daemon that is working: a fresh heartbeat naming the singleton lock holder, with a progress age of 0 (the file a real daemon's
+    // watchdog rewrites each tick). A client past its deadline waits for a late reply only while the daemon shows progress. The pid is
+    // this test process with no recorded start time, so nothing can ever signal it.
+    let (hb, pid) = (e.state().join("daemon.heartbeat"), std::process::id());
+    std::fs::write(&hb, format!("{pid}\n\n\n{}\n{:010}\n", e.state().display(), 0)).unwrap();
+    std::fs::write(ah_engine::paths::lock_for(&sock), pid.to_string()).unwrap();
     let thread = std::thread::spawn(move || {
+        let mut last_beat = Instant::now();
         while a.load(Ordering::Acquire) {
+            if last_beat.elapsed() >= Duration::from_millis(100) {
+                last_beat = Instant::now();
+                if let Ok(f) = std::fs::File::options().write(true).open(&hb) {
+                    ah_engine::discard::harmless(f.set_modified(std::time::SystemTime::now()));
+                }
+            }
             match listener.accept() {
                 Ok((mut stream, _)) => {
                     let i = s.fetch_add(1, Ordering::AcqRel);
@@ -1279,12 +1608,164 @@ fn a_reply_that_never_comes_fails_open_without_node_and_counts_in_the_slow_strea
     assert!(t.elapsed() < common::scaled(Duration::from_millis(7000)), "bounded by the window, not the daemon: {:?} {}", t.elapsed(), engine_log(&e));
     assert!(!marker.exists(), "the Node hook must not run for a call the daemon may have processed");
     assert!(engine_log(&e).contains("\tclient_slow\t"), "{}", engine_log(&e));
-    assert!(!e.state().join("daemon.down.until").exists(), "one slow call must not mark the daemon down");
+    assert!(!e.state().join("daemon.slow.until").exists(), "one slow call must not mark the daemon slow");
     let (code, _, err) = slow_call(&e, &map, &[WINDOW, ("AH_ENGINE_SLOW_DOWN_N", "2")]);
     assert_eq!((code, err.as_str()), (0, ""), "the same session is not told twice");
     assert!(!marker.exists());
-    assert!(e.state().join("daemon.down.until").exists(), "two slow calls in a row mark the daemon down: {}", engine_log(&e));
+    assert!(e.state().join("daemon.slow.until").exists(), "two slow calls in a row mark the daemon slow (#901): {}", engine_log(&e));
+    assert!(!e.state().join("daemon.down.until").exists(), "a loaded daemon is never marked down (#901)");
     assert_eq!(d.seen(), 2);
+}
+
+/// Codex P2 on #473: every fail-closed check the dispatch table can time out on resolves (client.timeout_skip_name_key_by_check, else
+/// its own id) to a name that some guard really answers to in skip.json, so a valid skip always unblocks a timed-out check. The
+/// `command` check once fell back to `command` while its guard's name is `command-guard`. (Fail-open checks pass on a timeout anyway.)
+#[test]
+fn every_timeout_failing_closed_check_resolves_to_a_known_skip_name() {
+    let known: std::collections::BTreeSet<&str> =
+        ah_engine::defaults::all().iter().filter(|e| e.key.ends_with("guard_name") || e.key.ends_with("skip_name")).filter_map(|e| e.value.as_str()).collect();
+    let names = ah_engine::defaults::raw("client.timeout_skip_name_key_by_check");
+    let mut checks = std::collections::BTreeSet::new();
+    for host in ah_engine::dispatch::table::hosts() {
+        for ev in ah_engine::dispatch::table::events(host) {
+            checks.extend(ah_engine::dispatch::table::entries(host, ev).into_iter().filter_map(|x| x.check));
+        }
+    }
+    let closed = ah_engine::defaults::text("script.failure_mode_closed");
+    let bad: Vec<String> = checks
+        .iter()
+        .filter(|c| ah_engine::script::failure_mode(c) == closed)
+        .filter_map(|c| {
+            let name = names.get(c.as_str()).and_then(|v| v.as_str()).map_or(c.clone(), |k| ah_engine::defaults::text(k).to_string());
+            (!known.contains(name.as_str())).then(|| format!("{c} -> {name}"))
+        })
+        .collect();
+    assert!(bad.is_empty(), "fail-closed checks whose resolved skip name no guard answers to: {bad:?}");
+    for (check, key) in names.as_table().unwrap() {
+        let key = key.as_str().unwrap();
+        assert!(ah_engine::defaults::has(key) && known.contains(ah_engine::defaults::text(key)), "mapping {check} -> {key} names no known skip name");
+    }
+}
+
+/// The older `ah-engine hook` path without `--event` (no dispatch table: the daemon dispatches) knows no entries, so no check policy
+/// can apply; a timeout there passes, and only the dispatcher path (`--event`, what ah-hook runs) answers by policy. Pinned so a change
+/// of either is deliberate. A call in no hold class passes (#901: a call in one is held, see the next test).
+#[test]
+fn the_legacy_hook_path_without_event_passes_a_timeout() {
+    let e = Env::new("slow-legacy");
+    let _d = scripted_daemon(&e, vec![NEVER]);
+    let (code, _, err) = e.run_with(
+        &["hook"],
+        false,
+        &bash("ls", &e.dir),
+        true,
+        &[("AH_ENGINE_DEADLINE_MS", "100"), ("AH_ENGINE_NOSPAWN", "1"), WINDOW],
+    );
+    assert_eq!(code, 0, "{err:?}");
+}
+
+/// #901/#908: the same timeout on the legacy path holds a call in a hold class of `dispatch.capacity_hold` (a force push), exit 2 with the
+/// configured notice, never a pass: blocks protect without disrupting, so only the risky call is held.
+#[test]
+fn the_legacy_hook_path_without_event_holds_a_risky_call_on_a_timeout() {
+    let e = Env::new("slow-legacy-hold");
+    let _d = scripted_daemon(&e, vec![NEVER]);
+    let (code, _, err) = e.run_with(
+        &["hook"],
+        false,
+        &bash("git push --force origin main", &e.dir),
+        true,
+        &[("AH_ENGINE_DEADLINE_MS", "100"), ("AH_ENGINE_NOSPAWN", "1"), WINDOW],
+    );
+    assert_eq!(code, 2, "{err:?}");
+    let fixed = ah_engine::defaults::text("dispatch.msg_capacity_hold");
+    let lead = fixed.split('{').next().unwrap_or("");
+    assert!(err.contains(lead.trim()), "the configured hold notice: {err:?}");
+}
+
+/// A daemon reply for a Bash PreToolUse call of `cmd` that answers each built-in check `decide` gives a code for (2 blocks with
+/// DAEMONBLOCK) and gives no answer at all for the rest: a partial reply.
+fn partial_reply(e: &Env, cmd: &str, decide: impl Fn(&str) -> Option<i32>) -> &'static str {
+    use ah_engine::dispatch::native::{Answer, encode};
+    let valid: serde_json::Value = serde_json::from_str(&bash(cmd, &e.dir)).unwrap();
+    let answers: Vec<(String, Answer)> = ah_engine::dispatch::table::select("claude", "PreToolUse", &valid, Some("Bash"))
+        .into_iter()
+        .filter_map(|x| {
+            let code = decide(x.check.as_deref()?)?;
+            let err = if code == 2 { "DAEMONBLOCK\n" } else { "" };
+            let r = ah_engine::dispatch::combine::HookResult { id: x.id.clone(), code: Some(code), out: String::new(), err: err.into() };
+            Some((x.id, Answer::Decided(r, Vec::new())))
+        })
+        .collect();
+    Box::leak(encode(&answers).into_boxed_str())
+}
+
+fn is_closed(check: &str) -> bool {
+    ah_engine::script::failure_mode(check) == ah_engine::defaults::text("script.failure_mode_closed")
+}
+
+/// The fixed middle of the could-not-run notice (`script.msg_guard_down` between its first two placeholders).
+fn guard_down_mid() -> String {
+    let tmpl = ah_engine::defaults::text("script.msg_guard_down");
+    tmpl.split('{').nth(1).and_then(|s| s.split('}').nth(1)).unwrap().to_string()
+}
+
+/// Codex P2 on #473: a partial reply (git denies, the open checks such as coordinator-work-guard give no answer) blocks with the
+/// git denial AND tells the could-not-run notice beside it, once (never one line per unanswered check); the stamp is keyed by
+/// session and event family, so the same session's first unanswered Stop check still gets its own first notice.
+#[test]
+fn a_partial_reply_tells_one_notice_beside_the_block_and_a_later_stop_still_gets_its_first() {
+    let e = Env::new("partial-notice");
+    assert!(!is_closed("coordinator-work-guard"), "the unanswered check of this test is an open one");
+    let body = partial_reply(&e, "git push --force origin main", |c| {
+        if !is_closed(c) {
+            None
+        } else if c == "git" {
+            Some(2)
+        } else {
+            Some(0)
+        }
+    });
+    assert!(!body.contains("coordinator-work-guard"), "coordinator-work-guard gets no answer: {body}");
+    let ok = ah_engine::frame::Kind::Ok;
+    let _d = scripted_daemon(&e, vec![(0, ok, body), (0, ok, body), (0, ok, "[]"), (0, ok, "[]")]);
+    let pre = ["hook", "--event", "PreToolUse"];
+    let env = [("AH_ENGINE_NOSPAWN", "1")];
+    let mid = guard_down_mid();
+    let (code, out, err) = e.run_with(&pre, false, &bash("git push --force origin main", &e.dir), true, &env);
+    assert_eq!(code, 2, "the git denial still blocks: out={out:?} err={err:?}");
+    assert!(err.contains("DAEMONBLOCK"), "{err:?}");
+    assert_eq!(err.matches(&mid).count(), 1, "ONE could-not-run notice beside the block, not one per unanswered check: {err:?}");
+    let (code, _, err) = e.run_with(&pre, false, &bash("git push --force origin main", &e.dir), true, &env);
+    assert_eq!(code, 2, "{err:?}");
+    assert!(!err.contains(&mid), "once per session and event family: {err:?}");
+    let stop = serde_json::json!({"session_id": "e2e", "cwd": e.dir, "hook_event_name": "Stop", "stop_hook_active": false}).to_string();
+    // an exit-0 Stop carries it as its systemMessage (stdout), the channel the host shows on a pass
+    let (_, out, err) = e.run_with(&["hook", "--event", "Stop"], false, &stop, true, &env);
+    assert_eq!(format!("{out}{err}").matches(&mid).count(), 1, "the Stop family's first unanswered check is told once: out={out:?} err={err:?}");
+    let (_, out, err) = e.run_with(&["hook", "--event", "Stop"], false, &stop, true, &env);
+    assert!(!out.contains(&mid) && !err.contains(&mid), "and not again: out={out:?} err={err:?}");
+}
+
+/// The owner contract (roadmap C9): a timed-out call passes with ONE notice per session and event family, so a timeout on
+/// PreToolUse never silences the first notice of a timed-out Stop of the same session.
+#[test]
+fn a_timeout_notice_is_once_per_session_and_event_family() {
+    let e = Env::new("slow-family");
+    let _d = scripted_daemon(&e, vec![NEVER]);
+    let env = [("AH_ENGINE_DEADLINE_MS", "100"), ("AH_ENGINE_NOSPAWN", "1"), WINDOW, ("AH_ENGINE_SLOW_DOWN_N", "9")];
+    let unchecked = "went through unchecked";
+    let stop = serde_json::json!({"session_id": "e2e", "cwd": e.dir, "hook_event_name": "Stop", "stop_hook_active": false}).to_string();
+    let calls: Vec<(i32, bool)> =
+        [("PreToolUse", bash("ls -la", &e.dir)), ("PreToolUse", bash("ls", &e.dir)), ("Stop", stop.clone()), ("Stop", stop)]
+            .iter()
+            .map(|(ev, p)| {
+                let (code, out, err) = e.run_with(&["hook", "--event", ev], false, p, true, &env);
+                assert!(out.is_empty(), "{ev}: {out:?}");
+                (code, err.matches(unchecked).count() == 1)
+            })
+            .collect();
+    assert_eq!(calls, [(0, true), (0, false), (0, true), (0, false)], "each call passes; each family is told once");
 }
 
 #[test]
@@ -1297,58 +1778,100 @@ fn consecutive_slow_calls_mark_a_wedged_daemon_down_and_a_normal_reply_resets_th
     for _ in 0..3 {
         slow_call(&e, &map, &n);
     }
-    assert!(!e.state().join("daemon.down.until").exists(), "{}", engine_log(&e));
+    assert!(!e.state().join("daemon.slow.until").exists(), "{}", engine_log(&e));
     // the second slow in a row trips it
     let (code, _, err) = slow_call(&e, &map, &n);
     assert_eq!((code, err.as_str()), (0, ""), "a slow call fails open");
-    assert!(e.state().join("daemon.down.until").exists(), "two slow calls in a row mark the daemon down: {}", engine_log(&e));
-    // marked down: the next call does not reach the daemon
+    assert!(e.state().join("daemon.slow.until").exists(), "two slow calls in a row mark the daemon slow (#901): {}", engine_log(&e));
+    // marked slow: the next call does not reach the daemon
     let before = d.seen();
     slow_call(&e, &map, &n);
     assert_eq!(d.seen(), before);
 }
 
-// ---- the wait marker outlives the answer: it is released only after stdout and the done mark ----------------------------------
-
-/// Launcher RCA (wait-marker race): the marker was dropped when `run_core` returned, so the window between that and the
-/// stdout write + done mark had neither marker, and a launcher checking at that instant killed a finished answer. The invariant
-/// the wrapper relies on: at every instant after the marker first appears, the wait marker OR the done mark exists. A sampler
-/// thread checks it in a tight loop, reading the wait marker BEFORE the done mark (the engine writes the done mark before it
-/// releases the marker, so that order has no false alarm: a missing marker is always followed by an existing done mark). An
-/// earlier version made the done file a FIFO and read the marker once the engine opened it, but the engine does not wait after the
-/// open, so on a loaded runner the reader woke after the marker was already released (macOS CI, 1 in 2 under CPU load).
+/// The git check's inline-shell nesting cap is the plugin's `git.inline_depth`, not a number in the script: the same force push
+/// one `bash -c` deep is blocked under the shipped value and is no longer followed into once the setting is lowered to 0.
 #[test]
-fn the_wait_marker_is_still_there_when_the_done_mark_is_written() {
-    use std::sync::atomic::{AtomicBool, Ordering};
-    let e = Env::new("wait-until-done");
-    let map = event_map(&e, "PreToolUse", "echo ANSWER", "true");
-    let daemon = scripted_daemon(&e, vec![FAST_OK]);
-    let (wait, done) = (e.dir.join("wait"), e.dir.join("done"));
-    let stop = Arc::new(AtomicBool::new(false));
-    let (w, d, s) = (wait.clone(), done.clone(), Arc::clone(&stop));
-    // (the marker was seen, a sample found neither marker after it was seen)
-    let sampler = std::thread::spawn(move || {
-        let (mut seen, mut gap) = (false, false);
-        while !s.load(Ordering::Acquire) {
-            let has_wait = w.exists();
-            let has_done = d.exists();
-            seen |= has_wait;
-            if seen && !has_wait && !has_done {
-                gap = true;
-                break;
-            }
-            std::thread::yield_now();
-        }
-        (seen, gap)
-    });
+fn the_git_inline_depth_comes_from_the_plugin_config() {
+    let e = Env::new("git-inline-depth");
+    let plugin = e.dir.join("plugin");
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall");
+    copy_tree(&src.join("engine"), &plugin.join("engine"));
+    let map = e.map(&[("merge-gate", CTX_MERGE_GATE)]);
     let args = ["hook", "--event", "PreToolUse", "--fallback-map", map.to_str().unwrap()];
-    let env = [("AH_ENGINE_WAIT_FILE", wait.to_str().unwrap()), ("AH_ENGINE_DONE_FILE", done.to_str().unwrap()), ("AH_ENGINE_NOSPAWN", "1")];
-    let (code, out, err) = e.run_with(&args, false, &bash("ls", &e.dir), true, &env);
-    stop.store(true, Ordering::Release);
-    let (seen, gap) = sampler.join().unwrap();
-    let why = format!("scripted daemon contacted {} time(s), out={out:?} err={err:?} code={code}, engine log:\n{}", daemon.seen(), engine_log(&e));
-    assert!(seen, "the wait marker never appeared (the daemon was not asked, or the marker was released before the sampler saw it): {why}");
-    assert!(!gap, "a sample found neither the wait marker nor the done mark: {why}");
-    assert!(done.exists(), "the done mark is written: {why}");
-    assert!(!wait.exists(), "the marker is released at the end of the call: {why}");
+    let root = plugin.to_string_lossy().to_string();
+    let env = [("AH_ENGINE_PLUGIN_ROOT", root.as_str()), ("AH_ENGINE_NOSPAWN", "1")];
+    let p = bash("bash -c 'git push --force origin main'", &e.dir);
+    let (code, out, err) = e.run_with(&args, true, &p, true, &env);
+    assert_eq!(code, 2, "shipped git.inline_depth follows the inline shell: out={out} err={err}");
+    assert!(err.contains("force push"), "{err}");
+    // the setting is read from the plugin file: raising it there is honoured (a four-shell-deep push is followed only then)
+    let deep = bash(INLINE_PUSH_DEEP, &e.dir);
+    let (code, _, err) = e.run_with(&args, true, &deep, true, &env);
+    assert_eq!(code, 0, "shipped depth does not follow four shells down: {err}");
+    for dir in ["engine/defaults", "engine/defaults.pristine"] {
+        let f = plugin.join(dir).join("git.toml");
+        let text = std::fs::read_to_string(&f).unwrap();
+        let at = text.find("[git.inline_depth]").unwrap();
+        let v = at + text[at..].find("value = 3").unwrap();
+        std::fs::write(&f, format!("{}value = 5{}", &text[..v], &text[v + "value = 3".len()..])).unwrap();
+    }
+    let (code, out, err) = e.run_with(&args, true, &deep, true, &env);
+    assert_eq!(code, 2, "git.inline_depth = 5 in the plugin follows it: out={out} err={err}");
+}
+
+const INLINE_PUSH: &str = "bash -c 'git push --force origin main'";
+const INLINE_PUSH_DEEP: &str = r#"bash -c "bash -c \"bash -c 'bash -c \\\"git push --force origin main\\\"'\"""#;
+const LAUNCHER_WRITE: &str = r#"A="$HOME/.anti-hall/bin/ah-hook"; B="$A"; printf x > "$B""#;
+const LAUNCHER_WRITE_LONG: &str = r#"A="$HOME/.anti-hall/bin/ah-hook"; B="$A"; C="$B"; D="$C"; E="$D"; F="$E"; printf x > "$F""#;
+
+/// One Bash command through the merge-gate context with the plugin's `git.<key>` rewritten to `value` in both default sets (the
+/// in-process hook reads the plugin files, not the user layer): (exit code, stderr). `key = None` leaves the plugin as shipped.
+fn git_cfg_run(name: &str, set: Option<(&str, i64)>, cmd: &str) -> (i32, String) {
+    let e = Env::new(name);
+    let plugin = e.dir.join("plugin");
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall");
+    copy_tree(&src.join("engine"), &plugin.join("engine"));
+    if let Some((key, value)) = set {
+        for dir in ["engine/defaults", "engine/defaults.pristine"] {
+            let f = plugin.join(dir).join("git.toml");
+            let text = std::fs::read_to_string(&f).unwrap();
+            let at = text.find(&format!("[git.{key}]")).unwrap();
+            let v = at + text[at..].find("\nvalue = ").unwrap() + "\nvalue = ".len();
+            let end = v + text[v..].find('\n').unwrap();
+            std::fs::write(&f, format!("{}{value}{}", &text[..v], &text[end..])).unwrap();
+        }
+    }
+    let map = e.map(&[("merge-gate", CTX_MERGE_GATE)]);
+    let args = ["hook", "--event", "PreToolUse", "--fallback-map", map.to_str().unwrap()];
+    let root = plugin.to_string_lossy().to_string();
+    let env = [("AH_ENGINE_PLUGIN_ROOT", root.as_str()), ("AH_ENGINE_NOSPAWN", "1")];
+    let (code, _out, err) = e.run_with(&args, true, &bash(cmd, &e.dir), true, &env);
+    (code, err)
+}
+
+/// A security scan's depth is bounded below by the plugin's own `min` (the pre-config literal): a value under it is clamped up to
+/// it or rejected, so it never loosens the scan.
+#[test]
+fn a_git_scan_depth_below_its_minimum_never_loosens_the_scan() {
+    for (key, cmd) in [("inline_depth", INLINE_PUSH), ("var_hops", LAUNCHER_WRITE), ("heredoc_levels", INLINE_PUSH)] {
+        let (code, err) = git_cfg_run(&format!("git-min-base-{key}"), None, cmd);
+        assert_eq!(code, 2, "{key}: shipped value blocks: {err}");
+        let (code, err) = git_cfg_run(&format!("git-min-zero-{key}"), Some((key, 0)), cmd);
+        // a plugin file whose value is under its own minimum is invalid: the hook is unavailable (75), never an allow
+        assert!(code != 0 && err.contains("outside min"), "{key} = 0 in the plugin file is rejected, not followed: code={code} {err}");
+    }
+}
+
+/// Raising above the minimum is honoured: a five-hop variable chain and a four-shell push are followed only once the value is raised.
+#[test]
+fn a_larger_valid_git_scan_depth_is_accepted_and_follows_deeper() {
+    let (code, _) = git_cfg_run("git-long-default", None, LAUNCHER_WRITE_LONG);
+    assert_eq!(code, 0, "the shipped hop cap does not follow a five-hop chain");
+    let (code, err) = git_cfg_run("git-long-8", Some(("var_hops", 8)), LAUNCHER_WRITE_LONG);
+    assert_eq!(code, 2, "var_hops = 8 follows it: {err}");
+    let (code, _) = git_cfg_run("git-deep-default", None, INLINE_PUSH_DEEP);
+    assert_eq!(code, 0, "the shipped depth does not follow four shells down");
+    let (code, err) = git_cfg_run("git-deep-5", Some(("inline_depth", 5)), INLINE_PUSH_DEEP);
+    assert_eq!(code, 2, "inline_depth = 5 follows it: {err}");
 }

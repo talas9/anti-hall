@@ -1,0 +1,468 @@
+# Claim-evidence guard (GH #313, part of #307), Stop, Claude, engine-only (no Node twin). One check, two rules, each with its own switch:
+#   1. claim needs evidence: a reply that asserts a completed check or outcome ("tests pass", "verified", "deployed", "is fixed") must be
+#      backed by a tool call of THIS turn that could have produced it; a bare assertion is held once.
+#   2. pushed is not done: a reply that calls the work done after a push or PR in this turn, with no later look at CI or the merge
+#      state, is held once.
+# Logic: engine/logic/claim-evidence-guard.js (reads the reply, the engine's evidence walk and the commands of the turn). Every
+# phrase, pattern, number and text is here (D88). Regular expressions are Rust syntax (linear time, no look-around). Codex payloads are
+# not judged: the evidence walk reads Claude transcripts only. The judgement parts (is this claim about the turn's work at all?) are
+# not asked of Jev yet: they ship after the rule has a measured catch rate and noise (#313, #316).
+
+[claim_evidence.sw_claim]
+doc = "Require evidence for factual claims. Switch guards.claimEvidence (default on): off lets a reply assert a check or outcome with no matching tool call this turn."
+value = { section = "guards", key = "claimEvidence", type = "boolean", env = "ANTIHALL_CLAIM_EVIDENCE", option = "", default = true }
+
+[claim_evidence.sw_pushed]
+doc = "Pushed work is not done switch. Switch guards.pushedNotDone (default on): off lets a reply call pushed work done without a look at CI or the merge state."
+value = { section = "guards", key = "pushedNotDone", type = "boolean", env = "ANTIHALL_PUSHED_NOT_DONE", option = "", default = true }
+
+[claim_evidence.sw_telemetry]
+doc = "Record claim-evidence outcomes. Switch guards.claimEvidenceTelemetry (default on): off stops the claim-evidence fired / suppressed counters (metrics claim_evidence_fired, claim_evidence_suppressed; advisory counters in status); the guard's decisions do not change."
+value = { section = "guards", key = "claimEvidenceTelemetry", type = "boolean", env = "ANTIHALL_CLAIM_EVIDENCE_TELEMETRY", option = "", default = true }
+
+[claim_evidence.sw_strict]
+doc = "Keep bare factual claims evidence-gated. Switch guards.claimEvidenceStrict (default on): a suppressor must not let a bare factual claim through (GH #427). A filler opener ('If you ask', 'If true'), a reporting word that is a noun after an article ('the reports') or the start of a compound ('doc-string'), a negated or noun-like label ('not unverified', 'unchecked boxes', 'unverified aside') and a source phrase closed by a comma are judged by the lists below. Off restores the earlier looser reading."
+value = { section = "guards", key = "claimEvidenceStrict", type = "boolean", env = "ANTIHALL_CLAIM_EVIDENCE_STRICT", option = "", default = true }
+
+[claim_evidence.log_read_counts]
+doc = "Accept supporting log reads as evidence. Switch guards.claimEvidenceLogRead (default on): a read of a log or output file this turn (claim_evidence.log_read_res: cat, grep, tail, head, sed -n) backs a claim that carries a figure when every figure of the claim (claim_evidence.figure_re) appears in the transcript's tool output (GH #376). Off restores the earlier reading: only a command of the row's `needs` list backs a claim. A claim without a figure is never backed by a read alone."
+value = { section = "guards", key = "claimEvidenceLogRead", type = "boolean", env = "ANTIHALL_CLAIM_EVIDENCE_LOG_READ", option = "", default = true }
+
+[metric.claim_evidence_log_read_ok]
+doc = "Claims the claim-evidence guard let pass because a read of a log or output file this turn showed the claimed figure (claim_evidence.log_read_counts; GH #376), by claim kind."
+value = { kind = "counter", unit = "claims", labels = ["claim"] }
+
+[metric.claim_evidence_suppressor_rejected]
+doc = "Suppressor candidates the claim-evidence guard refused because they do not really cover the claim, by reason (filler_opener, source_noun, source_compound, label_not_a_label); each refused candidate is one that used to let a claim through (GH #427)."
+value = { kind = "counter", unit = "candidates", labels = ["reason"] }
+
+[metric.claim_evidence_fired]
+doc = "Replies the claim-evidence guard held or logged (a claim with no matching check, or pushed work called done), by rule (claim, pushed)."
+value = { kind = "counter", unit = "replies", labels = ["rule"] }
+
+[metric.claim_evidence_tool_ok]
+doc = "Claims the claim-evidence guard let pass because a tool of this turn (claim_evidence.tool_evidence: an Artifact publish, an MCP deploy or publish tool) returned its own success result, by claim kind."
+value = { kind = "counter", unit = "claims", labels = ["claim"] }
+
+[metric.claim_evidence_suppressed]
+doc = "Claim hits the claim-evidence guard let pass, by reason (nonsoftware, featurename, negated, future, condition, reported, criterion, purpose, instruction, planned, labelled, quoted)."
+value = { kind = "counter", unit = "claims", labels = ["reason"] }
+
+[claim_evidence.guard_name]
+doc = "The guard id this check answers to in skip.json and in its messages."
+value = "claim-evidence-guard"
+
+[claim_evidence.summary]
+doc = "One-line description of the claim-evidence-guard check in the generated reference."
+value = "Stop (Claude): holds once a reply that claims a result (tests pass, verified, deployed, is fixed) with no matching tool call this turn (guards.claimEvidence), or that calls work done after a push with no look at CI or the merge state (guards.pushedNotDone)."
+
+[claim_evidence.mode]
+doc = "What a hit does: block (the Stop is held once per reply, the reply is asked to run the check or label the claim) or log (the hit is only written to the engine log, for measuring noise before it acts)."
+value = "block"
+
+[claim_evidence.max_blocks]
+doc = "Most holds per cap_scope window; a new real owner turn resets it. Same-text dedupe is independent: the same reply is never held twice."
+value = 2
+min = 1
+max = 20
+
+[claim_evidence.cap_scope]
+doc = "Block-cap scope: owner_turn (default) resets max_blocks on a new real user turn; session keeps a session-wide cap."
+value = "owner_turn"
+
+[claim_evidence.state_prefix]
+doc = "Prefix of the per-session state file name under the replykit state directory (the sanitised session id and the JSON extension follow)."
+value = "claim-evidence-state-"
+
+[claim_evidence.log_kind]
+doc = "Engine log kind written for a hit (block or log mode)."
+value = "claim_evidence"
+
+[claim_evidence.ack_res]
+doc = "An honest label on a claim (rule 1): the claim is negated, hedged, or tied to an earlier run. It covers only a claim in its own sentence within claim_evidence.reach_label words of it. Regular expressions, case-insensitive, matched against the claim's sentence with quoted text and code removed."
+value = [
+  '\b(?:not|never|n.t|un|without)\s*(?:yet\s+|been\s+|fully\s+)?(?:verified|verifying|tested|run|ran|checked|confirmed|deployed|released|merged)\b',
+  '\bunverified\b',
+  '\b(?:did|do|does|have|has|had|was|were|am|is|are)(?:n.t| not)\s+(?:able to\s+)?(?:run|check|verify|test|confirm|deploy)',
+  '\b(?:no|zero)\s+(?:tests?|checks?|runs?)\s+(?:were\s+|was\s+)?(?:run|ran|executed)\b',
+  '\b(?:from|in|per|as of)\s+(?:the\s+)?(?:earlier|previous|prior|last|preceding)\s+(?:turn|run|session|check|result|message|commit)',
+  '\b(?:earlier|previously|before)\s+(?:i\s+|we\s+)?(?:ran|verified|checked|confirmed|tested)\b',
+  '\b(?:pending|awaiting|waiting for)\s+(?:ci|review|the run|the check)',
+  '\b(?:expected|supposed|meant|intended)\s+to\s+(?:pass|work|be)\b',
+]
+
+[claim_evidence.sentence_end_re]
+doc = "Where a sentence of the reply ends (a claim is judged inside its own sentence). Rust regular expression."
+value = '[.!?]+\s|\n+'
+
+[claim_evidence.clause_break_re]
+doc = "Where a clause ends inside a sentence: negation, tense and attribution words only govern a claim in the same clause. Rust regular expression."
+value = '[,;:()]|\s[-\u2013\u2014]\s|\b(?:but|and then|however|although)\b'
+
+[claim_evidence.skip_window]
+doc = "Most characters before a claim (inside its clause) that are searched for a suppressor (claim_evidence.suppress)."
+value = 60
+min = 10
+max = 400
+
+[claim_evidence.neg_res]
+doc = "Negation on the claim's own verb or a negative pronoun as its subject (rule 1): 'is not confirmed green', 'not yet verified', 'never verified', 'nothing is merged', 'none of this is verified'. A bare 'not' counts only on a verb ('is not', 'have not', 'not yet'), never before the claim's subject ('Whether acknowledged or not CI is green' stays a claim). Reach claim_evidence.reach_verb: only skip words (gap_skip_re) may stand between it and the claim, so 'Without any further delay the suite is passing' stays a claim. Regular expressions, case-insensitive, matched against the clause before the claim."
+value = [
+  '\b(?:is|are|was|were|am|be|been|has|have|had|do|does|did|can|could|will|would|should|may|might|must)\s+not\b',
+  '\bnot\s+(?:yet|fully|been)\b',
+  '\b(?:never|without|cannot|nothing|none|nobody|neither|nor)\b',
+  '\b(?:is|are|was|were|has|have|had|does|do|did|can|could|will|would|should|wo|ca)n.t\b',
+]
+
+[claim_evidence.neg_subject_res]
+doc = "'no' before the claim's subject (rule 1): 'no PR is merged'. Reach claim_evidence.reach_subject (the subject's own noun); a certainty idiom after it (claim_evidence.no_idiom_re: 'no doubt', 'no wonder') never suppresses. Regular expressions, case-insensitive, matched against the clause before the claim."
+value = ['\bno\b']
+
+[claim_evidence.no_idiom_re]
+doc = "The words after a 'no' (neg_subject_res) that make it a certainty idiom, not a negated subject: 'No doubt it is merged', 'No wonder it is live' stay claims. Rust regular expression, case-insensitive, matched against the 'no' and the text after it up to the claim."
+value = '^no\s+(?:doubt|doubts|wonder|question|questions|kidding|way|problem|problems|worries|surprise|joke|matter|need|denying)\b'
+
+[claim_evidence.modal_res]
+doc = "A modal or future marker on the claim's own verb (rule 1): 'must have been merged', 'will have been deployed'. Reach claim_evidence.reach_verb, so 'We must hurry because PR #405 is merged' and 'We will celebrate given that ...' stay claims. Regular expressions, case-insensitive, matched against the clause before the claim."
+value = [
+  '\b(?:will|would|shall|going to|gonna|should|might|may|must|can|could)\b',
+  '\b(?:to be|needs?\s+to be|ready to be|waiting to be|yet to be|about to be)\b',
+]
+
+[claim_evidence.future_res]
+doc = "A conditional, temporal or 'whether' word that opens the claim's own clause (rule 1): 'once #1 and #2 are merged', 'if CI is green', 'only when X is merged', 'until the tests pass', 'whether that version is live'. Reach claim_evidence.reach_clause. Regular expressions, case-insensitive, matched against the clause before the claim."
+value = ['\b(?:once|after|when|whenever|if|until|unless|before|as soon as|assuming|provided|whether|in case)\b']
+
+[claim_evidence.opener_idiom_re]
+doc = "The words after a clause opener (future_res) that make it an idiom, not a condition on the claim: 'Once again CI is green', 'If anything', 'If needed', 'Until now', 'After all', 'whether ... or not' stay claims, while 'once all PRs are merged' is a condition. Each idiom is paired with its opener. Only an opener followed by the claim's own subject covers it. Rust regular expression, case-insensitive, matched against the opener and the text after it up to the claim."
+value = '^(?:once\s+(?:again|more)|(?:if|when|whenever)\s+(?:asked|anything|needed|necessary|possible|so|ever)|until\s+(?:now|today|tonight|then|yesterday|recently)|after\s+all\s+(?:it|this|that|they|we|the|everything)|before\s+(?:now|today))\b|^after\s+all\W*$|^whether\b.*\bor\s+(?:not|no)\b'
+
+[claim_evidence.opener_filler_re]
+doc = "Filler words after a clause opener (future_res) that make it no condition on the claim, only when guards.claimEvidenceStrict is on: 'If you ask tests pass', 'If true CI is green', 'When convenient ...'. Rust regular expression, case-insensitive, matched against the opener and the text after it up to the claim."
+value = '^(?:if|when|whenever)\s+(?:you\s+(?:ask|want|like|prefer|need|wish|insist)|you.d\s+(?:like|prefer)|true|convenient|desired|curious|wanted|preferred|requested)\b'
+
+[claim_evidence.noun_before_re]
+doc = "Text that ends right before a reporting word and makes it a noun, not a verb (strict mode): 'According to the reports CI is green' ('reports' after 'the'). Rust regular expression, case-insensitive, matched against the clause up to the reporting word; it must end with $."
+value = '\b(?:the|a|an|its|this|these|those|our|their|my|your)\s+$'
+
+[claim_evidence.compound_after_re]
+doc = "Text that starts right after a source word and makes it the start of a compound, not the source itself (strict mode): 'doc-string', 'report-card', 'issue-tracker'. Rust regular expression matched against the text after the source word."
+value = '^[-_/]\w'
+
+[claim_evidence.clause_join_re]
+doc = "A phrase that, when it ends right before a clause break, keeps the clause going (strict mode): 'According to the PR body, the change is merged' stays one clause so the source still governs it. Rust regular expression, case-insensitive, matched against the sentence up to the break; it must end with $."
+value = '\baccording\s+to\s+(?:[\w#\x27-]+\s+){0,3}[\w#\x27-]+$'
+
+[claim_evidence.clause_join_break_re]
+doc = "Which clause break may keep a clause going after a source phrase (strict mode): only a comma ('According to the docs, CI is green' stays one clause); a semicolon, dash or other break ends it ('I updated the config according to the docs; CI is green' leaves the second claim bare). Rust regular expression, case-insensitive, matched against the break text itself."
+value = '^,$'
+
+[claim_evidence.ack_before_not_re]
+doc = "Text that ends right before an honest-label word and negates it (strict mode): 'not unverified', 'never unverified'. Rust regular expression, case-insensitive, matched against the sentence up to the label; it must end with $."
+value = '\b(?:not|never|no|n.t)\s+$'
+
+[claim_evidence.ack_after_not_re]
+doc = "Text that starts right after an honest-label word and shows it is no label (strict mode): 'unverified is false', 'unverified meaning not', 'unchecked boxes remain', 'unverified claims aside'. A noun ('boxes', 'files') only counts right after the word with nothing but spaces between, so an explicit label with punctuation keeps its effect: 'Unverified: files are deployed', 'Unverified - files ...', '(Unverified) files ...'. Rust regular expression, case-insensitive, matched against the text after the label."
+value = '^(?:\W*(?:(?:is|are|was|were)\s+(?:false|untrue|wrong|incorrect|not)\b|meaning\s+not\b|(?:\w+\s+)?aside\b)|\s+(?:boxes|checkboxes|items?|tasks?|files?)\b)'
+
+[claim_evidence.reported_res]
+doc = "A reporting verb, or 'according to' a named source, that opens the claim's own clause (rule 1): 'the bot reported that tests pass', 'the old comment said it is fixed', 'according to the PR body the change is merged' ('according to plan' names no source). Quoted text is a claim like any other unless one of these opens its clause. Reach claim_evidence.reach_clause. Regular expressions, case-insensitive, matched against the clause before the claim."
+value = [
+  '\b(?:says?|said|saying|reports?|reported|reporting|claims?|claimed|states?|stated|wrote|writes|written|mentions?|mentioned|shows?|showed|reads?|quotes?|quoted|asserts?|asserted)(?:\s+that)?\b',
+  '\baccording\s+to\s+(?:the\s+|a\s+|its\s+|this\s+|that\s+)?(?:pr\s+(?:body|description)|report|logs?|bot|comment|changelog|release\s+notes|docs?|issue|ticket|commit\s+message|status\s+page|dashboard)\b',
+]
+
+[claim_evidence.criterion_res]
+doc = "A requirement whose 'that' opens the claim's own clause (rule 1): 'SAFE-TO-REMOVE requires that the branch is merged'. 'required' as an adjective ('All required tests pass') stays a claim. Reach claim_evidence.reach_clause. Regular expressions, case-insensitive, matched against the clause before the claim."
+value = ['\b(?:requires?|requiring|required|ensures?)\s+that\b']
+
+[claim_evidence.purpose_res]
+doc = "A purpose clause that opens the claim's own clause (rule 1): 'to make a test pass', 'so that the build goes green', 'in order to get CI green' name the goal of an action, not a result. Reach claim_evidence.reach_clause. Regular expressions, case-insensitive, matched against the clause before the claim."
+value = ['\b(?:to|so\s+that|in\s+order\s+to)\s+(?:make|makes|making|get|gets|getting|have|keep|keeps|force|forces|let|lets)\b']
+
+[claim_evidence.instruction_res]
+doc = "An instruction or check request that opens the claim's own clause (rule 1, GH #933): 'and make sure CI passes', 'please ensure the tests pass', 'then verify that CI is green' ask for a result, they do not report one. Only the bare imperative or infinitive forms count: 'make sure' and 'ensure' (not 'made sure', 'ensures', 'ensuring', 'making sure'), and 'verify|check that|if|whether' only right after a clause start, comma, semicolon, colon, 'then', 'please' or 'to'. 'I can verify that CI passes', 'I can confirm that ...', 'I see that ...', 'We checked and CI is green' stay claims. Reach claim_evidence.reach_clause. Regular expressions, case-insensitive, matched against the clause before the claim."
+value = ['\bmake\s+sure(?:\s+(?:that|if|whether))?\b|\bensure(?:\s+(?:that|if|whether))?\b|(?:^|[,;:]\s*|\b(?:then|please|to)\s+)(?:verify|check)\s+(?:that|if|whether)\b']
+
+[claim_evidence.cond_coord_res]
+doc = "A claim that is the second part of a condition or intent clause (rule 1): 'merge as soon as its work is reviewed and tests pass', 'once the PR is approved or CI is green'. The text before the claim opens with a condition word (as soon as, once, when, after, until, if ...), has a short subject (at most 3 words), a present-tense verb (is, are, be, get, has, have) and at most 2 more words, and ends with 'and' or 'or' right before the claim. A past-tense clause ('when CI started and tests pass') has no such verb and stays a claim. Empty list turns the row off. Regular expressions, case-insensitive, matched against the clause before the claim; each must end with $."
+value = ['\b(?:as soon as|once|when|whenever|after|until|if|unless|before|assuming|provided)\b(?:\s+[\w#\x27-]+){0,3}?\s+(?:is|are|be|gets?|has|have)\b(?:\s+[\w#\x27-]+){0,2}?\s+(?:and|or)\s+$']
+
+[claim_evidence.user_line_needle]
+doc = "Text a transcript line of a user message holds (the line filter of the tool count since the last owner prompt: claim-evidence-guard counts tool uses after the last user prompt that is not injected text, block_cap.injected_re)."
+value = '"role":"user"'
+
+[claim_evidence.tool_evidence]
+doc = "Tool results that back a shipped or published claim (rule 1), for tools that are no shell command. Each row: claims = the claim ids (claim_evidence.claims id) it backs; tool_re = Rust regular expression matched case-sensitively against the tool's name (the tool_use name of a call of this turn); result_re = Rust regular expression, case-insensitive, matched against the result THAT call returned. Only that tool's own non-error result counts: the reply's words and the command line are never read, so a reply cannot write its own evidence. Counted in claim_evidence_tool_ok. Empty list turns it off."
+value = [
+  { claims = ["shipped"], tool_re = '^Artifact$', result_re = '^\s*Published\b' },
+  { claims = ["shipped"], tool_re = '^mcp__.+__(?:deploy|publish|release)[a-z_]*$', result_re = '^\s*(?:published|deployed|released)\b|"(?:status|state)"\s*:\s*"(?:published|deployed|released|live)"' },
+]
+
+[claim_evidence.suppress_after]
+doc = "Why a claim hit is not a claim, judged from the words AFTER it (checked after claim_evidence.suppress): reason = the label written to the log, list = the config key of the pattern list matched against the rest of the claim's sentence, anchored at the end of the claim; before = the config key of a pattern list one of which must match the sentence text BEFORE the claim (so a plain status line 'All tests pass, then merge.' stays a claim). A claim followed by a next step is an item of a plan, not a statement."
+value = [
+  { reason = "planned", list = "claim_evidence.plan_after_res", before = "claim_evidence.plan_before_res" },
+]
+
+[claim_evidence.plan_after_res]
+doc = "A next step after the claim (suppress_after): 'PR to develop, CI green, then merge' lists steps. The next step is a bare verb after 'then' within 120 characters of the claim in the same sentence ('then merge'; 'then merged' is a past claim and stays one). Regular expressions, case-insensitive, matched against the sentence text after the claim."
+value = ['^[^.!?\n]{0,120}\bthen\s+(?:merge|ship|deploy|release|publish|push|tag|land|promote|proceed|rebase|squash|cut|roll\s+out|open|close|continue|go|start)\b']
+
+[claim_evidence.plan_before_res]
+doc = "The plan context a suppress_after 'planned' row needs before the claim: the claim is a later item of a list (the sentence text before it ends with a comma, a semicolon or an arrow) or the sentence opens with a plan label (Plan:, Next:, Steps:, TODO:). Regular expressions, case-insensitive, matched against the sentence text before the claim."
+value = ['(?:,|;|->|\u2192)\s*$', '^\W*(?:plan|next(?:\s+steps?)?|steps?|todo)\s*:']
+
+[claim_evidence.reach_verb]
+doc = "Most counted words (not gap_skip_re) between a negation or modal (neg_res, modal_res) and the claim it covers: 0 = it must sit on the claim's own verb."
+value = 0
+min = 0
+max = 3
+
+[claim_evidence.reach_subject]
+doc = "Most counted words between a negated subject word (neg_subject_res) and the claim: 1 = its own noun ('no PR is merged')."
+value = 1
+min = 0
+max = 3
+
+[claim_evidence.reach_clause]
+doc = "Most counted words between a clause opener (future_res, reported_res, criterion_res) and the claim: the claim's own subject ('once a NAS that has it is deployed'). Any word beyond it (a second predicate, an unknown connector) ends the opener's reach and the claim is judged as fact."
+value = 2
+min = 0
+max = 6
+
+[claim_evidence.reach_label]
+doc = "Most counted words between a claim and the honest label (ack_res) in its own sentence that covers it (1 = the claim's own subject) ('Tests pass per the earlier run', 'Unverified: the service is live'). A label elsewhere in the reply covers nothing."
+value = 1
+min = 0
+max = 3
+
+[claim_evidence.reach_consequent]
+doc = "Most counted words between a claim covered by a chain row of claim_evidence.suppress (a conditional opener) and a following claim in the same clause that is its consequent: the consequent's own subject ('If CI is green the change is merged')."
+value = 1
+min = 0
+max = 3
+
+[claim_evidence.trailing_label_re]
+doc = "An honest label that closes the claim's sentence as its own clause ('Tests pass in my head but I did not run them; unverified.'): it covers every claim before it in that sentence. A leading 'Unverified claims aside, ...' is not one. Rust regular expression, case-insensitive, matched against the sentence."
+value = '[;:(—–]\s*(?:unverified|untested|unchecked|not\s+(?:yet\s+)?(?:verified|checked|tested|run))\W*$'
+
+[claim_evidence.quote_mark_re]
+doc = "Quote marks taken out of the reply before claims are looked for (an apostrophe inside a word stays): a claim in quotes ('\"It is merged.\"', 'CI is \"green\"') is judged like any other, so only a reporting verb that opens its clause (reported_res) covers it. Code, fences and blockquotes stay masked. Rust regular expression."
+value = '["“”]|\B[\x27‘’]|[\x27‘’]\B'
+
+[claim_evidence.gap_word_re]
+doc = "One word of the text between a suppressor and the claim (punctuation is not a word: a lone dash in 'Unverified - files are deployed' counts nothing). Rust regular expression."
+value = '[\w#@][\w#@\x27\x{2019}/-]*'
+
+[claim_evidence.gap_skip_re]
+doc = "Words that never count against a reach: articles, determiners, possessives, quantifiers, 'of'/'and'/'or', 'it'/'this'/'that', '#refs' and numbers (they belong to the claim's subject). Every other word counts, so a word the list does not know uses up the reach instead of extending it. Rust regular expression, case-insensitive, matched against one whole word."
+value = '^(?:the|a|an|this|that|these|those|it|its|their|our|my|your|his|her|all|every|each|both|any|some|of|and|or|#\S*|v?\d\S*)$'
+
+[claim_evidence.gap_restart_re]
+doc = "A word that starts a new noun phrase: seen after a counted word, the gap holds two phrases (a second clause) and the suppressor's reach ends ('Once again the build is green', 'According to the PR body the change is merged'). Rust regular expression, case-insensitive, matched against one whole word."
+value = '^(?:the|a|an)$'
+
+[claim_evidence.suppress]
+doc = "Why a claim hit is not a claim, in the order checked: reason = the label written to the log, list = the config key of the pattern list (matched against the clause before the hit), reach = the config key of the most counted words allowed between a list hit and the claim (gap_skip_re words are free; gap_restart_re after a counted word ends the reach). idiom (optional) = the config key of a regex matched against the text between a list hit and the claim: a match makes that hit an idiom that covers nothing. chain = true: a claim that follows a claim this row covered, in the same clause with at most claim_evidence.reach_consequent counted words between them, is that condition's consequent and is covered too ('If CI is green the change is merged by the bot'). Every hit of every list is tried; the first row with a hit in reach names the reason."
+value = [
+  { reason = "negated", list = "claim_evidence.neg_res", reach = "claim_evidence.reach_verb" },
+  { reason = "negated", list = "claim_evidence.neg_subject_res", reach = "claim_evidence.reach_subject", idiom = "claim_evidence.no_idiom_re" },
+  { reason = "future", list = "claim_evidence.modal_res", reach = "claim_evidence.reach_verb" },
+  { reason = "future", list = "claim_evidence.future_res", reach = "claim_evidence.reach_clause", idiom = "claim_evidence.opener_idiom_re", idiom_strict = "claim_evidence.opener_filler_re", chain = true },
+  { reason = "reported", list = "claim_evidence.reported_res", reach = "claim_evidence.reach_clause", noun_before = "claim_evidence.noun_before_re", compound = "claim_evidence.compound_after_re" },
+  { reason = "criterion", list = "claim_evidence.criterion_res", reach = "claim_evidence.reach_clause" },
+  { reason = "purpose", list = "claim_evidence.purpose_res", reach = "claim_evidence.reach_clause" },
+  { reason = "instruction", list = "claim_evidence.instruction_res", reach = "claim_evidence.reach_clause" },
+  { reason = "condition", list = "claim_evidence.cond_coord_res", reach = "claim_evidence.reach_verb", idiom = "claim_evidence.opener_idiom_re" },
+]
+
+[claim_evidence.ack_reason]
+doc = "Log reason for a claim covered by an honest label in its own sentence (ack_res, within claim_evidence.reach_label)."
+value = "labelled"
+
+[claim_evidence.attributed_reason]
+doc = "Log reason for a claim whose paragraph or governing heading attributes the result to another agent and says it was not verified here (#972 wave 2; attribution_res plus unverified_scope_res)."
+value = "attributed"
+
+[claim_evidence.attribution_res]
+doc = "Text that attributes a result to another agent or its report (#972 wave 2): 'Lane-reported results', 'lane-busy's report', 'the agent's numbers', 'reported by the lane'. Counts only together with unverified_scope_res in the same scope (the claim's paragraph plus its heading). Regular expressions, case-insensitive."
+value = [
+  '\b(?:lane|agent|worker|subagent|teammate|reviewer|codex)[- ]reported\b',
+  '\b(?:lane|agent|worker|subagent|teammate|reviewer|codex)(?:\x27s)?\s+(?:results?|numbers|report|figures|counts)\b',
+  '\b[\w-]+\x27s\s+(?:report|results?|numbers|figures|counts)\b',
+  '\b(?:reported|relayed)\s+by\s+(?:the\s+)?[\w-]+',
+  '\b(?:according\s+to|per)\s+(?:the\s+)?(?:lane|agent|worker|subagent|teammate|reviewer|codex)\b',
+]
+
+[claim_evidence.unverified_scope_res]
+doc = "An explicit statement that the replier did not check the attributed result (#972 wave 2): 'I haven't re-run them yet', 'I have not verified', 'not re-run here', 'unverified'. Counts only together with attribution_res in the same scope. Regular expressions, case-insensitive."
+value = [
+  '\b(?:i|we)\s+(?:have\s*n.t|have\s+not|haven.t|did\s*n.t|did\s+not|didn.t)\s+(?:yet\s+)?(?:re-?run|re-?checked|re-?verified|verified|checked|run|reproduced|confirmed)\b',
+  '\bnot\s+(?:yet\s+)?(?:re-?run|re-?verified|re-?checked|verified|reproduced)\b',
+  '\bunverified\b',
+]
+
+[claim_evidence.paragraph_break_re]
+doc = "What ends a paragraph of the reply (#972 wave 2: the scope of an attribution and a not-verified marker). Rust regular expression."
+value = '\n[ \t]*\n'
+
+[claim_evidence.list_para_re]
+doc = "A paragraph that is a list (#972 wave 2): its scope also holds the line just before it, the lead-in that governs the list ('Lane-reported results; I have not re-run them yet.' then '- tests pass: 410/410'). Rust regular expression, matched against the paragraph."
+value = '\A\s*(?:[-*+]|[0-9]+[.)])\s'
+
+[claim_evidence.heading_line_re]
+doc = "A line that heads the paragraphs after it (#972 wave 2): a markdown heading, a bold line, or a short line that ends with a colon. Rust regular expression, matched against one line."
+value = '^\s*(?:#{1,6}\s+\S|\*\*[^\n]+\*\*\s*:?\s*$|[^\n.!?]{1,160}:\s*$)'
+
+[claim_evidence.nonsoftware_reason]
+doc = "Log reason for a claim hit right after a non-software subject word (a claim row's not_after): 'the simulator session is released'."
+value = "nonsoftware"
+
+[claim_evidence.featurename_reason]
+doc = "Log reason for a claim hit directly followed by a capitalised word where the hit itself ends in a capitalised word (a claim row's not_before): 'the Live Activity feature' is a name, not 'is Live'."
+value = "featurename"
+
+[claim_evidence.quoted_reason]
+doc = "Log reason for a claim that appears only inside code, a fence or a blockquote."
+value = "quoted"
+
+[claim_evidence.max_suppress_logs]
+doc = "Most suppressed-hit log lines (claim_evidence.log_kind) written for one reply."
+value = 5
+min = 0
+max = 50
+
+[claim_evidence.msg_suppressed]
+doc = "Log line for a claim the guard let pass. Placeholders: {reason} why (negated, future, condition, reported, criterion, purpose, instruction, planned, labelled, quoted), {claim} the claim kind, {quote} the words found."
+value = "suppressed ({reason}): \"{quote}\" ({claim})"
+
+# ---- rule 1: claim needs evidence ---------------------------------------------------------------------------
+
+[claim_evidence.claims]
+doc = "The result claims rule 1 looks for, in order; not_after (optional): Rust regular expression, case-insensitive, matched against the sentence text before the hit, ending with $: a hit whose sentence opens with such a subject is no claim of that row ('the simulator session is released' is no shipped claim; logged as reason nonsoftware); not_before (optional): Rust regular expression, CASE-SENSITIVE, matched against the sentence text after the hit: a hit followed by such text is no claim of that row ('Live Activity' is a feature name, not 'is Live'; logged as reason featurename); not_before_hit (optional): Rust regular expression, case-sensitive, the hit itself must match for not_before to apply; not_after_hit (optional): Rust regular expression, case-insensitive, the hit itself must match for not_after to apply ('released', never 'deployed' or 'merged'); the first row that matches a reply decides. id: the label in the message and the log. re: Rust regular expression (case-insensitive) on the reply with quoted text and code removed. needs: command patterns (Rust syntax) of which at least one must match a command run this turn; empty means any tool call this turn is enough. check: short words naming a command that would satisfy the row, written into the block advice (msg_satisfy; keep it under 58 characters). With no tool call at all this turn, every row fires."
+value = [
+  { id = "tests pass", re = '\b(?:all\s+)?(?:\d[\d,]*\s+)?(?:unit\s+|integration\s+|e2e\s+)?tests?\s+(?:(?:are|is|now|all|still)\s+)*(?:pass(?:es|ed|ing)?|green)\b|\b\d[\d,]*\s+(?:tests?\s+)?passed\b|\b(?:build|ci|suite|checks?|lint)\s+(?:(?:is|are|now|all)\s+)*(?:green|passing|passes|passed)\b', check = "a test runner, gh pr checks or a log read showing it", needs = ['\b(?:cargo\s+(?:test|nextest|check|clippy|build)|node\s+--test|npm\s+(?:run\s+)?(?:test|build|lint)|pnpm\s+(?:run\s+)?(?:test|build|lint)|yarn\s+(?:test|build|lint)|pytest|go\s+(?:test|build|vet)|jest|vitest|flutter\s+(?:test|analyze)|dart\s+(?:test|analyze)|gradlew?\s+\S*(?:test|build)|make\s+(?:test|check|build)|tsc|eslint|clippy|dotnet\s+(?:test|build)|bun\s+(?:test|run)|deno\s+test|swift\s+(?:test|build)|xcodebuild|mvn|rspec|phpunit|mix\s+test|gh\s+run\s+(?:view|watch|list)|gh\s+pr\s+checks|gh\s+pr\s+(?:view|status)\s[^\n]*?statusCheckRollup|gh\s+api\s[^\n]*?check-(?:runs|suites)|\S*test\S*\.(?:sh|js|py))\b'] },
+  { id = "process live", re = '\b(?:process(?:es)?|daemon|server|service|engine|worker|watcher|pid)\s+(?:is|are|was|were|now)\s+(?:now\s+|still\s+)?(?:live|running|up|alive)\b', check = "pgrep, ps, launchctl list or curl of its port", needs = ['\b(?:pgrep|pidof|lsof|ps\s+(?:aux|ax|-[a-zA-Z]+)|launchctl\s+(?:list|print)|systemctl\s+(?:status|is-active)|curl|wget|http)\b', '\bah-engine["\x27]?\s+(?:version|--version|status)\b'] },
+  { id = "shipped", re = '\b(?:has\s+been|have\s+been|is|are|was|were|now)\s+(?:deployed|released|published|merged|live)\b|\b(?:deployed|released|published)\s+(?:to\s+\S+|as\s+v?\d)|\bnot\s+only\s+(?:is|are|was|were|has\s+been|have\s+been)\s+[\w#-]+\s+(?:deployed|released|published|merged|live)\b', check = "gh pr view, git ls-remote or curl of the live URL", not_after = '^\W*(?:(?:the|a|an|this|that|its|our|my|your|their)\s+)?(?:[\w-]+\s+)?(?:sessions?|locks?|slots?|simulators?|devices?|leases?|handles?|ports?|connections?|seats?)\s+$', not_after_hit = '\breleased\b', not_before = '^\s+[A-Z]', not_before_hit = '\bLive$', needs = ['\b(?:deploy|release|publish|merge|gh\s+(?:pr|release|run|api)|git\s+(?:push|tag|merge)|curl|wget|http|git\s+(?:log|show|branch|status|rev-parse|merge-base|ls-remote|fetch)|firebase|npm\s+publish|cargo\s+publish|kubectl|vercel|fastlane)\b', '\bah-engine["\x27]?\s+(?:version|--version|status)\b'] },
+  { id = "verified", re = '\b(?:(?:i|we|it|they|all|now|has|have|is|are|was|were|been|got|fully|also|personally|independently|just|successfully)(?:\x27ve|\x27s|\x27re)?\s+)+(?:verified|confirmed)\b|\b(?:verified|confirmed)\s+(?:that|working|fixed|green|passing|merged|deployed|successful(?:ly)?|every|each|the|it|this|all|both)\b|^\W*(?:verified|confirmed)\b|(?:^|\s)(?:verified|confirmed)\s*(?:[:\u2014-]|$)', check = "any tool call that shows it", needs = [] },
+  { id = "fixed", re = '\b(?:is|are|now|been)\s+(?:now\s+)?fixed\b|\bfixed\s+and\s+(?:verified|working|tested)\b', check = "any tool call that shows it", needs = [] },
+  { id = "all done", re = '\ball\s+(?:the\s+)?(?:tasks?\s+|items?\s+|work\s+|steps?\s+)?(?:are\s+)?(?:done|complete[d]?|finished)\b', check = "any tool call that shows it", needs = [] },
+]
+
+[claim_evidence.msg_claim_what]
+doc = "Rule 1 headline. Placeholders: {claim} the claim kind, {quote} the words found."
+value = "\"{quote}\" ({claim}) has no matching check run this turn."
+
+[claim_evidence.msg_claim_instead]
+doc = "Rule 1 advice."
+value = "run the check and show its result, or say it was not verified."
+
+[claim_evidence.msg_satisfy]
+doc = "Rule 1 advice when the claim row names a check: says what would satisfy it. Placeholders: {check} (the row's `check` text). The whole advice must stay within 115 characters or the block text moves to a details file."
+value = "show a check that counts ({check}), or say it was not verified."
+
+[claim_evidence.log_read_res]
+doc = "Commands (Rust syntax, matched case-sensitively so git's HEAD is not head) that read a log or output file: a read verb (cat, grep, egrep, rg, tail, head, sed -n) followed by an argument. One run this turn, with the claimed figure in the transcript's tool output, backs a claim (claim_evidence.log_read_counts)."
+value = ['\b(?:cat|grep|egrep|rg|tail|head|sed\s+-n)\s+[^|;&\n]*\S']
+
+[claim_evidence.figure_re]
+doc = "A figure inside a claim (Rust syntax): a number, thousands commas allowed. Every figure of the held claim's words must appear as a count in the tool output (claim_evidence.output_pass_res, output_fail_res, output_bare_res) for a log read to back it (claim_evidence.log_read_counts); a claim with no figure is not backed by a read."
+value = '\d[\d,]*'
+
+[claim_evidence.output_pass_res]
+doc = "Where a figure in tool output is a PASS count (Rust syntax, case-insensitive; whitespace on one line only): a whole number next to a pass word in either order ('57 passed', '57 passing', 'passed: 57', '# pass 57'). A pass claim is backed by these (claim_evidence.log_read_counts); each match is read for its number with claim_evidence.figure_re."
+value = [
+  '\b\d(?:[\d,]*\d)?[ \t]+(?:passed|passing)\b',
+  '\b(?:passed|pass|passing)[:=]?[ \t]*\d[\d,]*\b',
+  '#[ \t]*pass[ \t]+\d[\d,]*\b',
+]
+
+[claim_evidence.output_fail_res]
+doc = "Where a figure in tool output is a FAIL count (Rust syntax, case-insensitive, one line): '3 failed', '3 failing', '3 failures', 'failed: 3', '# fail 3', '3 tests failed', 'errors=2', '2 errors'. Any of them above 0 in an output stops a bare 'N tests' count in that output from backing a pass claim."
+value = [
+  '\b\d(?:[\d,]*\d)?[ \t]+(?:failed|failing|failures?)\b',
+  '\b(?:failed|fail|failing|failures?)[:=]?[ \t]*\d[\d,]*\b',
+  '#[ \t]*fail[ \t]+\d[\d,]*\b',
+  '\b\d(?:[\d,]*\d)?[ \t]+tests?[ \t]+failed\b',
+  '\berrors?[:=]?[ \t]*\d[\d,]*\b',
+  '\b\d(?:[\d,]*\d)?[ \t]+errors?\b',
+]
+
+[claim_evidence.output_bare_res]
+doc = "Where a figure in tool output is a bare test or check count with no pass / fail word (Rust syntax, case-insensitive, one line): '57 tests', '3 checks', '# tests 57', 'Tests run: 57' (Maven), '57 examples' (rspec), 'tests failed out of 57' (ctest). It backs a PASS claim only when the same output shows no fail count above 0."
+value = [
+  '\b\d(?:[\d,]*\d)?[ \t]+(?:tests?|checks?)\b',
+  '#[ \t]*tests[ \t]+\d[\d,]*\b',
+  '\btests[ \t]+run:[ \t]*\d[\d,]*\b',
+  '\btests[ \t]+failed[ \t]+out[ \t]+of[ \t]+\d[\d,]*\b',
+  '\b\d(?:[\d,]*\d)?[ \t]+examples?\b',
+]
+
+[claim_evidence.output_listing_res]
+doc = "Output that is not a finished passing run (a list of tests, a run header, a failed unittest run) (Rust syntax, case-insensitive): 'cargo test -- --list' ends with '57 tests, 0 benchmarks'. Also 'running 57 tests' and 'Starting 57 tests across' (a header before the results) and 'Ran 57 tests in 0.1s' followed by FAILED. A bare count (claim_evidence.output_bare_res) starting inside one of these is not a finished passing run and backs nothing."
+value = [
+  '\b\d(?:[\d,]*\d)?[ \t]+tests?,[ \t]*\d[\d,]*[ \t]+benchmarks?\b',
+  '\brunning[ \t]+\d[\d,]*[ \t]+tests?\b',
+  '\bstarting[ \t]+\d[\d,]*[ \t]+tests?\b',
+  '\bran[ \t]+\d[\d,]*[ \t]+tests?[ \t]+in\b[^\n]*\n\s*failed\b',
+]
+
+# ---- rule 2: pushed is not done -----------------------------------------------------------------------------
+
+[claim_evidence.done_res]
+doc = "Completion words of rule 2. Regular expressions, case-insensitive, matched against the reply with quoted text and code removed."
+value = [
+  '\b(?:all\s+)?(?:done|finished|shipped|delivered|landed|resolved|wrapped up|all set)\b',
+  '\bcomplete[d]?\b',
+  '\bready\s+(?:to|for)\s+(?:merge|ship|release|review|use)\b',
+]
+
+[claim_evidence.push_res]
+doc = "Commands that publish work: matched against each command run this turn (Rust syntax). A hit starts rule 2's clock."
+value = ['\bgit\s+push\b', '\bgh\s+pr\s+create\b']
+
+[claim_evidence.state_res]
+doc = "Commands that look at CI or the merge state: matched against the commands run AFTER the last push of the turn. Any hit satisfies rule 2."
+value = [
+  '\bgh\s+run\s+(?:view|watch|list)\b',
+  '\bgh\s+pr\s+(?:checks|view|merge|status|list)\b',
+  '\bgh\s+(?:api|workflow\s+(?:view|run))\b',
+  '\bgh\s+release\s+(?:view|list)\b',
+  '\bgit\s+(?:ls-remote|fetch)\b',
+]
+
+[claim_evidence.ack_pushed_res]
+doc = "A reply that states the CI or merge state honestly is never held by rule 2 (CI pending or unchecked, not merged, awaiting review). Regular expressions, case-insensitive."
+value = [
+  '\b(?:ci|checks?|pipeline|actions?|build)\b[^.\n]{0,40}\b(?:pending|running|queued|not\s+(?:yet\s+)?(?:checked|verified|run|green|finished|done)|unchecked|unverified|failed|red|green|passed|passing)\b',
+  '\b(?:not|never|un)\s*(?:yet\s+)?(?:merged|checked|verified|released|deployed)\b',
+  '\bunmerged\b',
+  '\b(?:pending|awaiting|waiting\s+(?:for|on))\s+(?:ci|review|merge|checks?|the\s+run)\b',
+  '\bpushed\b[^.\n]{0,60}\b(?:not|but|only)\b',
+  '\bdo\s+not\s+(?:merge|wait)\b',
+]
+
+[claim_evidence.msg_pushed_what]
+doc = "Rule 2 headline."
+value = "pushed this turn, then called done, but CI and merge state were never checked."
+
+[claim_evidence.msg_pushed_instead]
+doc = "Rule 2 advice."
+value = "check the run (gh run list, gh pr checks), or report it as pushed, not done."
+
+[claim_evidence.sw_mask_table_header]
+doc = "Mask genuine table-header labels. Switch guards.claimEvidenceMaskTableHeader (default on): the header row of a markdown table is not scanned for claims, because it only labels the columns (a column named Verified or Merged is not a statement). The body rows are still scanned. Off scans the header like any other line."
+value = { section = "guards", key = "claimEvidenceMaskTableHeader", env = "ANTIHALL_CLAIM_EVIDENCE_MASK_TABLE_HEADER", default = true }
+
+[claim_evidence.table_sep_re]
+doc = "A line that is the separator row of a markdown table (cells of dashes with optional colons); the line above it is the header row. Rust regular expression."
+value = '^\s*\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)*\|?\s*$'
+
+[claim_evidence.table_label_cell_re]
+doc = "A table header cell that is a label: empty, or one to four words without a sentence ending (no period, exclamation mark or semicolon). A header row is masked only when every cell is a label, so a cell that asserts something (\"All tests pass.\") keeps the row scanned. Rust regular expression."
+value = '^\s*([^\s.!;]+(\s+[^\s.!;]+){0,3})?\s*$'
+
+[claim_evidence.table_pipe]
+doc = "The cell separator a table header row must contain."
+value = "|"

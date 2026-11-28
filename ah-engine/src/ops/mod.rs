@@ -16,6 +16,7 @@
 //! Where the Node tool's behaviour cannot be reproduced exactly (a lock held by a live writer, a repository layout the
 //! resolver cannot classify) the command writes nothing, says so on stderr and exits with the deferral code, so the Node
 //! command can be run instead.
+pub(crate) mod afk;
 pub(crate) mod ahconfig;
 pub(crate) mod allow;
 pub(crate) mod codex;

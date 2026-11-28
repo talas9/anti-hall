@@ -46,7 +46,7 @@ else.**
    the hooks do see it.
 
    A key stored through the plugin options is kept in the OS credential store and is
-   visible only to hook processes. A shell command you run (including `jev-setup.js
+   visible only to hook processes. A shell command you run (including `ah-engine jev-setup
    status`) cannot see it and will report no key, so do not treat that as proof it is
    missing. Confirm it afterwards from the hooks' own evidence: after the first
    classified hook call, read the per-transport rows of the `jev-report` output
@@ -118,13 +118,13 @@ again (state: `~/.anti-hall/cache/jev-breaker.json`).
   (`--fallback none` turns it off; a fallback equal to the primary is treated as none).
 - Keys are VENDOR-BOUND: a key is never sent to a vendor it was not entered for. Store one per vendor: the
   `jev_vercel_api_key` and `jev_typesafe_api_key` plugin options (or, with `jev.allowLegacyKeyRead`,
-  `jev-setup.js set-key --transport <vendor>` writing that vendor's key file, `~/.config/vercel/ai-gateway-key` or
+  `ah-engine jev-setup set-key --transport <vendor>` writing that vendor's key file, `~/.config/vercel/ai-gateway-key` or
   `~/.config/typesafe/key`; `--role fallback` is an alias for the fallback vendor). The older generic `jev_api_key`
   (and an explicit `jev.keyFile`) still work but are bound to ONE vendor: the home-only setting
   `jev.genericKeyVendor` (default vercel; never `jev.transport`, never env or `/config`); for any other vendor they
   are refused with a "jev_api_key is bound to X; set jev_<Y>_api_key" diagnostic. `enable --transport V` warns when
   V has no key of its own and the generic key is bound elsewhere, and never re-binds. Re-bind deliberately with
-  `jev-setup.js bind-generic-key --vendor <v>`. So neither a transport change nor an env/plugin-option flip can
+  `ah-engine jev-setup bind-generic-key --vendor <v>`. So neither a transport change nor an env/plugin-option flip can
   redirect a key.
 - `status` shows both transports and whether a key is visible for each (yes/no only); `test` tests each
   transport on its own.
@@ -135,7 +135,8 @@ again (state: `~/.anti-hall/cache/jev-breaker.json`).
   their built-in rules, exactly as when Jev is off.
 - Privacy: with a backup on, the same (secret-scrubbed) decision text can reach the second vendor.
 - Decision rows in `jev-assist.ndjson` carry `transport` (and `fellBack: true` when the backup served it).
-- `ah-engine jev-report` prints a "by transport" block (calls, errors, average latency, fell-back count per vendor; rows logged before transport tracking show as "unrecorded", vercel assumed). `jev.prices` entries are keyed by the response model, which differs per vendor (`jev-1.13.0` vs `typesafe-ai/jev`): list both or use `default`. Only Vercel has a balance endpoint (`status` says "not available" for typesafe).
+- `ah-engine jev-report` prints a "by transport" block (calls, errors, average latency, fell-back count per vendor; rows logged before transport tracking show as "unrecorded", vercel assumed). `jev.prices` entries are keyed by the response model, which differs per vendor (`jev-1.14.0` vs `typesafe-ai/jev`): list both or use `default`. Only Vercel has a balance endpoint (`status` says "not available" for typesafe).
+- Model pin: the direct API is sent `jev-1.14.0` (setting `jev.modelPin`; `jev-latest` is a moving alias and the doctor warns; the doctor also reads the provider model list and warns "newer model available" when a non-preview model is newer than `jev.model_pin_released`, warns when a Jev key file exists but `jev.allowLegacyKeyRead` is off, and shows which source the key came from). The gateway id is not pinned (no documented versioned form, UNVERIFIED). State text is cut to `jev.stateMaxTokens` (default 30000 estimated tokens; the provider caps a question at 32k). Rate limits are per organization (see the provider console); output tokens are free; `status`/doctor show the model sent. Rows that never reached Jev carry `skip` (why) and answered rows carry `model`. Last verified 2026-10-31 against docs.typesafe.ai.
 - UNVERIFIED: which status each vendor returns for an exhausted balance (Vercel `402` per community
   reports; TypeSafe undocumented), so both 402 and 429 are treated as eligible.
 
@@ -154,7 +155,8 @@ pricing, or TypeSafe's own pricing for the direct transport). Two cost signals:
 
 - **Estimated** (manual): if the owner knows their per-call cost, they can set
   `costPerCall` in `~/.anti-hall/jev.json` so `jev report` (below) can estimate
-  spend; otherwise it reports cost as `n/a`.
+  spend; otherwise the report uses the shipped default (`jevrep.thr_cost_per_call_default`) and
+  shows a real cost in the cost column whenever the calls reported one.
 - **Real** (automatic, when available): every Jev call already parses its own
   response for a gateway-reported cost or token usage (see
   `jev-client`'s `extractCostAndUsage` — verified against Vercel AI
@@ -263,7 +265,7 @@ show the snippet for context.
 
 ### "turn <integration> on/off" / "promote <integration>"
 
-See "Per-integration modes" below — `jev-setup.js mode <id> on|shadow|off`.
+See "Per-integration modes" below — `ah-engine jev-setup mode <id> on|shadow|off`.
 Before promoting `shadow` -> `on`, check that integration's row in `jev report`
 for a KEEP suggestion first; promoting on thin data just adds a live behavior
 change with no evidence behind it yet.
@@ -293,6 +295,7 @@ an optional `turnRef` (the transcript's last-line ISO timestamp, or a
 line-count fallback) pointing at which turn the decision was about. A row
 from BEFORE this feature existed, or from an integration that genuinely has
 no session, groups under `unknown` — not an error, not dropped.
+Outcome writers also include the agent nudges (a closed nudge reports `acted_*`, `finished`, `ignored`, `said_not_done`, `child_died` ... against `agentWaste` / `nudgeReason` / `nudgeReply`, source `nudge`) and the delivery ledger (`outputVerifyGuard`: `acted` or `ignored`, source `delivery`); the bad names are `jevrep.thr_bad_outcome_re`.
 `recordOutcome()`'s `type:'outcome'` rows (e.g. `triage`'s answer-latency
 join, `speculation`'s evidence-added/user-override outcomes) now carry
 `project` the same way (v0.108.3 fix — they used to have none at all); an
@@ -503,7 +506,7 @@ other integration defaults to `shadow` until promoted.
 `jevIntegrations.modelRouting`) — its own table in `/anti-hall:settings`
 (`"$HOME/.anti-hall/ah-engine/bin/ah-engine" settings show --section jevIntegrations`)
 (it has no row in Claude Code's native `/config` panel, which carries only
-the headline switches). `jev-setup.js mode` writes the canonical
+the headline switches). `ah-engine jev-setup mode` writes the canonical
 `jevIntegrations.<id>` settings.json key (as well as `~/.anti-hall/jev.json` for
 back-compat); a pre-existing `jev.json integrations.<id>` value, or a pre-0.108.4
 settings.json `jev["integrations.<id>"]` value, keeps working and forward-migrates
@@ -521,7 +524,7 @@ into the new key automatically (see `migrations`
 | `mergeGateHedge` | does this text hedge on merge-readiness | `relax-block` | `shadow` | yes | yes |
 | `newRequest` | classify a prompt: new-request/follow-up/correction/question | `advisory` | `shadow` | yes | yes |
 | `outputVerifyGuard` | does this test-runner output actually indicate a pass | `advisory` | `shadow` | yes | no — reads a `PostToolUse` Bash `tool_response` whose exact shape on Codex's shell tool is unverified (no captured payload); not wired until proven, to avoid a hook whose trigger never actually fires as intended |
-| `gitGuardSelfCredit` | does this commit/PR message contain paraphrased AI self-credit | `add-block` **(never relaxes)** | `shadow` | yes | yes |
+| `gitGuardSelfCredit` | does this commit/PR message contain paraphrased AI self-credit | `add-block` **(never relaxes)** | `off` (#466: 7.1k calls, 0 changed) | yes | yes |
 | `parentGateQuestion` | is this unread child message really a question awaiting reply | `add-block` (cache-only, zero network) | `shadow` | yes | yes |
 | `tasklistTrivial` | is this session a genuinely non-trivial, multi-part effort | `relax-block` | `shadow` | yes | yes |
 | `supervisorBlockerLabel` | is a stale child waiting-on-parent or genuinely wedged | `advisory` (cache-only, zero network) | `shadow` | yes | no — the engine supervisor duty identity-binds to `claude --resume` processes specifically |
@@ -571,5 +574,5 @@ with hook/event/API details.
   print a one-line "no Jev key visible to this process" reason; enabling `jev.allowLegacyKeyRead`
   (home settings only, `--confirmed`; env cannot set it) with a key file makes the key available to them.
 - Preferred: the user stores the key in the plugin's options screen (Claude Code prompts for these options when the plugin is enabled; they can be changed later from the plugin's configuration) (anti-hall -> `jev_vercel_api_key` or `jev_typesafe_api_key`, one per vendor). The key file
-  that the jev-setup script's set-key command writes is read only when
+  that the `ah-engine jev-setup set-key` command writes is read only when
   `jev.allowLegacyKeyRead` is on; never store the key anywhere else.

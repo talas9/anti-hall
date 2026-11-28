@@ -596,7 +596,8 @@ function scanTranscript(transcriptPath, preLines, opts) {
     let lastIdleMs = NaN;
     let lastIdleReason = '';
     for (const e of ordered) {
-      if (e.kind === 'spawn') { state = 'busy'; queuedAt = NaN; pendingAt = NaN; }
+      // the spawn prompt is the teammate's first instruction: busy on it until its first idle report (#965)
+      if (e.kind === 'spawn') { state = 'busy'; queuedAt = NaN; pendingAt = e.ts; }
       else if (e.kind === 'stop') { state = 'stopped'; queuedAt = NaN; pendingAt = NaN; }
       else if (state === 'stopped') continue;
       else if (e.kind === 'send') {

@@ -14,6 +14,9 @@ pub mod backup;
 pub mod binguard;
 pub mod bootstrap;
 pub mod budget;
+pub mod buildid;
+pub mod burst;
+pub mod burstsym;
 pub mod cfgstore;
 pub mod checks;
 pub mod cli;
@@ -21,12 +24,14 @@ pub mod client;
 pub mod compat;
 pub mod config;
 pub mod crash;
+pub mod currency;
 pub mod daemon;
 pub mod daemonenv;
 pub mod db;
 pub mod deadline;
 pub mod debug;
 pub mod defaults;
+pub mod delivery;
 pub mod devswarm_rt;
 #[cfg(feature = "diag")]
 pub mod diag;
@@ -40,6 +45,7 @@ pub mod dswire;
 pub mod error;
 pub mod failopen;
 pub mod frame;
+pub mod funnel;
 pub mod gate;
 pub mod ghrt;
 pub mod gitcache;
@@ -57,6 +63,7 @@ pub mod layers;
 pub mod learn;
 pub mod limits;
 pub mod load;
+pub mod loadscale;
 pub mod maintain;
 pub mod mem;
 pub mod memdiag;
@@ -69,12 +76,14 @@ pub mod migration;
 pub mod nodeback;
 pub mod obs;
 pub mod operator;
+pub mod overload;
 pub mod ops;
 pub mod paths;
 pub mod proc;
 pub mod procid;
 /// Process watch: orphan sweep, resource and disk warnings.
 pub mod procwatch;
+pub mod qos;
 pub mod refresh;
 pub mod reqenv;
 pub mod roles;
@@ -85,11 +94,13 @@ pub mod setup;
 pub mod skillgen;
 pub mod spool;
 pub mod sql;
+pub mod sqlalloc;
 pub mod storage;
 pub mod store;
 pub mod telemetry;
 pub mod threads;
 pub mod tier;
+pub mod tmpsweep;
 pub mod transcript;
 pub mod wakew;
 pub mod watch;
@@ -107,10 +118,30 @@ pub fn version() -> String {
 /// `install-routine`: `update --from-local <dir>` / `update --rollback` are the ONE install routine.
 pub const FEATURES: &[&str] = &["install-routine"];
 
-/// The version this binary was built as: `<crate version>+<branch>.<short sha>[-dirty]`, derived by `build.rs` (the crate's own
-/// version when the build had no checkout to read).
+/// The build version the binary's `main` hands over ([`set_build_version`]). The library never reads `AH_BUILD_VERSION` itself:
+/// that compile-time variable changes on every commit and checkout, and a library that read it missed the compile cache on each
+/// one. Now the library stays a cache hit across commits. The package's test and binary targets are still rebuilt on a commit
+/// (the build script reruns, and cargo then rebuilds every target of the package; test and binary crates are not cacheable).
+static BUILD_VERSION: std::sync::OnceLock<&'static str> = std::sync::OnceLock::new();
+
+/// Record the version this binary was built as (`env!("AH_BUILD_VERSION")` in `main`). The first call wins; a later call is ignored.
+pub fn set_build_version(v: &'static str) {
+    // already set by an earlier call: the first version stays (one binary, one build version)
+    discard::harmless(BUILD_VERSION.set(v));
+}
+
+/// The version this binary was built as: `<crate version>+<branch>.<short sha>[-dirty]`, derived by `build.rs` and set by `main`
+/// ([`set_build_version`]). Without it (the library's own tests, a caller that is not the `ah-engine` binary) it is the crate's own
+/// version.
 pub fn build_version() -> &'static str {
-    env!("AH_BUILD_VERSION")
+    BUILD_VERSION.get().copied().unwrap_or(env!("CARGO_PKG_VERSION"))
+}
+
+/// The engine's release version without the build suffix (`0.3.30` of `0.3.30+branch.sha`): the one accessor for code that stamps or
+/// compares the engine version (defaults cache, burst profile), so no module but this one reads `CARGO_PKG_VERSION` itself.
+pub fn crate_version() -> &'static str {
+    let v = build_version();
+    v.split('+').next().unwrap_or(v)
 }
 
 /// Numeric dotted-version compare ("0.10.0" > "0.9.0"); non-numeric parts count as 0, a pre-release
@@ -170,3 +201,7 @@ mod tests {
         assert_eq!(version_cmp("1.0.0-rc1", "1.0.0"), Equal);
     }
 }
+
+#[cfg(test)]
+#[path = "../tests/common/testtmp.rs"]
+pub(crate) mod testtmp;

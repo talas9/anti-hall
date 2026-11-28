@@ -313,6 +313,138 @@ pub fn apply_mem_limit(mb: u64) -> String {
     }
 }
 
+/// Raise this process's open-file limit (RLIMIT_NOFILE soft limit) to `want` (`daemon.nofile`; 0 = leave it), never lowering
+/// it, clamped to the hard limit and, on macOS, to the `daemon.nofile_sysctl` per-process ceiling (setrlimit refuses more). A
+/// daemon started by launchd otherwise runs with launchd's default of 256 and a file watcher over a large state directory hit
+/// EMFILE (GH #912). Returns a status word for `status` and the log: `ok:<n>` (raised), `kept:<n>` (already at least that),
+/// `off` or `err:<errno>`.
+pub fn apply_nofile(want: u64) -> String {
+    if want == 0 {
+        return "off".into();
+    }
+    let mut cur: libc::rlimit = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+    // SAFETY: `cur` is a live, writable `rlimit`.
+    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut cur) } != 0 {
+        return format!("err:{}", std::io::Error::last_os_error().raw_os_error().unwrap_or(0));
+    }
+    // macOS refuses a soft limit above the per-process ceiling
+    #[cfg(target_os = "macos")]
+    let ceiling = sysctl_u64(crate::defaults::text("daemon.nofile_sysctl")).unwrap_or(libc::rlim_t::MAX);
+    #[cfg(not(target_os = "macos"))]
+    let ceiling = libc::rlim_t::MAX;
+    let target: libc::rlim_t = want.min(cur.rlim_max).min(ceiling);
+    if cur.rlim_cur >= target {
+        return format!("kept:{}", cur.rlim_cur);
+    }
+    let lim = libc::rlimit { rlim_cur: target, rlim_max: cur.rlim_max };
+    // SAFETY: `lim` is a live `rlimit` that `setrlimit` only reads.
+    if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &lim) } != 0 {
+        return format!("err:{}", std::io::Error::last_os_error().raw_os_error().unwrap_or(0));
+    }
+    format!("ok:{target}")
+}
+
+/// An integer sysctl by name (`None` when it cannot be read).
+#[cfg(target_os = "macos")]
+fn sysctl_u64(name: &str) -> Option<u64> {
+    let c = std::ffi::CString::new(name).ok()?;
+    let mut v: libc::c_int = 0;
+    let mut len = std::mem::size_of::<libc::c_int>();
+    // SAFETY: `c` is NUL-terminated; `v` is a writable int of `len` bytes; no new value is set.
+    let rc = unsafe { libc::sysctlbyname(c.as_ptr(), (&mut v as *mut libc::c_int).cast(), &mut len, std::ptr::null_mut(), 0) };
+    (rc == 0 && v > 0).then_some(v as u64)
+}
+
+/// The current open-file soft limit of this process (0 when it cannot be read).
+pub fn nofile_limit() -> u64 {
+    let mut cur: libc::rlimit = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+    // SAFETY: `cur` is a live, writable `rlimit`.
+    if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut cur) } != 0 {
+        return 0;
+    }
+    cur.rlim_cur
+}
+
+/// The descriptors this process has open now: the entries of the first readable directory of `daemon.fd_dirs` (`/dev/fd` on
+/// macOS, `/proc/self/fd` on Linux), less the one the listing itself opens. `None` when none can be read.
+pub fn open_fds() -> Option<u64> {
+    crate::defaults::list("daemon.fd_dirs").into_iter().find_map(|d| std::fs::read_dir(d).ok().map(|r| (r.count() as u64).saturating_sub(1)))
+}
+
+/// The state word of `open` descriptors against `limit`: `daemon.fd_state_hard` at or past `daemon.fd_hard_pct` percent of the
+/// limit, `daemon.fd_state_soft` at or past `daemon.fd_soft_pct`, else `daemon.fd_state_ok`.
+pub fn fd_state(open: u64, limit: u64) -> &'static str {
+    use crate::defaults::{num, text};
+    let pct = |p: u64| limit.saturating_mul(p) / 100;
+    if limit > 0 && open >= pct(num("daemon.fd_hard_pct")) {
+        text("daemon.fd_state_hard")
+    } else if limit > 0 && open >= pct(num("daemon.fd_soft_pct")) {
+        text("daemon.fd_state_soft")
+    } else {
+        text("daemon.fd_state_ok")
+    }
+}
+
+/// The `fds` block of `status`: open descriptors, the limit, the state word, the start-up result of raising the limit
+/// (`applied`), the descriptors the file watcher holds (`watch`) and the per-file ones it skipped for its budget (`watch_skipped`).
+pub fn fd_status(applied: &str) -> serde_json::Value {
+    let (open, limit) = (open_fds(), nofile_limit());
+    let state = open.map_or(crate::defaults::text("daemon.fd_state_ok"), |o| fd_state(o, limit));
+    serde_json::json!({
+        "open": open, "limit": limit, "state": state, "applied": applied, "watch": crate::watch::notify::open_fds(),
+        "watch_skipped": crate::watch::notify::skipped_fds(),
+        "soft_pct": crate::defaults::num("daemon.fd_soft_pct"), "hard_pct": crate::defaults::num("daemon.fd_hard_pct"),
+    })
+}
+
+/// Log the descriptor state once each time it changes (soft and hard are warnings in the engine log; the return to ok is
+/// logged too). Called on the health snapshot tick.
+pub fn fd_watch() {
+    use std::sync::atomic::{AtomicU8, Ordering};
+    static LAST: AtomicU8 = AtomicU8::new(0);
+    let (Some(open), limit) = (open_fds(), nofile_limit()) else { return };
+    let state = fd_state(open, limit);
+    let code = [crate::defaults::text("daemon.fd_state_ok"), crate::defaults::text("daemon.fd_state_soft"), crate::defaults::text("daemon.fd_state_hard")]
+        .iter()
+        .position(|s| *s == state)
+        .unwrap_or(0) as u8;
+    if LAST.swap(code, Ordering::Relaxed) != code {
+        crate::health::log_event(
+            crate::defaults::text("daemon.fd_log_kind"),
+            state,
+            &crate::defaults::render("daemon.fd_log_detail", &[("open", &open), ("limit", &limit), ("watch", &crate::watch::notify::open_fds())]),
+        );
+    }
+}
+
+/// One `<Key>: <n> kB` line of a `/proc/<pid>/status` text, in KB (`None` when the key is absent or not a number).
+pub fn status_field_kb(status: &str, key: &str) -> Option<u64> {
+    status.lines().find_map(|l| l.strip_prefix(key)).and_then(|v| v.split_whitespace().next()).and_then(|v| v.parse::<u64>().ok())
+}
+
+/// The data segment (`VmData`: private writable mappings, thread stacks and heap; the figure `RLIMIT_DATA` caps) of this process in KB.
+/// `None` where the platform does not report it (macOS), so the recycle below never fires there.
+pub fn vm_data_kb() -> Option<u64> {
+    #[cfg(target_os = "linux")]
+    {
+        return status_field_kb(&std::fs::read_to_string("/proc/self/status").ok()?, "VmData:");
+    }
+    #[allow(unreachable_code)]
+    None
+}
+
+/// True when the data segment has reached `pct` percent of the `mem_mb` ceiling `setrlimit` enforces: the daemon must recycle
+/// itself then, because past the ceiling an allocation fails and Rust aborts the process. `pct` 0 or `mem_mb` 0 turns it off.
+pub fn data_recycle_due(vm_data_kb: Option<u64>, mem_mb: u64, pct: u64) -> bool {
+    match vm_data_kb {
+        Some(kb) if mem_mb > 0 && pct > 0 => {
+            kb.saturating_mul(crate::defaults::num("daemon.mem_recycle_pct_base"))
+                >= mem_mb.saturating_mul(crate::defaults::num("daemon.kb_per_mb")).saturating_mul(pct)
+        }
+        _ => false,
+    }
+}
+
 /// The process's own memory, without file-backed pages other processes share or the kernel can reclaim (`None` where the platform
 /// will not say): macOS, `ri_phys_footprint` (what Activity Monitor shows); Linux, `RssAnon + RssShmem` from `/proc/self/status`.
 pub fn footprint_kb() -> Option<u64> {
@@ -453,6 +585,21 @@ pub fn ensure_private_dir(dir: &Path) -> Result<(), DirError> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn status_field_parses_and_recycle_threshold_is_exact() {
+        let st = "Name:\tah\nVmData:\t  409600 kB\nVmSize:\t 900000 kB\n";
+        assert_eq!(super::status_field_kb(st, "VmData:"), Some(409600));
+        assert_eq!(super::status_field_kb(st, "VmRSS:"), None);
+        // 512 MB ceiling at 80 % = 419430.4 KB: 409600 is under, 419431 is over
+        assert!(!super::data_recycle_due(Some(409600), 512, 80));
+        assert!(super::data_recycle_due(Some(419_431), 512, 80));
+        assert!(super::data_recycle_due(Some(524_288), 512, 100));
+        // off switches and an unreadable figure never recycle
+        assert!(!super::data_recycle_due(Some(u64::MAX), 0, 80));
+        assert!(!super::data_recycle_due(Some(u64::MAX), 512, 0));
+        assert!(!super::data_recycle_due(None, 512, 80));
+    }
+
     use super::*;
     use std::time::Duration;
 
@@ -567,7 +714,7 @@ mod tests {
 
     #[test]
     fn private_dir_is_created_0700_tightened_and_refuses_symlinks_and_files() {
-        let base = std::env::temp_dir().join(format!("ah-lim-{}", std::process::id()));
+        let base = crate::testtmp::path(format!("ah-lim-{}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&base)); // keep: cleanup that raced; an absent file is the goal state
         std::fs::create_dir_all(&base).unwrap();
         let d = base.join("d");

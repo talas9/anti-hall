@@ -102,6 +102,9 @@ pub static SILENT_AGENT_NUDGE: Scripted = Scripted::new("silent-agent-nudge", "s
 /// `task-guard`.
 pub static TASK_GUARD: Scripted = Scripted::new("task-guard", "task_guard.summary");
 
+/// `task-pair-guard` (PreToolUse and PostToolUse on Agent and Task, Stop; engine-only; R-pair, GH #589): every task is paired with the named agent working on it.
+pub static TASK_PAIR_GUARD: Scripted = Scripted::new("task-pair-guard", "pair_rule.summary");
+
 /// `tasklist-guard`.
 pub static TASKLIST_GUARD: Scripted = Scripted::new("tasklist-guard", "tasklist_guard.summary");
 
@@ -110,6 +113,12 @@ pub static STALE_AGENT_STOP_NOTE: Scripted = Scripted::new("stale-agent-stop-not
 
 /// `claim-ledger`.
 pub static CLAIM_LEDGER: Scripted = Scripted::new("claim-ledger", "claim_ledger.summary");
+
+/// `reply-length-guard` (Stop, Claude and Codex; R-style, GH #488 #489): a long reply the user did not ask for is held (guards.styleRule); counts every reply.
+pub static REPLY_LENGTH_GUARD: Scripted = Scripted::new("reply-length-guard", "reply_length.summary");
+
+/// `claim-evidence-guard` (Stop; engine-only; GH #313): a claim needs a tool call of this turn, and pushed is not done.
+pub static CLAIM_EVIDENCE_GUARD: Scripted = Scripted::new("claim-evidence-guard", "claim_evidence.summary");
 
 /// `idle-agent-sweep`.
 pub static IDLE_AGENT_SWEEP: Scripted = Scripted::new("idle-agent-sweep", "idle_sweep.summary");
@@ -262,8 +271,17 @@ pub static UNCOMMITTED_GUARD: Scripted = Scripted::new("uncommitted-guard", "unc
 /// `queued-wait-guard` (PreToolUse on Bash, subagents only; engine-only; GH #270).
 pub static QUEUED_WAIT_GUARD: Scripted = Scripted::new("queued-wait-guard", "queued_wait.summary");
 
+/// `cache-ttl-wait-guard` (PreToolUse on Bash, Monitor and TaskOutput, every agent; engine-only; GH #884): orders a long single wait to be split.
+pub static CACHE_TTL_WAIT_GUARD: Scripted = Scripted::new("cache-ttl-wait-guard", "cache_wait.summary");
+
 /// `lane-test-guard` (PreToolUse on Bash, subagents only; engine-only; GH #270).
 pub static LANE_TEST_GUARD: Scripted = Scripted::new("lane-test-guard", "lane_test.summary");
+
+/// `tasklist-hygiene` (PostToolUse and PreToolUse on TaskCreate and TaskUpdate; engine-only, Claude only): keeps the session task list small.
+pub static TASKLIST_HYGIENE: Scripted = Scripted::new("tasklist-hygiene", "tasklist_hygiene.summary");
+
+/// `afk-mode` (UserPromptSubmit, PostToolUse, Stop; Codex SessionStart, UserPromptSubmit, PostToolUse; engine-only; GH #425): AFK mode.
+pub static AFK_MODE: Scripted = Scripted::new("afk-mode", "afk.summary");
 
 /// `switch-notice` (run by the dispatcher on UserPromptSubmit and PreToolUse, not a hook row; engine-only): the up-front line about the session-wide switches.
 pub static SWITCH_NOTICE: Scripted = Scripted::new("switch-notice", "upfront.summary");
@@ -271,8 +289,20 @@ pub static SWITCH_NOTICE: Scripted = Scripted::new("switch-notice", "upfront.sum
 /// `wide-search-guard` (PreToolUse on Bash, every agent; engine-only; GH #174): blocks a whole-disk search rooted at /, ~, /Users or /Volumes.
 pub static WIDE_SEARCH_GUARD: Scripted = Scripted::new("wide-search-guard", "wide_search.summary");
 
+/// `advisor-guard` (PreToolUse Write/Edit/MultiEdit/ExitPlanMode, PostToolUseFailure Bash; engine-only; GH #404).
+pub static ADVISOR_GUARD: Scripted = Scripted::new("advisor-guard", "advisor.summary");
+
 /// `engine-role-note` (SessionStart and SubagentStart; engine-only).
 pub static ENGINE_ROLE_NOTE: Scripted = Scripted::new("engine-role-note", "roles.summary_note");
 
 /// `gh-rt-advisory` (UserPromptSubmit; engine-only): tells a session about GitHub edges (CI red or green, PR merged, changes requested).
 pub static GH_RT_ADVISORY: Scripted = Scripted::new("gh-rt-advisory", "github_rt.advisory_summary");
+
+/// `rule-digest` (SessionStart): the essential rules in the session context.
+pub static RULE_DIGEST: Scripted = Scripted::new("rule-digest", "guard_rules.summary");
+
+/// `session-banner` (SessionStart): one user-visible line.
+pub static SESSION_BANNER: Scripted = Scripted::new("session-banner", "guard_rules.summary_banner");
+
+/// `session-summary` (SessionEnd): one user-visible line.
+pub static SESSION_SUMMARY: Scripted = Scripted::new("session-summary", "guard_rules.summary_session");

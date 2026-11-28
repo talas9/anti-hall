@@ -61,8 +61,83 @@ doc = "TypeSafe's own direct API endpoint (Node: TYPESAFE.endpoint)."
 value = "https://api.typesafe.ai/v1/systemone"
 
 [jev.model_typesafe]
-doc = "Model name sent to the direct TypeSafe transport (Node: TYPESAFE.model)."
+doc = "The moving alias sent to the direct TypeSafe transport only when the shipped jev.model_pin is emptied; the doctor warns while it is in use (Node: TYPESAFE.model)."
 value = "jev-latest"
+
+[jev.model_pin]
+doc = "The versioned model id sent to the direct TypeSafe API, so a provider alias move (jev-latest) cannot change the model under tuned thresholds; the provider advises pinning a versioned id. Override with the jev.modelPin setting (set it to jev-latest to follow the moving alias; the doctor warns). An empty shipped value falls back to jev.model_typesafe. Not applied to the Vercel gateway id (jev.model_vercel): the gateway docs do not document a versioned id there."
+value = "jev-1.14.0"
+
+[jev.model_pin_released]
+doc = "Release date (YYYY-MM-DD) of the model version jev.model_pin names (jev-1.14.0: the provider lists jev-latest, which answered jev-1.14.0 on 2026-11-20, as released 2026-10-22). The doctor compares it with the release dates the provider lists; for a newer-dated entry it makes one call to that id and warns only when the answered model id differs from the pin (date-only warning when no id comes back). Bump it together with jev.model_pin."
+value = "2026-10-22"
+
+[jev.models_path]
+doc = "Path, on the origin of jev.endpoint_typesafe, of the provider's model list the doctor reads (one read-only GET with the TypeSafe key). Verified live 2026-11-20: it answers {\"models\":[{\"name\",\"description\",\"release_date\"}]} and lists only the aliases jev-latest and jev-preview, not versioned ids."
+value = "/v1/models"
+
+[jev.models_list_field]
+doc = "Field of the model-list answer that holds the array of models."
+value = "models"
+
+[jev.models_name_field]
+doc = "Field of one listed model that holds its id."
+value = "name"
+
+[jev.models_date_field]
+doc = "Field of one listed model that holds its release date (ISO 8601; only the leading YYYY-MM-DD is compared)."
+value = "release_date"
+
+[jev.models_preview_marker]
+doc = "A listed model whose id contains this text is a preview and never counts as a newer release."
+value = "preview"
+
+[jev.key_source_own]
+doc = "Plain-words name of a key that came from the vendor's own plugin option."
+value = "the vendor's own plugin option"
+
+[jev.key_source_generic]
+doc = "Plain-words name of a key that came from the generic (vendor-less) plugin option."
+value = "the generic plugin option"
+
+[jev.key_source_file]
+doc = "Plain-words name of a key that came from a key file (jev.allowLegacyKeyRead on)."
+value = "a key file"
+
+[jev.state_max_tokens]
+doc = "Per-question input cap in estimated tokens: the state text is cut to this many tokens (jev.chars_per_token characters each) before it is sent, because the provider rejects a question over its default 32k-token limit (the long-context header is not used). Override with the jev.stateMaxTokens setting."
+value = 30000
+min = 1
+unit = "tokens"
+
+[jev.chars_per_token]
+doc = "Characters per token in the state-size estimate (a rough heuristic, not a tokenizer)."
+value = 4
+min = 1
+
+[jev.telemetry_backend]
+doc = "The backend label of Jev's model-call telemetry events (counted per model id sent)."
+value = "jev"
+
+[jev.telemetry_purpose_call]
+doc = "The purpose label of the telemetry event recorded for each request, per model id sent."
+value = "call"
+
+[jev.telemetry_purpose_truncated]
+doc = "The purpose label of the telemetry event recorded when a state was cut to jev.state_max_tokens (tokens_in = the estimated tokens removed)."
+value = "state_truncated"
+
+[jev.skip_nothing_to_relax]
+doc = "The reason written on the decision-log row and in the telemetry error field of a call that never reached Jev: a relax-block guard whose baseline is not blocking."
+value = "nothing-to-relax"
+
+[jev.skip_shed]
+doc = "The reason written on the decision-log row and in the telemetry error field of a call that never reached Jev: the engine is past its hard CPU limit."
+value = "shed"
+
+[jev.skip_deferred]
+doc = "The reason written on the decision-log row and in the telemetry error field of a call that never reached Jev: the caller could not wait; the question went out asynchronously."
+value = "deferred"
 
 [jev.timeout_ms]
 doc = "HARD limit (the per-call time budget) for one Jev call, request, headers and body together; the SOFT limit is jev.soft_ms (Node: DEFAULT_TIMEOUT_MS)."
@@ -78,14 +153,14 @@ min = 1
 unit = "ms"
 
 [jev.stop_soft_ms]
-doc = "SOFT limit of a Jev call made by a Stop or SubagentStop (dispatch.stop_events), the only events that wait for Jev: slower is logged (jev_slow) and counted, the answer is still used."
-value = 500
+doc = "SOFT limit of a Jev call made by a Stop or SubagentStop (dispatch.stop_events), the only events that wait for Jev: slower is logged (jev_slow) and counted, the answer is still used. Only a Stop whose rule checks flagged a claim with evidence waits at all (jev.gate_enabled, speculation_guard.jev_gate), so the other Stops pay nothing."
+value = 800
 min = 1
 unit = "ms"
 
 [jev.stop_hard_ms]
-doc = "HARD limit of a Jev call made by a Stop or SubagentStop: the wait is cut there and the check keeps its baseline (fail-open). PreToolUse and UserPromptSubmit never wait: they answer from the baseline and the cache while the question goes out asynchronously."
-value = 1000
+doc = "HARD limit of a Jev call made by a Stop or SubagentStop: the wait is cut there and the check keeps its baseline (fail-open). PreToolUse and UserPromptSubmit never wait: they answer from the baseline and the cache while the question goes out asynchronously. 1500 equals jev.timeout_ms (Node's limit) and fits inside daemon.request_hard_ms less daemon.reply_slack_ms and the client late-reply wait; a late answer still lands in the cache and the log."
+value = 1500
 min = 1
 unit = "ms"
 
@@ -120,8 +195,8 @@ value = 3000
 unit = "ms"
 
 [jev.queue_cap]
-doc = "Calls the asynchronous queue holds; a call that finds it full is logged as busy and gets its baseline, so the queue can never grow without bound (D15)."
-value = 64
+doc = "Calls the asynchronous queue holds; a call that finds it full is logged as busy and gets its baseline, so the queue can never grow without bound (D15). 128 (was 64): busy overflow was observed on 2026-11-08 and 2026-11-12 at 64."
+value = 128
 min = 1
 max = 4096
 
@@ -168,8 +243,8 @@ value = 600
 unit = "ms"
 
 [jev.fallback_reserve_pct]
-doc = "The reserve is at most this percent of the total budget (Node: Math.floor(totalMs * 0.4))."
-value = 40
+doc = "The reserve is at most this percent of the total budget (Node: Math.floor(totalMs * 0.4)). 25 (was 40): the primary gets the timeout minus this reserve, and 40 starved it of budget."
+value = 25
 min = 0
 max = 100
 
@@ -219,7 +294,7 @@ unit = "bytes"
 
 [jev.default_modes]
 doc = "Default mode of every known integration, on, shadow or off: the Node settings schema's jevIntegrations defaults. Jev only changes an outcome in on mode, and never removes a block or advisory (D36)."
-value = { speculation = "on", triage = "on", newRequest = "shadow", claimLedger = "shadow", outputVerifyGuard = "shadow", gitGuardSelfCredit = "shadow", modelRouting = "shadow", tasklistTrivial = "shadow", codexNudgeSubstantial = "shadow", mergeGateHedge = "shadow", parentGateQuestion = "shadow", supervisorBlockerLabel = "shadow", findingDedup = "on", postHandoverGate = "off", speculationFramed = "shadow", dispatchTier = "on", devswarmOnBrief = "on", devswarmExtraSanctioned = "on", devswarmWaitKind = "on", devswarmLoop = "on", devswarmStepMap = "on", agentWaste = "on", agentHealth = "on", nudgeReason = "on", nudgeReply = "on" }
+value = { speculation = "on", triage = "on", newRequest = "shadow", claimLedger = "shadow", outputVerifyGuard = "shadow", gitGuardSelfCredit = "off", modelRouting = "shadow", tasklistTrivial = "shadow", codexNudgeSubstantial = "shadow", mergeGateHedge = "shadow", parentGateQuestion = "shadow", supervisorBlockerLabel = "shadow", findingDedup = "on", postHandoverGate = "off", speculationFramed = "shadow", dispatchTier = "on", devswarmOnBrief = "on", devswarmExtraSanctioned = "on", devswarmWaitKind = "on", devswarmLoop = "on", devswarmStepMap = "on", agentWaste = "on", agentHealth = "on", nudgeReason = "on", nudgeReply = "on" }
 
 [jev.unlisted_mode]
 doc = "Mode of an integration id that is not in the table (Node: every id that is not one of the legacy on-by-default ones)."

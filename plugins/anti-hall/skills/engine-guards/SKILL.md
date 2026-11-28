@@ -17,69 +17,114 @@ What the automatic guards check and how to read a block.
 
 ## Guards
 
-- `ship-it-guard`: Opt-in plan gate: blocks edits to hard-risk files with no PLAN.md and advises on files a plan's...
-- `command`: command-guard (PreToolUse on Bash): heavy-command and Bash-write delegation gate; the engine...
-- `verify-first-subagent`: SubagentStart context: injects the verify-first protocol (compact, or full when...
-- `verify-first-full`: SessionStart context: injects the verify-first protocol and discipline index for the session,...
-- `inbox-read-guard`: Blocks a Read of the raw DevSwarm inbox; a Read of the raw store defers to Node, which probes...
-- `verify-first`: UserPromptSubmit: the short rotating verify-first reminder, deduplicated per session; DevSwarm...
-- `api-guard`: Fabricated-API guard: answers every call the Node api-guard would allow without probing an...
-- `broad-kill-guard`: PreToolUse on Bash, every agent: blocks pkill, killall, `kill -9 -1`, a kill of process group 0...
-- `queued-wait-guard`: PreToolUse on Bash, subagents only: blocks a build or test command started with...
-- `lane-test-guard`: PreToolUse on Bash, subagents only: blocks suite-scale test commands (cargo test or nextest...
-- `wide-search-guard`: PreToolUse on Bash, every agent (subagents and the main thread): blocks a whole-disk search...
-- `switch-notice`: Run by the dispatcher on UserPromptSubmit and PreToolUse (an engine-only dispatch row): tells...
-- `burn-breaker`: PreToolUse on every tool, subagents only: while the agent tracker holds the hard burn flag...
-- `uncommitted-guard`: PreToolUse on Edit, Write, MultiEdit, NotebookEdit and apply_patch, subagents only: warns past...
+- `ship-it-guard`: Require plans for hard-risk edits
+- `command`: Delegate heavy commands and shell writes
+- `verify-first-subagent`: Deliver the verify-first protocol to subagents
+- `verify-first-full`: Deliver session verify-first rules
+- `inbox-read-guard`: Require bounded DevSwarm inbox reads
+- `verify-first`: Deliver deduplicated verify-first reminders
+- `api-guard`: Check APIs against verified declarations
+- `cache-ttl-wait-guard`: Order long single waits to be split
+- `switch-notice`: Report guard switch changes
 
 ## Switches
 
-- `guards.allowSubagentMailbox` = false: guards.allowSubagentMailbox: a one-off allow of the subagent mailbox verbs (default off)
-- `guards.editGuardAllow` = "": guards.editGuardAllow: extra file globs edit-guard allows (comma or colon separated, empty by...
-- `guards.allowBackgroundScratchScripts` = true: guards.allowBackgroundScratchScripts: the background scratch script allowance (default on)
-- `guards.allowGcloudReads` = true: guards.allowGcloudReads: the narrow read-only Google Cloud access (default on)
-- `guards.allowPlainPush` = true: guards.allowPlainPush: the plain git push chain allowance (default on)
-- `guards.allowReadOnlyVerify` = true: guards.allowReadOnlyVerify: the bounded single-target verification allowance (default on)
-- `guards.allowReadOnlyVerifyScripts` = true: guards.allowReadOnlyVerifyScripts: the script form of that allowance (default on)
-- `guards.bashEditParity` = true: guards.bashEditParity: edit-guard's verdict applied to Bash writes (default on)
-- `guards.projectCommandAllow` = true: guards.projectCommandAllow: the per-project command allowlist (default on)
-- `guards.projectEditAllow` = true: guards.projectEditAllow: the per-project edit allowlist (default on)
-- `guards.stashGuard` = false: guards.stashGuard: arms the git stash guard for every repository (default off)
-- `guards.apiGuard` = true: Where the guard's own on/off switch is read from (guards.apiGuard, default on)
-- `guards.shellWriteChecks` = true: Where the switch for checking the code a shell write puts in a file is read from...
-- `guards.apiGuardThirdparty` = false: Where the switch for also verifying installed third-party packages is read from...
-- `safety.commandGuard` = true: Where command-guard's on/off switch is read from (safety.commandGuard, default on); the work...
-- `safety.editGuard` = true: Where the guard's on/off switch is read from (safety.editGuard, default on)
-- `guards.modelRoutingDeployFloor` = "sonnet": Where the deploy/migration/secret model floor (sonnet, opus, off) is read from...
-- `guards.modelRouting` = "strict": Where the model-routing mode (strict, advisory, off) is read from (guards.modelRouting): the...
-- `guards.allowAnthropicEnvKey` = false: The home-only switch that lets ANTHROPIC_API_KEY count as a key (guards.allowAnthropicEnvKey; no...
-- `guards.allowNestedSpawns` = false: Switch guards.allowNestedSpawns (default off): on lets a subagent or teammate start agents of...
-- `guards.spawnCeiling` = true: The switch guards.spawnCeiling (on by default); off makes the fan-out ceiling a no-op
-- `guards.usageAwareDispatch` = true: The switch guards.usageAwareDispatch (on by default); off makes usage-aware dispatch a no-op
-- `guards.pruneCompletedTasksAfter` = 10: How many completed or cancelled tasks the list may hold before the Stop advisory suggests...
-- `guards.laneTestGuard` = true: Switch guards.laneTestGuard (default on): off lets a subagent run suite-scale test commands
-- `guards.allowTestSuites` = false: Switch guards.allowTestSuites (default off): on lets a subagent run suite-scale test commands...
-- `guards.testPolicy` = "targeted": Setting guards.testPolicy (none, targeted or suites; default targeted): none blocks EVERY...
-- `guards.testPolicyMainThread` = false: Switch guards.testPolicyMainThread (default off): on makes testPolicy none apply to the main...
-- `guards.queuedWaitGuard` = true: Switch guards.queuedWaitGuard (default on): off lets a subagent run heavy commands in the...
-- `guards.allowWideSearch` = false: Switch guards.allowWideSearch (default off): on lets every agent run whole-disk searches (the...
-- `guards.broadKill` = true: Switch guards.broadKill (default on, a locked safety switch): off lets every agent run pkill,...
-- `guards.uncommittedWork` = true: Switch guards.uncommittedWork (default on): off lets a subagent leave any amount of work uncommitted
-- `statusline.devswarm.enabled` = true: Show the DevSwarm workspace dashboard segment in the statusline (on by default; it shows nothing...
+- `guards.allowSubagentMailbox` = false: Allow subagent mailbox verbs
+- `guards.editGuardAllow` = "": extra file globs edit-guard allows (comma or colon separated, empty by default)
+- `guards.commandNameSegment` = true: Name the heavy segment in command blocks
+- `guards.allowBackgroundScratchScripts` = true: Allowance for background scratch scripts (default on)
+- `guards.allowGcloudReads` = true: the narrow read-only Google Cloud access (default on)
+- `guards.allowPlainPush` = true: the plain git push chain allowance (default on)
+- `guards.allowReadOnlyVerify` = true: the bounded single-target verification allowance (default on)
+- `guards.allowReadOnlyVerifyScripts` = true: the script form of that allowance (default on)
+- `guards.bashEditParity` = true: edit-guard's verdict applied to Bash writes (default on)
+- `guards.projectCommandAllow` = true: the per-project command allowlist (default on)
+- `guards.projectEditAllow` = true: the per-project edit allowlist (default on)
+- `guards.stashGuard` = false: arms the git stash guard for every repository (default off)
+- `guards.commandResolveWrapperScripts` = true: Judge shell wrappers by their script body
+- `guards.apiGuard` = true: Switch for the fabricated-API guard
+- `guards.shellWriteChecks` = true: Switch for checking code a shell write adds
+- `guards.apiGuardThirdparty` = false: Switch for verifying third-party packages
+- `safety.commandGuard` = true: Switch for command-guard
+- `safety.editGuard` = true: Gate coordinator edits
+- `guards.modelRoutingDeployFloor` = "sonnet": Model floor for deploys and secrets
+- `guards.exploreHintExec` = true: Withholds the Explore hint for file-writing briefs
+- `guards.exploreHintSkip` = true: Withhold Explore hints for reviews and tests
+- `guards.modelRouting` = "strict": Model-routing mode
+- `guards.allowAnthropicEnvKey` = false: Home-only switch that lets ANTHROPIC_API_KEY count as a key
+- `guards.failOpenNonSafety` = true: Non-safety guards pass when unanswered
+- `context.protocolFullAfterCompact` = true: Full rules on compaction
+- `context.protocolOnce` = true: Once-per-session protocol text switch
+- `guards.keepaliveCountsScheduled` = false: Count scheduled turns toward keepalives
+- `guards.stallOrderAfterMin` = 60: Where the minutes without a commit before a working workspace counts as stalled are read from...
+- `guards.stallOrder` = true: Where the on/off switch of the stalled-delivery orders is read from (guards.stallOrder, default on)
+- `guards.wasteWarnTokens` = 1000: First saved-token warning threshold
+- `guards.wasteWarnWindowMin` = 60: Saved-token warning window, minutes
+- `guards.wasteWarn` = true: Warn when saved-token levels rise
+- `context.promptDigestLines` = 3: Max lines of the prompt digest
+- `context.promptDigestMin` = 3: Min advisories before the digest applies
+- `context.promptDigest` = true: Prompt digest switch
+- `context.inlineEventChars` = 6000: Characters all hooks of one event may inline together (0 = no total)
+- `context.inlineHookChars` = 1500: Inline character cap of one hook
+- `context.shrinkInline` = true: Master switch of the inline caps
+- `context.inlinePinned` = true: Pinned inline
+- `guards.pushedNotDone` = true: Pushed work is not done switch
+- `guards.denyChildQuestions` = true: Refuse child workspace questions
+- `guards.denyPrimaryQuestions` = true: Refuse Primary questions
+- `guards.runtimeStopReconcile` = true: Reconcile stale runtime Stop snapshots
+- `guards.stopReblockMax` = 2: Allowed unchanged Stop repeats
+- `guards.stopReblock` = true: Bound unchanged coordination Stop repeats
+- `guards.allowNestedSpawns` = false: On lets subagents and teammates start agents
+- `guards.maxConcurrentAgents` = 6: Cap on agents running at once (default 6, 0 = no cap)
+- `guards.spawnCeiling` = true: Limit simultaneous agent fan-out
+- `guards.usageAwareDispatch` = true: Use usage-aware dispatch
+- `guards.priorityTagBlockMax` = 2: Max priority-tag Stop blocks per tag set
+- `guards.priorityTagCheck` = true: Stop check for non-P0-P3 priority tags
+- `guards.pruneStopBlockMax` = 2: Max prune Stop blocks per completed-task count
+- `guards.pruneStopBlock` = true: Capped Stop block after an ignored prune advisory
+- `guards.pruneCompletedTasksAfter` = 3: Completed or cancelled tasks kept before the task tracker suggests pruning
+- `guards.inlineRule` = false: R-inline
+- `guards.ownerApprovalPass` = false: Owner-approval pass-through
+- `guards.transcriptProtect` = true: Transcript protection
+- `guards.cacheWaitGuard` = true: Order a long single wait to be split
+- `guards.advisorPlan` = true: Blocks a plan written with no advisor call once
+- `guards.advisorRank` = false: Skips plan/retry blocks for an equal/higher main
+- `guards.advisorRetry` = true: Blocks a re-edit after a failed run with no advisor call once
+- `guards.advisorReview` = true: Blocks a non-flagship review agent once
+- `guards.advisorSayDo` = true: Blocks a Stop once per turn that promises an advisor call
+- `guards.advisorThinking` = true: Nudges, then blocks once, thinking dispatch by a non-flagship main
+- `guards.broadKill` = true: Switch for the broad-kill guard
+- `guards.uncommittedWork` = true: Warn about uncommitted subagent work
+- `statusline.devswarm.enabled` = true: Show the DevSwarm statusline segment
 - `statusline.devswarm.format` = "ws {parts}": The segment text
 - `statusline.devswarm.max_chars` = 40: The segment is cut to this many characters (an ellipsis marks the cut)
-- `statusline.devswarm.stale_ms` = 180000: A snapshot (or one workspace's activity) observed longer ago than this is shown as `?` instead...
-- `guards.handoverHygiene` = true: Where the on/off switch is read from (guards.handoverHygiene, default on)
-- `devswarm_sup.dryRun.retention` = false: Dry run of the native retention: it plans and compares with Node's planner, logs what it would...
-- `devswarm_sup.dryRun.verdicts` = false: Dry run of the native liveness sweep: it computes every verdict and reports what it would write,...
+- `statusline.devswarm.stale_ms` = 180000: Data older than this shows as `?`, not a guess
+- `guards.handoverHygiene` = true: Enforce handover hygiene
+- `devswarm_sup.dryRun.retention` = false: Retention dry run (writes nothing)
+- `devswarm_sup.dryRun.verdicts` = false: Liveness sweep dry run (writes nothing)
 - `devswarm_sup_env.retention_budget_ms` = 5000: Time budget of one store's tombstoning batches (environment only, as in Node:...
 - `devswarm_sup.retention.capAlone` = false: Owner-gated (OFF by default)
 - `devswarm_sup.retention.foldAlone` = false: Owner-gated (OFF by default)
-- `devswarm.inlineWorkNudge` = true: Where the inline-work advisory's on/off switch is read from (devswarm.inlineWorkNudge, default on)
-- `devswarm.inlineWorkNudgeThreshold` = 5: Where the inline-work advisory's call threshold is read from (devswarm.inlineWorkNudgeThreshold,...
-- `guards.repeatHint` = true: Switch guards.repeatHint (default on): a guard that blocks the same session again and again...
-- `guards.delegateStandDown` = true: Switch guards.delegateStandDown (default on): while no agent can be spawned the delegate-only...
-- `guards.agentSpawnAvailable` = "auto": Host spawn capability: auto uses the request's advertised tools, otherwise standdown.hosts...
-- `guards.upfrontNotice` = true: Switch guards.upfrontNotice (default on): one short line when a session-wide switch changes...
+- `guards.editGuardCapEdit` = true: guards.editGuardCapEdit: near the usage cap, edit-guard lets the main thread make a small,...
+- `devswarm.inlineWorkNudge` = true: Advise against inline workspace work
+- `devswarm.inlineWorkNudgeThreshold` = 5: Inline calls before an advisory
+- `guards.commandDeployScriptsAsWritten` = true: Judge role scripts as written
+- `guards.handoverRedirect` = true: Redirect new handovers written outside anti-hall's handover folder
+- `guards.repeatHint` = true: Switch for the repeated-block hint
+- `guards.delegateStandDown` = true: Relax delegation when spawning is unavailable
+- `guards.agentSpawnAvailable` = "auto": Detect or override host spawn capability
+- `guards.upfrontNotice` = true: Switch for the switch-change notice
+- `guards.pairPostAuthoritativeTasks` = true: Use authoritative tasks for post-tool pairing
+- `guards.diskToolAdvisoryOnChangeRepeatS` = 21600: Unchanged disk reminder interval, seconds
+- `guards.orchestrationOncePerSessionRepeatS` = 0: Unchanged orchestration reminder interval, seconds
+- `guards.pairAdvisoryOnChangeRepeatS` = 7200: Unchanged pair reminder interval, seconds
+- `guards.subagentProtocolOnChangeRepeatS` = 0: Unchanged subagent reminder interval, seconds
+- `guards.usageAdvisoryOnChangeRepeatS` = 7200: Unchanged usage reminder interval, seconds
+- `guards.diskToolAdvisoryOnChange` = true: Emit disk advisories on change
+- `guards.orchestrationOncePerSession` = true: Emit orchestration rules on context change
+- `guards.pairAdvisoryOnChange` = true: Emit pair advisories on change
+- `guards.subagentProtocolOnChange` = true: Emit subagent protocol on change
+- `guards.usageAdvisoryOnChange` = true: Emit usage advisories on change
+- `guards.usageAdvisoryBucketPct` = 5: Usage percentage bucket width
 
 _Generated from the engine registry by `ah-engine docs --format skill`; do not edit by hand._

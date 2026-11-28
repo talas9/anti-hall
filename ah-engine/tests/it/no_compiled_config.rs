@@ -73,17 +73,29 @@ fn no_rule_text_is_embedded_in_the_binary() {
     let bin = std::fs::read(BIN).unwrap();
     let rules: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(engine_dir().join("rules.json")).unwrap()).unwrap();
     let mut heads: Vec<(&str, String)> = Vec::new();
-    for r in rules["rules"].as_array().unwrap() {
+    let all = rules["rules"].as_array().unwrap();
+    let mut unscanned: Vec<String> = Vec::new();
+    for r in all {
+        let before = heads.len();
         for k in ["pattern", "message"] {
             if let Some(t) = r[k].as_str().filter(|t| t.chars().count() >= 24) {
                 heads.push((k, t.chars().take(24).collect()));
             }
         }
+        if heads.len() == before {
+            unscanned.push(r["id"].to_string());
+        }
     }
     let checked = heads.len();
     let hits = found(&bin, &heads.iter().map(|(_, h)| h.as_bytes()).collect::<Vec<_>>());
     assert!(hits.is_empty(), "rule text is compiled into the binary: {:?}", hits.iter().map(|&i| &heads[i]).collect::<Vec<_>>());
-    assert!(checked >= 4, "the scan is vacuous: {checked}");
+    // Non-vacuous by construction, not by a literal floor: the file must carry rules and every rule must contribute at least
+    // one scanned text (message texts live in the defaults TOML via message_ref and are covered by the defaults scan).
+    assert!(
+        !all.is_empty() && checked >= all.len() && unscanned.is_empty(),
+        "the scan is vacuous: {checked} texts for {} rules, unscanned {unscanned:?}",
+        all.len()
+    );
 }
 
 #[test]

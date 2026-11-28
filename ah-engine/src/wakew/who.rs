@@ -44,6 +44,15 @@ impl Proc {
         matches!(get_setting(&self.st, defaults::raw(key), None, &self.root), Ok(Some(Value::Bool(false))))
     }
 
+    /// Wake coalescing for a watcher of `role` (GH #884): `Some(rewake ms)` when `devswarm.wakeWatchCoalesce` is on and the role is
+    /// one of `wake_watch.coalesce_roles`, else `None`.
+    pub fn coalesce_ms(&self, role: &str) -> Option<f64> {
+        if self.switched_off("wake_watch.set_coalesce") || !defaults::list("wake_watch.coalesce_roles").contains(&role) {
+            return None;
+        }
+        Some(get_num(&self.st, defaults::raw("wake_watch.set_rewake_ms")).max(0.0))
+    }
+
     /// `pollMsFromEnv`: the poll interval in milliseconds, clamped to the schema's bounds.
     pub fn poll_ms(&self) -> u64 {
         let entry = defaults::raw("wake_watch.set_poll_ms");
@@ -254,7 +263,7 @@ mod tests {
     /// run, as `isDevswarmActiveGate` runs them (devswarm-wake-watch.js:1567-1613).
     #[test]
     fn an_unreadable_settings_file_still_lets_the_later_tiers_arm_the_gate() {
-        let home = std::env::temp_dir().join(format!("ah-who-gate-{}", std::process::id()));
+        let home = crate::testtmp::path(format!("ah-who-gate-{}", std::process::id()));
         std::fs::create_dir_all(home.join(".anti-hall")).unwrap();
         std::fs::write(home.join(".anti-hall/settings.json"), "{not json").unwrap();
         let env: Env = [(defaults::text("wake_watch.env_source_branch"), "b"), (defaults::text("mesh_write.env_builder_id"), "id1")]

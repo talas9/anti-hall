@@ -391,10 +391,12 @@ struct Archived {
 }
 
 #[allow(clippy::type_complexity)] // a skip-reason callback
-fn archive_via_verb(inv: &Inv, id: &str, revalidate: Option<&dyn Fn(&OVal) -> Option<String>>) -> Archived {
+/// `parked`: the HEAD at which the caller (respawn) pushed the workspace's work to a park branch; the archive then refuses only a commit
+/// made after it.
+fn archive_via_verb(inv: &Inv, id: &str, revalidate: Option<&dyn Fn(&OVal) -> Option<String>>, parked: Option<String>) -> Archived {
     let argv = vec![text("devswarm_cli.action_archive").to_string(), id.to_string()];
     let args = crate::meshw::args::parse(&argv);
-    match crate::meshw::archiveverb::archive_with(inv, &args, revalidate) {
+    match crate::meshw::archiveverb::archive_with_guard(inv, &args, revalidate, parked) {
         Ok(ans) => {
             let r = OVal::parse(ans.stdout.trim());
             let skipped = r
@@ -482,7 +484,7 @@ pub fn reap_stale(inv: &Inv, a: &Args) -> R<Answer> {
         // P1-5: the safety condition is re-checked INSIDE the workspace's lock, immediately before the archive writes, so a workspace
         // that heartbeats or commits after the candidates were collected is skipped, not archived
         let recheck = |desc: &OVal| -> Option<String> { reap_recheck(inv, &c.id, c.path(), &repo_key, desc, fresh_ms, idle_ms, &states).map(str::to_string) };
-        let r = archive_via_verb(inv, &c.id, Some(&recheck));
+        let r = archive_via_verb(inv, &c.id, Some(&recheck), None);
         if let Some(reason) = &r.skipped {
             skipped.push(skip(&c.id, reason));
             continue;
@@ -611,7 +613,7 @@ pub fn reconcile_active(inv: &Inv, a: &Args) -> R<Answer> {
     }
     let mut archived = Vec::new();
     for id in &cand_ids {
-        let r = archive_via_verb(inv, id, None);
+        let r = archive_via_verb(inv, id, None, None);
         let mut e = Obj::default();
         e.put("id", s(id)).put("ok", OVal::Bool(r.ok)).put("error", s_or_null(r.error.as_deref()));
         archived.push((r.ok, e.done()));
@@ -860,13 +862,13 @@ fn git(cwd: &str, args: &[String]) -> GitOut {
 
 /// `worktreeState(wt)`: the branch HEAD is on, whether the tree is dirty, and the commits no origin ref contains (`None` when git
 /// cannot say).
-struct WtState {
-    branch: Option<String>,
-    dirty: bool,
-    unpushed: Option<f64>,
+pub(crate) struct WtState {
+    pub(crate) branch: Option<String>,
+    pub(crate) dirty: bool,
+    pub(crate) unpushed: Option<f64>,
 }
 
-fn worktree_state(wt: Option<&str>) -> Result<WtState, String> {
+pub(crate) fn worktree_state(wt: Option<&str>) -> Result<WtState, String> {
     let shown = wt.unwrap_or("undefined");
     let Some(wt) = wt.filter(|w| !w.is_empty() && std::path::Path::new(w).exists()) else {
         return Err(tpl("devswarm_cli.rs_msg_no_worktree", &[("wt", shown)]));
@@ -889,8 +891,102 @@ fn worktree_state(wt: Option<&str>) -> Result<WtState, String> {
     })
 }
 
+/// The commit HEAD names in `wt`, `None` when git cannot say.
+pub(crate) fn head_of(wt: &str) -> Option<String> {
+    let h = git(wt, &argv("devswarm_cli.rs_git_rev_head", &[]));
+    (h.ok && !h.out.is_empty()).then_some(h.out)
+}
+
+/// #943: the submodules `wt` is "dirty" for ONLY because their checkout differs from the superproject's index. `Some(list)` of
+/// `(path, head)` when every `git status` entry is such a submodule, each one clean (recursively) with its HEAD on a remote branch;
+/// `None` when anything else is unsaved, or git cannot say (fail safe). Reads the `S<c><m><u>` field of `status --porcelain=v2`.
+pub(crate) fn submodule_drift(wt: &str) -> Option<Vec<(String, String)>> {
+    let mut out = Vec::new();
+    drift_in(wt, "", defaults::num("devswarm_cli.ar_sub_max_depth"), &mut out).then_some(out)
+}
+
+/// True when `dir` holds nothing unsaved but pushed submodule drift; the drifted submodules (path relative to the top) are appended.
+fn drift_in(dir: &str, prefix: &str, depth: u64, out: &mut Vec<(String, String)>) -> bool {
+    let st = git(dir, &argv("devswarm_cli.ar_git_status_v2", &[]));
+    if !st.ok {
+        return false;
+    }
+    for line in st.out.lines().filter(|l| !l.is_empty()) {
+        // `1 <XY> <sub> <mH> <mI> <mW> <hH> <hI> <path>`: an ordinary entry; only it can be a submodule's checkout drift
+        let f: Vec<&str> = line.splitn(9, ' ').collect();
+        let (Some(&"1"), Some(xy), Some(sub), Some(path)) = (f.first(), f.get(1), f.get(2), f.get(8)) else {
+            return false;
+        };
+        let (mut xy, mut sub) = (xy.chars(), sub.chars());
+        // not staged (a staged bump is a change the child made on purpose and left uncommitted); a submodule whose commit changed and
+        // whose own tracked files and untracked files are untouched
+        if xy.next() != Some('.') || sub.next() != Some('S') || sub.next() != Some('C') || sub.next() != Some('.') || sub.next() != Some('.') {
+            return false;
+        }
+        let abs = std::path::Path::new(dir).join(path).to_string_lossy().to_string();
+        if depth == 0 || !std::path::Path::new(&abs).is_dir() {
+            return false;
+        }
+        // git run in a directory that is not a repository of its own falls back to the superproject: the submodule must be its own root
+        let top = git(&abs, &argv("devswarm_cli.ar_git_toplevel", &[]));
+        if !top.ok || std::fs::canonicalize(&top.out).ok() != std::fs::canonicalize(&abs).ok() {
+            return false;
+        }
+        let Some(head) = head_of(&abs) else { return false };
+        let on_remote = git(&abs, &argv("devswarm_cli.ar_git_sub_contains", &[]));
+        if !on_remote.ok || on_remote.out.is_empty() {
+            return false;
+        }
+        // every nested submodule, whether or not `git status` lists it: a nested gitlink at a commit nobody pushed is invisible to status
+        if !nested_pushed(&abs, depth - 1) {
+            return false;
+        }
+        let rel = format!("{prefix}{path}");
+        // the submodule itself may hold drifted submodules of its own; anything else it holds is unsaved
+        if !drift_in(&abs, &format!("{rel}/"), depth - 1, out) {
+            return false;
+        }
+        out.push((rel, head));
+    }
+    true
+}
+
+/// True when every initialized submodule recorded in `dir`'s index (recursively) is its own repo root, is clean and has its HEAD on a
+/// remote branch. An uninitialized one holds nothing here. Any git error, or nesting past `depth`, is false (fail safe).
+fn nested_pushed(dir: &str, depth: u64) -> bool {
+    let ls = git(dir, &argv("devswarm_cli.ar_git_ls_gitlinks", &[]));
+    if !ls.ok {
+        return false;
+    }
+    let mode = text("devswarm_cli.ar_gitlink_mode");
+    for ent in ls.out.split('\0').filter(|e| !e.is_empty()) {
+        let Some((meta, path)) = ent.split_once('\t') else { return false };
+        if meta.split(' ').next() != Some(mode) {
+            continue;
+        }
+        let abs = std::path::Path::new(dir).join(path);
+        if !abs.join(".git").exists() {
+            continue;
+        }
+        let abs = abs.to_string_lossy().to_string();
+        if depth == 0 {
+            return false;
+        }
+        let top = git(&abs, &argv("devswarm_cli.ar_git_toplevel", &[]));
+        if !top.ok || std::fs::canonicalize(&top.out).ok() != std::fs::canonicalize(&abs).ok() {
+            return false;
+        }
+        let st = git(&abs, &argv("devswarm_cli.rs_git_status", &[]));
+        let on_remote = git(&abs, &argv("devswarm_cli.ar_git_sub_contains", &[]));
+        if !st.ok || !st.out.is_empty() || !on_remote.ok || on_remote.out.is_empty() || !nested_pushed(&abs, depth - 1) {
+            return false;
+        }
+    }
+    true
+}
+
 /// `needsPark(state)`: work would be lost without a park branch.
-fn needs_park(st: &WtState) -> bool {
+pub(crate) fn needs_park(st: &WtState) -> bool {
     st.dirty || st.unpushed.is_none_or(|u| u > 0.0)
 }
 
@@ -1346,7 +1442,9 @@ pub fn respawn(inv: &Inv, a: &Args) -> R<Answer> {
     // (b) park whatever is still dirty or unpushed
     let wt_path = wt.as_deref().unwrap_or_default();
     let mut park: Option<Parked> = None;
+    let mut parked_head: Option<String> = None;
     if needs_park(&cur) {
+        parked_head = head_of(wt_path); // read before the park: a commit landing in between moves HEAD and is refused at the archive
         let p = park_wip(wt_path, id, &branch, &park_branch_name(&branch, now), cur.dirty);
         if !p.ok {
             abort(&p.stage);
@@ -1438,7 +1536,8 @@ pub fn respawn(inv: &Inv, a: &Args) -> R<Answer> {
     });
     note(&found.key, r);
     // (e) archive the old workspace; the owner closes its app tab
-    let archived = archive_via_verb(inv, id, None);
+    // the dirty or unpushed work was parked on a pushed branch in (b): the archive refuses only a commit made since; nothing parked: full check
+    let archived = archive_via_verb(inv, id, None, parked_head);
     let nag = tpl("devswarm_cli.rs_msg_nag", &[("id", id), ("branch", &branch), ("next", &next)]);
     let fields = vec![
         ("id".to_string(), s(id)),
@@ -1494,7 +1593,7 @@ mod tests {
     use std::process::Command;
 
     fn scratch(tag: &str) -> PathBuf {
-        let d = std::env::temp_dir().join(format!("ah-dsb-{tag}-{}", std::process::id()));
+        let d = crate::testtmp::path(format!("ah-dsb-{tag}-{}", std::process::id()));
         crate::discard::harmless(std::fs::remove_dir_all(&d)); // keep: a stale directory of an earlier run of this test
         std::fs::create_dir_all(&d).unwrap();
         std::fs::canonicalize(&d).unwrap()
@@ -1840,7 +1939,7 @@ mod tests {
             std::fs::write(beats.join("child-1.json"), format!(r#"{{"ts":{},"sessionId":"s"}}"#, common::now_ms())).unwrap();
             reap_recheck(&i, "child-1", cwd.to_str().unwrap(), &key, desc, fresh_ms, idle_ms, &states).map(str::to_string)
         };
-        let r = archive_via_verb(&i, "child-1", Some(&revive));
+        let r = archive_via_verb(&i, "child-1", Some(&revive), None);
         assert_eq!(r.skipped.as_deref(), Some("fresh-heartbeat"), "{:?}", r.error);
         assert!(dir.join("workspaces/child-1.json").exists(), "the active descriptor stays");
         assert!(!dir.join("archived/child-1.json").exists(), "and no archived marker was written");

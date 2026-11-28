@@ -8,21 +8,21 @@
 
 // Blank quoted spans (delimiters included) so quoted data cannot match a work pattern. Mirrors work-detect.js.
 function neutralizeQuoted(cmd) {
-  var cs = Array.from(cmd), out = '', inS = false, inD = false, i = 0;
+  var cs = Array.from(cmd), out = [], inS = false, inD = false, i = 0;
   while (i < cs.length) {
     var c = cs[i];
-    if (inS) { out += ' '; if (c === "'") inS = false; i++; continue; }
+    if (inS) { out.push(' '); if (c === "'") inS = false; i++; continue; }
     if (inD) {
-      if (c === '\\' && i + 1 < cs.length) { out += '  '; i += 2; continue; }
-      out += ' ';
+      if (c === '\\' && i + 1 < cs.length) { out.push('  '); i += 2; continue; }
+      out.push(' ');
       if (c === '"') inD = false;
       i++;
       continue;
     }
-    if (c === "'") { inS = true; out += ' '; } else if (c === '"') { inD = true; out += ' '; } else out += c;
+    if (c === "'") { inS = true; out.push(' '); } else if (c === '"') { inD = true; out.push(' '); } else out.push(c);
     i++;
   }
-  return out;
+  return out.join('');
 }
 
 // A `>` / `>>` file redirect that is not a descriptor duplicate.

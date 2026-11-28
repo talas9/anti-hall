@@ -31,6 +31,26 @@ value = { section = "devswarm", key = "archivedChildStop", type = "boolean", env
 doc = "The setting devswarm.wakeWatchPollMs: the tick of the watcher in milliseconds (lock heartbeat, parent check, stale-build check, reads). A change of a watched file wakes the tick early."
 value = { section = "devswarm", key = "wakeWatchPollMs", type = "number", min = 250, max = 60000, default = 2000, env = "ANTIHALL_DEVSWARM_WAKE_WATCH_POLL_MS" }
 
+[wake_watch.set_coalesce]
+doc = "The setting devswarm.wakeWatchCoalesce (default on; GH #884): one wake per state change, not one per message. While a child workspace has read none of its direct mail since its last wake (its summary row's unread count is at least the count at that wake plus what arrived since), new mesh-direct mail does not print another wake line; the cursor still moves and the held wake is counted (wake_watch_coalesced). Reading anything ends the hold; mail still unread when devswarm.wakeWatchRewakeMs has passed wakes the workspace once more. Off: every new message wakes. Claude and Codex (the watcher is host-neutral)."
+value = { section = "devswarm", key = "wakeWatchCoalesce", type = "boolean", env = "ANTIHALL_DEVSWARM_WAKE_WATCH_COALESCE", default = true }
+
+[wake_watch.set_rewake_ms]
+doc = "The setting devswarm.wakeWatchRewakeMs: how long after a wake held mail waits before a child that still has not drained is woken again, with or without further mail (milliseconds; 0 wakes on every message)."
+value = { section = "devswarm", key = "wakeWatchRewakeMs", type = "number", min = 0, default = 600000, env = "ANTIHALL_DEVSWARM_WAKE_WATCH_REWAKE_MS" }
+
+[wake_watch.coalesce_roles]
+doc = "The watcher roles wake coalescing applies to (wake_watch.role_primary, wake_watch.role_child). The Primary's own mail is not coalesced: it is the coordinator."
+value = ["child"]
+
+[wake_watch.field_direct_unread]
+doc = "The member of a workspace's summary row that counts its unread direct mail (wake coalescing: 0 means the workspace drained what it was woken for)."
+value = "directUnread"
+
+[metric.wake_watch_coalesced]
+doc = "New-mail wake lines the wake-watch held back because the workspace had not read the mail of its previous wake yet (GH #884, devswarm.wakeWatchCoalesce), by watcher role. Each is a woken turn not spent."
+value = { kind = "counter", unit = "wakes", labels = ["role"] }
+
 [wake_watch.poll_min_ms]
 doc = "Floor of the tick in milliseconds."
 value = 250
@@ -237,11 +257,29 @@ value = '�'
 
 [wake_watch.seen_owned_keys]
 doc = "The members of a cursor file this build owns and always rewrites; any other member (a newer build's) is carried through untouched."
-value = ["lastTotal", "lastTotal2", "lastBroadcastUnread", "meshTotal", "ndjsonTotal"]
+value = ["lastTotal", "lastTotal2", "lastBroadcastUnread", "lastBroadcastWakeSeq", "seenVersion", "meshTotal", "ndjsonTotal"]
 
 [wake_watch.field_broadcast]
-doc = "The summary member that counts the unread broadcasts of others (heartbeats and the workspace's own sends excluded)."
+doc = "The summary member that counts the unread broadcasts of others (heartbeats and the workspace's own sends excluded): the legacy broadcast channel, read only when the row has no wake_watch.field_broadcast_seq (a writer that predates GH #845)."
 value = "broadcastUnreadFromOthers"
+
+[wake_watch.field_broadcast_seq]
+doc = "The summary member the broadcast channel wakes on (GH #845): the highest seq among the workspace's unread broadcasts that wake it, or null. A line is printed when it passes the saved watermark (lastBroadcastWakeSeq), which never goes down."
+value = "broadcastWakeSeq"
+
+[wake_watch.field_broadcast_pending]
+doc = "The summary member counting the workspace's unread broadcasts that wake it: a watcher with no saved watermark wakes once when it is above 0 instead of seeding it away."
+value = "broadcastWakePending"
+
+[wake_watch.field_broadcast_cursor]
+doc = "The summary member holding the workspace's broadcast cursor: an ack that moves it while wake-eligible broadcasts stay unread wakes the workspace again (re-review N-3)."
+value = "broadcastWakeCursor"
+
+[wake_watch.seen_version]
+doc = "The `seenVersion` this build writes into the cursor file; a file below it has no broadcast watermark yet and is reconciled from field_broadcast_pending."
+value = 2
+min = 1
+max = 1000
 
 # ---- words -------------------------------------------------------------------------------------------------------------------
 
@@ -409,6 +447,14 @@ value = "[wake-watch] the working directory is not readable; exiting.\n"
 [wake_watch.rebin_enabled]
 doc = "1: a watcher whose engine binary on disk was replaced (a deploy or an update) re-executes itself with the same arguments, so a fix takes effect without a manual re-arm. 0: it keeps running the binary it started from."
 value = 1
+
+[wake_watch.rebin_quiet]
+doc = "#968: 1 = a watcher restart caused by a binary replace (wake_watch.rebin_enabled) prints nothing on the Monitor stream: the restart line (wake_watch.line_rebin) and the successor's arm line go to the engine log (kind wake_watch), so a redeploy no longer wakes every idle session with nothing to act on; real events still print. 0 = both lines print, as before."
+value = 1
+
+[metric.wake_watch_rebin]
+doc = "#968: lines a binary-replace restart of the wake-watch sent to the engine log instead of the Monitor stream (wake_watch.rebin_quiet), by line: restart_quiet (the restart notice), arm_quiet (the successor's arm line)."
+value = { kind = "counter", unit = "lines", labels = ["line"] }
 
 [wake_watch.line_rebin]
 doc = "The watcher re-executed itself because its engine binary was replaced (its output continues on the same stream). {path}."
