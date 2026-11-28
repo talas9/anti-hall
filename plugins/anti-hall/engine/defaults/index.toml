@@ -116,6 +116,7 @@ files = [
     "codex_scripts.toml",
     "diagnostics.toml",
     "overload.toml",
+    "prefilter.toml",
     "mem.toml",
     "wire.toml",
     "devswarm_parent.toml",

@@ -1,0 +1,123 @@
+# #969 R1: the PreToolUse prefilter (src/dispatch/prefilter.rs). A Bash command the shell-word reader vouches for as a list of plain
+# reads, every command word of which is on a check's positive list, is answered allow for that check without running its script. It
+# fails closed to the full check, and a sampled shadow run of the full check latches it off at the first disagreement. Every list,
+# pattern, rate and text lives here; tuning the prefilter is editing this file, never the engine source.
+
+[prefilter.enabled]
+doc = "1 = a provably read-only Bash call skips the checks listed in prefilter.safe_cmds_by_check (answered allow, counted as metric prefilter outcome skip); 0 = every check runs on every call, as before."
+value = 1
+min = 0
+max = 1
+
+[prefilter.events]
+doc = "The events the prefilter applies to."
+value = ["PreToolUse"]
+
+[prefilter.tools]
+doc = "The tools the prefilter applies to."
+value = ["Bash"]
+
+[prefilter.field]
+doc = "The tool_input field that holds the command."
+value = "command"
+
+[prefilter.safe_cmds_by_check]
+doc = "Per check: the POSITIVE list of command words a call may consist of for that check to be skipped. A word off the list (or spelled with a path other than a dispatch.capacity_hold parsed.bin_dirs directory) runs the check. git: readers and formatters that run no other program, write no file without a redirection (denied by prefilter.deny_chars) and are none of git.copy_verbs, git.wrappers, git.shell_verbs, tee, truncate, dd, sed, perl, rm, awk, xargs, find or env, so the git guard has nothing to scan. A check with no row is never skipped."
+value = { git = [
+  "cd", "ls", "pwd", "cat", "head", "tail", "wc", "grep", "egrep", "fgrep", "rg", "echo", "printf", "date", "whoami", "uname",
+  "which", "file", "stat", "du", "df", "sort", "uniq", "cut", "tr", "jq", "diff", "cmp", "comm", "basename", "dirname", "realpath",
+  "readlink", "true", "false", "test", "nl", "column", "tree", "shasum", "sha256sum", "md5", "ps", "pgrep", "uptime", "id",
+  "hostname", "sleep", "seq", "wait",
+] }
+
+[prefilter.deny_chars]
+doc = "Characters whose presence anywhere in the raw command (after prefilter.inert_redirs) runs every check, before the command is parsed. Empty by default: a substitution, a subshell, a process substitution, a backtick or an unquoted ( ) < > is refused by the shell-word reader itself (dispatch.capacity_hold parsed, the reading of the capacity hold's read exemption), and a redirection by prefilter.redirect_chars."
+value = ""
+
+[prefilter.redirect_chars]
+doc = "Characters that, in the words the shell-word reader kept for a part (quotes removed), mark a redirection the prefilter cannot vouch for (`> file`, `< file`, or the same character quoted inside an argument): the checks run. An engine-local verb with any redirection left after prefilter.inert_redirs runs them too."
+value = "<>"
+
+[prefilter.engine_ok_by_check]
+doc = "Per check: 1 = the engine's own program (dispatch.capacity_hold parsed.programs, any verb) counts as a listed command word for that check. The git guard reads nothing in an engine call that prefilter.deny_by_check does not already send to it (a push, a commit, a git -c value in a message)."
+value = { git = 1 }
+
+[prefilter.deny_by_check]
+doc = "Per check: a case-insensitive pattern whose match anywhere in the raw command runs that check. git: a push, an alias, eval or exec (its literal-call, push pre-pass and alias scans read them in any word, quoted or not); an assignment of a variable that changes what git or the shell runs or where home is (GIT_*, *PAGER, *EDITOR, PATH, IFS, BASH_ENV, ENV, LD_*, DYLD_*, PS4, PROMPT_COMMAND, HOME, ZDOTDIR, SHELLOPTS, BASHOPTS; any other assignment is left to the shell-word reader, which refuses one in front of a command and every one of dispatch.capacity_hold parsed.assign_deny); a git `-c` value, which it scans as a command; the git options that write a file or run a program (--output, --upload-pack, --exec, --ext-diff, --config-env); the reader options that run a program (`rg --pre`, `sort --compress-program`) or write a file (sort -o, tree -o)."
+value = { git = '\bhub\b|push|\balias\b|\beval\b|\bexec\b|(?-i:(?:^|[\s;&|])(?:GIT_\w*|\w*PAGER|\w*EDITOR|PATH|IFS|BASH_ENV|ENV|LD_\w*|DYLD_\w*|PS4|PROMPT_COMMAND|HOME|ZDOTDIR|SHELLOPTS|BASHOPTS)(?:\[[^\]]*\])?\+?=)|--pre\b|--pre=|--compress|(?-i:\bgit\b[^|;&]*\s-c\b)|(?-i:\bsort\b[^|;&]*\s-[A-Za-z]*o)|(?-i:\btree\b[^|;&]*\s-o\b)|--output|--upload-pack|--ext-diff|--config-env' }
+
+[prefilter.sub_cmds_by_check]
+doc = "Per check, per command word: the subcommands (one or more words) that make a call of that command a plain read for the check (gh: the reads, none of which publishes text the git guard scans for credit; git: the read-only builtins, none of which an alias can shadow, none of git.backstop_commit_subs or git.commit_creating, and none whose options run a program or a pager the git guard reads: no config, fetch, ls-remote, grep, push). The command word itself must not be on prefilter.safe_cmds_by_check."
+value = { git = { gh = [
+  "pr view", "pr list", "pr checks", "pr diff", "pr status", "issue view", "issue list", "run view", "run list", "release view",
+  "release list", "repo view", "workflow list", "workflow view", "auth status",
+], git = [
+  "status", "log", "diff", "show", "rev-parse", "ls-files", "blame", "shortlog", "rev-list", "cat-file", "ls-tree", "describe",
+  "merge-base", "for-each-ref", "symbolic-ref", "count-objects", "check-ignore", "name-rev",
+] } }
+
+[prefilter.sub_value_opts_by_check]
+doc = "Per check, per command word of prefilter.sub_cmds_by_check: the options in front of the subcommand that take the next word as their value (git -C <dir>)."
+value = { git = { gh = ["-R", "--repo"], git = ["-C"] } }
+
+[prefilter.sub_flag_opts_by_check]
+doc = "Per check, per command word of prefilter.sub_cmds_by_check: the options in front of the subcommand that take no value."
+value = { git = { git = ["--no-pager", "-P", "--no-optional-locks"] } }
+
+[prefilter.inert_redirs]
+doc = "A redirection that writes nothing (fd duplication, /dev/null), as a pattern with the text before it as group 1 and after it as group 2: it is read as a space, so the rest of the command is judged without it. Anything else that redirects runs the checks (prefilter.deny_chars). Empty = no redirection passes."
+value = '(^|[ \t])(?:[0-9]?>&[0-9]-?|&>[ \t]*/dev/null|[0-9]?>>?[ \t]*/dev/null|[0-9]?<[ \t]*/dev/null)([ \t;&|]|$)'
+
+[prefilter.lead_only_words_by_check]
+doc = "Per check: words that may stand in the raw command only as the command word of an element (counted as whole words, see prefilter.word_chars). git: a `git` or `gh` inside a quoted string or an argument (`echo \"x; git tag -m ..\"`) can be read by the git guard's quote-blind backstop as a command of its own, so it runs the check."
+value = { git = ["git", "gh"] }
+
+[prefilter.word_chars]
+doc = "Besides ASCII letters and digits, the characters that belong to a word when prefilter.lead_only_words_by_check counts words in the raw command (`.git` and `git-x` are other words than `git`)."
+value = "_-./~"
+
+[prefilter.shadow_permille]
+doc = "Per mille of the calls the prefilter passes that run the full check anyway (its answer is the one given) and are compared: any block or advisory there is a disagreement. 0 = no shadow sample."
+value = 20
+min = 0
+max = 1000
+
+[prefilter.auto_disable]
+doc = "1 = a shadow disagreement latches the prefilter off for good: it writes prefilter.latch_file in the engine's state directory, read at every start (delete that file to re-arm it). 0 = a disagreement is only logged and counted."
+value = 1
+min = 0
+max = 1
+
+[prefilter.latch_file]
+doc = "The marker file (in the engine's state directory) whose presence keeps the prefilter off; it holds the check whose shadow run disagreed."
+value = "prefilter-latched"
+
+[prefilter.log_kind]
+doc = "The health-log kind of a shadow disagreement."
+value = "prefilter_disagree"
+
+[prefilter.log_command_chars]
+doc = "How many characters of the command a disagreement's log line shows."
+value = 200
+min = 0
+max = 4000
+
+[prefilter.msg_disagree]
+doc = "The health-log line of a shadow disagreement: the full check said something on a call the prefilter would have allowed. {check}, {command}."
+value = "prefilter: the {check} check spoke on a call the prefilter passed as read-only (latched off): {command}"
+
+[prefilter.outcome_skip]
+doc = "Metric prefilter outcome label: the check was skipped."
+value = "skip"
+
+[prefilter.outcome_agree]
+doc = "Metric prefilter outcome label: a shadow run of the full check allowed quietly, as the prefilter would have."
+value = "agree"
+
+[prefilter.outcome_disagree]
+doc = "Metric prefilter outcome label: a shadow run of the full check blocked or advised where the prefilter would have allowed."
+value = "disagree"
+
+[metric.prefilter]
+doc = "PreToolUse prefilter outcomes (#969 R1, defaults/prefilter.toml), by check and outcome (skip, agree, disagree)."
+value = { kind = "counter", unit = "calls", labels = ["check", "outcome"] }

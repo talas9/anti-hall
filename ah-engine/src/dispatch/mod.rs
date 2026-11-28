@@ -32,6 +32,7 @@ pub mod native;
 pub mod node;
 pub mod notice;
 pub mod plan;
+pub mod prefilter;
 pub mod shellwords;
 pub mod shrink;
 pub mod spill;
@@ -454,7 +455,7 @@ pub(crate) struct Decision {
 
 /// #907: the word lists of the shell-word normaliser, from `dispatch.capacity_hold` (`normalise` 0 or an absent `text`/`git` table
 /// switches that step off, the raw text alone is matched then).
-fn capacity_norm_cfg(cfg: &defaults::V) -> Option<shellwords::Cfg> {
+pub(crate) fn capacity_norm_cfg(cfg: &defaults::V) -> Option<shellwords::Cfg> {
     if cfg.get("normalise").and_then(|v| v.as_integer()) == Some(0) {
         return None;
     }
