@@ -43,7 +43,7 @@ Every command accepts `--json`. Read-only commands never change state.
 | `jev-setup` | `<status\|enable\|disable\|set-key\|bind-generic-key\|test\|mode\|review-due\|reviewed\|snooze> [--days <n>] [--transport vercel\|typesafe] [--fallback vercel\|typesafe\|none] [--role fallback] [--vendor vercel\|typesafe]` | no | implemented | Activate, configure and inspect the opt-in Jev classifier: `status` (resolved settings, key presence yes or no, every integration's mode, calls in the last 24 hours, the Vercel credit balance), `enable` and `disable`, `set-key` (the key is read from stdin only and written 0600), `bind-generic-key`, `mode <integration> on\|shadow\|off`, `test` (one real gateway call per configured transport, each on its own) and the shadow-review verbs `review-due [--json]`, `reviewed <integration>` and `snooze <integration> --days N`. |
 | `jev_sweep` | `` | no | implemented | The scheduled Jev evidence sweep (the `jev_sweep` job): gathers the WaitKind, Loop and StepMap facts of the supervisor's questions (plan, transcript, git, CI, mesh) and runs them through the evidence gate, writing its telemetry; takes no arguments and reads the home directory from the environment. |
 | `maintain` | `` | no | implemented | Size control (D26): move consumed messages, expired key values and old impact events from hot.db to archive.db, prune derived bookkeeping, checkpoint both WALs and VACUUM both databases; prints a report. |
-| `mesh` | `<unread\|dump\|read <id>> [--db <devswarm.db>] [--since <n>] [--last <n>] \| roster --db <devswarm.db> \| <mesh verb argv>` | no | implemented | DevSwarm mesh store (D45). With `--db <file>`: the read-only S0 reader (stage S0): `roster` lists the registered workspaces, `unread` the per-workspace counts, `read --id <ws>` its messages (`--since <n>` skips the first n, `--last <n>` the newest n, capped by mesh.read_byte_cap), `dump` the full canonical dump the parity harness compares with Node; the store is opened read-only and never created, and a journal-backed store is refused. Without `--db`, `unread`, `read <id>` and `dump` read the store of the project the working directory is in (`read <id>` finds the one other project store that holds an id this project does not); every other word after `mesh` starts a mesh verb argv that the engine runs itself (`help --short` lists the verbs, `help <verb>` shows one verb's forms), per the `mesh.engine_writes` switch: on (default) the engine answers, and says so on stderr and exits with mesh_write.exit_unable when it cannot; off does nothing, counted and said. A verb form that moved is refused with the command to use instead (mesh_write.retired_verbs, exit mesh_write.exit_unsupported); `inbox <sub>` without an id reads the calling workspace session's own. The ah-engine mesh verb `archive <id>` (the local archive and the DevSwarm app leg, `hivecontrol workspace archive` with Node's retry) is answered here too, and only here: the owner action of the same name under the realtime command takes `--id` and `--request`. |
+| `mesh` | `<unread\|dump\|read <id>> [--db <devswarm.db>] [--since <n>] [--last <n>] \| roster --db <devswarm.db> \| room <create\|join\|leave> <name> \| room list \| send --room <name> --message <text> \| <mesh verb argv>` | no | implemented | DevSwarm mesh store (D45). With `--db <file>`: the read-only S0 reader (stage S0): `roster` lists the registered workspaces, `unread` the per-workspace counts, `read --id <ws>` its messages (`--since <n>` skips the first n, `--last <n>` the newest n, capped by mesh.read_byte_cap), `dump` the full canonical dump the parity harness compares with Node; the store is opened read-only and never created, and a journal-backed store is refused. Without `--db`, `unread`, `read <id>` and `dump` read the store of the project the working directory is in (`read <id>` finds the one other project store that holds an id this project does not); every other word after `mesh` starts a mesh verb argv that the engine runs itself (`help --short` lists the verbs, `help <verb>` shows one verb's forms), per the `mesh.engine_writes` switch (GH #845 rooms: `room create\|join\|leave <name>` and `room list` manage named rooms of the project, and `send --room <name>` posts one message that wakes only the room's members, narrowed by its @mentions; settings in mesh_room.toml): on (default) the engine answers, and says so on stderr and exits with mesh_write.exit_unable when it cannot; off does nothing, counted and said. A verb form that moved is refused with the command to use instead (mesh_write.retired_verbs, exit mesh_write.exit_unsupported); `inbox <sub>` without an id reads the calling workspace session's own. The ah-engine mesh verb `archive <id>` (the local archive and the DevSwarm app leg, `hivecontrol workspace archive` with Node's retry) is answered here too, and only here: the owner action of the same name under the realtime command takes `--id` and `--request`. |
 | `metrics` | `[--check <name>] [--rollup <resolution> [--since <s>]]` | yes | implemented | Show the engine's metrics: counters, gauges and latency percentiles, optionally for one check; with --rollup, the stored rollups of one resolution (minute, hour), optionally for the last --since seconds. |
 | `migrate` | `[--dry-run] [--home <dir>] [--cwd <dir>] [--plugin-root <dir>]` | no | implemented | The persisted-state migrations and sweeps of the Node doctor's repair pass (D81): the legacy progress and history copy, the reply-state, gate-intent and auto-archive state forward-migrations, the settings.json migration from the legacy jev.json and the stored plugin options, the Jev triage cache repair, the lock scratch sweep and the retention sweeps, with Node's report; `--dry-run` previews and writes nothing. Steps that need the DevSwarm stores are left to the Node doctor while DevSwarm state is present. |
 | `phase` | `<set\|advance\|step\|agents\|update\|clear> [args]` | no | implemented | Write or update the phase state the status line's phase bar shows: `set <code> <desc> <done> <total>`, `advance [n]`, `step <text>`, `agents <n>`, `update key=value ...`, `clear`; the state is ~/.anti-hall/phase-state.json. Fails open. |
@@ -133,7 +133,7 @@ Every flag in a command's arguments, with the commands that take it. A flag shar
 | `--list` | `devswarm` | List instead of acting (`devswarm notice --list`). |
 | `--max` | `devswarm` | Upper bound on how many items one run may act on (`devswarm reap-orphans`). |
 | `--memory` | `status` | Add the per-subsystem memory breakdown to the output (`status`). |
-| `--message` |  | The body of a mesh message (`mesh send`). |
+| `--message` | `mesh` | The body of a mesh message (`mesh send`). |
 | `--migration` | `status` | Print the migration report: every hook check, supervisor duty, post-update stage, command and Node switch as native, partial or node (`status`; add `--json` for the machine form). |
 | `--migrations-only` | `doctor` | With `--repair` or `--fix`, run only the migration pass and print its report as JSON (`doctor`). |
 | `--mistake` | `telemetry` | Record a mistake signal the engine cannot see itself: `--mistake <feature> <action> <target> <kind> [detail]` (`telemetry actions`). |
@@ -165,6 +165,7 @@ Every flag in a command's arguments, with the commands that take it. A flag shar
 | `--role` | `jev-setup` | Which key to set; only `fallback` (`jev-setup`). |
 | `--rollback` | `update`, `engine-update` | Restore the previous engine binary; run twice to toggle (`engine-update`). |
 | `--rollup` | `metrics` | Show the stored rollups of one resolution (minute or hour) (`metrics`). |
+| `--room` | `mesh` | The room a mesh message goes to (`mesh send --room <name>`): it wakes only the room's members (GH #845). |
 | `--root` | `audit`, `briefing`, `capability-scan`, `install-codex` | Plugin tree to inspect or install from (`capability-scan`, `briefing`, `install-codex`). |
 | `--schema` | `query` | Show the row fields of one source instead of its rows (`query`). |
 | `--scope` |  | Comma-separated globs the plan is scoped to (`mesh plan set`). |
@@ -12004,7 +12005,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_cli.hc_workspace` | `workspace` |  |  | The first word of every hivecontrol workspace call. |
 | `devswarm_cli.health_line` | `healthcheck: {status}{scope} [{parts}]{warning}` |  |  | The one-line answer of healthcheck; {parts} are the counts. |
 | `devswarm_cli.health_line_no_project` | `healthcheck: no-project (cwd is not inside a DevSwarm project)` |  |  | The one-line answer of healthcheck outside any project. |
-| `devswarm_cli.help` | `47 entries` |  |  | The one-line synopsis and the side-effect note of every verb, by verb name. `mutates` absent means none is on file. |
+| `devswarm_cli.help` | `48 entries` |  |  | The one-line synopsis and the side-effect note of every verb, by verb name. `mutates` absent means none is on file. |
 | `devswarm_cli.help_json_verbs` | `app-state` |  |  | Verbs whose human rendering prints the result object when it carries no `text` (a help result carries none): `<verb> --help` prints the JSON. |
 | `devswarm_cli.help_own_render` | `2 entries` |  |  | Verbs whose own one-line renderer main() applies to ANY result when no --json is given, a help result included: the line Node prints for a help-shaped result (which carries none of the fields the renderer reads), by verb name. `supervision-report` is absent on purpose: its renderer throws on a help result in Node, so the usage text is printed. |
 | `devswarm_cli.help_render_read_primary_text` | `(no messages)` |  |  | The line `inbox read-primary --format text --help` prints (the text renderer read from a help-shaped result). |
@@ -12827,7 +12828,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_cli.verb_usage_head` | `usage: ah-engine mesh {verb} [args]` |  |  | First line of one verb's help: `{verb}`. |
 | `devswarm_cli.verb_wake_directive` | `wake-directive` |  |  | The verb that reprints the SessionStart mailbox-wake directive (native for a child workspace). |
 | `devswarm_cli.verb_workspaces` | `workspaces` |  |  | The workspaces verb (`workspaces list`). |
-| `devswarm_cli.verbs` | `47 items` |  |  | The mesh verbs the dispatcher handles, in the order of its switch (the order `help` lists them and the unknown-command message names them). A retired verb (mesh_write.retired_verbs) is still listed, so that its word is answered with where it moved. |
+| `devswarm_cli.verbs` | `48 items` |  |  | The mesh verbs the dispatcher handles, in the order of its switch (the order `help` lists them and the unknown-command message names them). A retired verb (mesh_write.retired_verbs) is still listed, so that its word is answered with where it moved. |
 | `devswarm_cli.window_flags` | `tail, since` |  |  | The window flags of the inbox verbs, in the order Node checks them (INBOX_WINDOW_FLAGS). |
 | `devswarm_cli.window_logged_subs` | `pull, messages, read-primary, peek-primary, ack-primary, drain-primary-legacy` |  |  | The inbox subverbs whose refusals the dispatcher writes to the central log (`logVerbOutcome`); the others print the refusal and log nothing. |
 | `devswarm_cli.window_op_prefix` | `inbox-` |  |  | What the central-log operation of a refused window flag starts with (the operation is `inbox-<sub>`). |
@@ -15762,6 +15763,42 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_identity.row_kind_field` | `senderKind` |  |  | The member of a store row read that carries its stored sender_kind (attached only for a declared identity's kind). |
 | `mesh_identity.sender_env` | `AH_MESH_SENDER` |  |  | The environment variable that declares the sender of a send (an id of `identities` with `cli = true`), e.g. the owner's chat room sets it to `admin`; refused for an agent caller. `--as` wins over it. |
 
+### mesh_room.toml / mesh_room
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `mesh_room.action` | `room` |  |  | `action` of a `mesh room` result. |
+| `mesh_room.audience_members` | `members` |  |  | The member of a room message's stored audience that lists the room's members (registry ids) when it was sent: who may read it. |
+| `mesh_room.audience_room` | `room` |  |  | The member of a room message's stored audience (a JSON object in `wake_audience`) that names the room. |
+| `mesh_room.audience_wake` | `wake` |  |  | The member of a room message's stored audience that lists the members (registry ids) it wakes. |
+| `mesh_room.creator_joins` | `1` |  |  | 1 (default): `mesh room create` also subscribes the caller; 0 creates the room empty. |
+| `mesh_room.enabled` | `1` |  |  | Whether rooms are on: 1 (default) lets `mesh room` create, join and leave rooms and `mesh send --room` post to one; 0 refuses both (mesh_room.msg_disabled). Rows already stored keep their audience either way. |
+| `mesh_room.flag_room` | `room` |  |  | The `mesh send` flag (`--room <name>`, the name without its dashes here) that posts the message to a room instead of a workspace or the whole project. |
+| `mesh_room.hide_nonmembers` | `1` |  |  | 1 (default): a room message is not listed or counted for a reader that was not a member when it was sent (it is passed over like a heartbeat, so an ack moves through it); 0 lists it to every broadcast reader (it still wakes members only). |
+| `mesh_room.key_changed` | `changed` |  |  | The field of a `mesh room create\|join\|leave` result that says whether the store changed (false: it already was so). |
+| `mesh_room.key_member` | `member` |  |  | The field of a room in a `mesh room` result that says whether the caller is a member. |
+| `mesh_room.key_members` | `members` |  |  | The field of a room in a `mesh room` result that lists its members. |
+| `mesh_room.key_room` | `room` |  |  | The field of a listed broadcast, a send result and a send receipt that names the room of a room message. |
+| `mesh_room.key_rooms` | `rooms` |  |  | The field of a `mesh room list` result that holds the rooms. |
+| `mesh_room.msg_bad_name` | `bad room name {name}: use lower-case letters, digits, '.', '_' or '-' (at mos...` |  |  | Refusal of a room name that does not match mesh_room.name_re; {name} is the name given. |
+| `mesh_room.msg_disabled` | `rooms are off (mesh_room.enabled = 0)` |  |  | Refusal of a room command or a `send --room` while mesh_room.enabled is 0. |
+| `mesh_room.msg_no_member` | `this workspace is not registered in the project's mesh, so it cannot join a room` |  |  | Refusal of a room command from a caller the project's registry does not hold (it cannot subscribe). |
+| `mesh_room.msg_no_room` | `no room {name}: create it first with `mesh room create {name}`` |  |  | Refusal of a join or a `send --room` to a room that does not exist; {name} is the room. |
+| `mesh_room.msg_usage` | `usage: mesh room create\|join\|leave <name> \| mesh room list` |  |  | Refusal of a `mesh room` call without a known subcommand or without the room name it needs. |
+| `mesh_room.name_re` | `^[a-z0-9][a-z0-9._-]{0,47}$` |  |  | The pattern a room name must match (JavaScript syntax, matched against the whole name). |
+| `mesh_room.outcome_changed` | `changed` |  |  | `outcome` label of metric mesh_room_ops: the store changed. |
+| `mesh_room.outcome_refused` | `refused` |  |  | `outcome` label of metric mesh_room_ops: refused. |
+| `mesh_room.outcome_unchanged` | `unchanged` |  |  | `outcome` label of metric mesh_room_ops: it already was so. |
+| `mesh_room.reason_bad_name` | `bad-room-name` |  |  | `reason` of a refusal for a bad room name. |
+| `mesh_room.reason_no_room` | `no-room` |  |  | `reason` of a refusal for a room that does not exist. |
+| `mesh_room.sub_create` | `create` |  |  | The `mesh room` subcommand that creates a room. |
+| `mesh_room.sub_join` | `join` |  |  | The `mesh room` subcommand that subscribes the caller to a room. |
+| `mesh_room.sub_leave` | `leave` |  |  | The `mesh room` subcommand that unsubscribes the caller from a room. |
+| `mesh_room.sub_list` | `list` |  |  | The `mesh room` subcommand that lists the project's rooms, their members and whether the caller is one. |
+| `mesh_room.verb_room` | `room` |  |  | The mesh verb word of the room commands (`mesh room <sub> [<name>]`). |
+| `mesh_room.wake_members` | `members` |  |  | `wake` label of metric mesh_room_sends: every member but the sender is woken. |
+| `mesh_room.wake_mentions` | `mentions` |  |  | `wake` label of metric mesh_room_sends: the body's @mentions narrowed the wake. |
+
 ## Messages
 
 Text lives in `messages.toml` (and `git.toml` for the git check's block messages); keys and what they are for:
@@ -16673,6 +16710,8 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `mesh_wake_lines` | counter | lines | channel, role | Wake lines the wake-watch printed, by channel (mail or broadcast) and watcher role: each is a woken turn (GH #845 baseline). |
 | `mesh_wake_suppressed` | counter | wakes | reason | Native wakes (DevSwarm reactivate) a send skipped, by reason (GH #845). |
 | `mesh_chat_ack` | counter | messages |  | Sends stored as an explicit ack (chat_kind = ack). |
+| `mesh_room_ops` | counter | ops | op, outcome | `mesh room` commands, by subcommand and outcome (changed, unchanged, refused). |
+| `mesh_room_sends` | counter | messages | wake | Room messages stored, by whether the body narrowed the wake to mentioned members (mentions) or woke every member (members). |
 
 ## Impact kinds
 
