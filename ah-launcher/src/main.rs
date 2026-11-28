@@ -32,6 +32,13 @@ mod shellwords;
 mod update;
 mod util;
 
+/// `shellwords.rs` is one file in two crates (the engine's copy discards through `crate::discard::harmless`); the launcher's tests
+/// need the same path, and nothing else of the engine's discard module.
+#[cfg(test)]
+mod discard {
+    pub fn harmless<T, E>(_result: Result<T, E>) {}
+}
+
 use std::io::Write;
 
 #[global_allocator]
