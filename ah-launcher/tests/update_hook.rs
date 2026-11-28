@@ -206,3 +206,31 @@ fn rollback_brings_back_the_previous_engine_and_thin_client() {
     );
     assert!(out.contains("ah-hook: rolled back"), "{out}");
 }
+
+/// `update --auto --dry-run` says what it decided; before, a switched-off automatic update printed nothing at all (exit 0), which
+/// read as "broken" next to `--channel stable --dry-run`. A real automatic run (the session start) stays silent.
+#[test]
+fn a_dry_automatic_update_names_its_decision_and_a_real_one_stays_silent() {
+    let (e, _engine, _hook, _real) = setup("uh-auto-off");
+    let run = |extra: &[&str]| {
+        let o = Command::new(env!("CARGO_BIN_EXE_ah-hook"))
+            .env_clear()
+            .env("PATH", "/usr/bin:/bin")
+            .env("HOME", &e.home)
+            .env("AH_WRAPPER_TEST", "1")
+            .env("AH_ENGINE_AUTO_UPDATE", "off")
+            .arg("--plugin-root")
+            .arg(&e.root)
+            .arg("update")
+            .arg("--auto")
+            .args(extra)
+            .output()
+            .unwrap();
+        (o.status.code().unwrap_or(-1), format!("{}{}", String::from_utf8_lossy(&o.stdout), String::from_utf8_lossy(&o.stderr)))
+    };
+    let (code, out) = run(&["--dry-run"]);
+    assert_eq!(code, 0, "{out}");
+    assert!(out.contains("automatic update is off"), "the dry run names the decision\n{out}");
+    let (code, out) = run(&[]);
+    assert_eq!((code, out.trim()), (0, ""), "a real automatic run is silent");
+}

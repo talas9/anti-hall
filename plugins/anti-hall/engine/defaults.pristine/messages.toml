@@ -1170,6 +1170,14 @@ value = "the checksum of {asset} differs from this plugin's ah-engine.lock ({loc
 doc = "Placeholders: {prev}, {version}."
 value = "dry run: would restore {prev} (engine {version})"
 
+[msg.updater_dry_auto_off]
+doc = "Said by `update --auto --dry-run` when the automatic-update setting is not a channel, so a real automatic run would do nothing. Placeholder: {setting}."
+value = "dry run: automatic update is off (setting: {setting}); a real automatic run would check nothing"
+
+[msg.updater_dry_auto_interval]
+doc = "Said by `update --auto --dry-run` when the last automatic check is younger than the daily limit, so a real automatic run would skip; the dry run checks anyway. Placeholders: {age} (seconds since the last check), {limit} (seconds)."
+value = "dry run: the last automatic check was {age}s ago (limit {limit}s), so a real automatic run would skip now; checking anyway"
+
 [msg.updater_dry_rb_live]
 doc = "Placeholders: {prev}, {version}."
 value = "dry run: would restore {prev} (engine {version}) and re-apply go-live"
