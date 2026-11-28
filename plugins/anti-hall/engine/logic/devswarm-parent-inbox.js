@@ -1145,6 +1145,18 @@ function piDriftNotice(home, top, primaryId, sid, tp) {
 
 // ---- orphaned partitions, stale registry rows and the broadcast feed ---------------------------------------------------------
 
+// GH #862: a pendingQuestions entry the summary flags as an owner chat row (an order, not a workspace's question).
+function piOwnerRow(q) { return !!q && typeof q === 'object' && q[ah.cfg('mesh_write.owner_chat_flag')] === true; }
+
+// GH #862: one order per unanswered owner chat row (the text as the owner wrote it, capped by the summary).
+function piOwnerSegment(rows, previews, cli) {
+  var max = ah.cfgNum('devswarm_parent.max_listed');
+  return rows.slice(-max).map(function (q) {
+    var body = previews && previews[String(q.seq)] != null ? String(previews[String(q.seq)]) : ah.cfg('devswarm_parent.broadcast_no_summary');
+    return text.render(ah.cfg('devswarm_parent.owner_chat_row'), { body: body, cli: cli, seq: q.seq });
+  }).join('\n');
+}
+
 // `buildOrphansSegment(list)` / `buildStaleRegistrySegment(list)`: partitions or rows named by id with their unread count, null for none.
 function piIssueSegment(list, headKey, cli) {
   var safe = list.filter(function (o) { return o && o.id != null && piSafeId(String(o.id)); });
@@ -1526,7 +1538,7 @@ function piQuestions(ctx, summary, pending) {
     blocking = []; informational = [];
     unanswered.forEach(function (q) {
       if (!q || q.from == null) { blocking.push(q); return; }
-      if (Object.prototype.hasOwnProperty.call(known, String(q.from).trim())) blocking.push(q); else informational.push(q);
+      if (piOwnerRow(q) || Object.prototype.hasOwnProperty.call(known, String(q.from).trim())) blocking.push(q); else informational.push(q);
     });
   }
   // filterLiveAskers
@@ -1536,6 +1548,7 @@ function piQuestions(ctx, summary, pending) {
   descriptors.forEach(add);
   var live = blocking.filter(function (q) {
     if (!q || q.from == null) return true;
+    if (piOwnerRow(q)) return true; // GH #862: the owner is no workspace: never archived, never held
     var from = String(q.from);
     var row = Object.prototype.hasOwnProperty.call(byId, from) ? byId[from] : null;
     if (!row) return !archivedKnown;
@@ -1655,7 +1668,7 @@ function piDecide(p, opts) {
   var now = ah.clock.now();
   var every = ah.settings.num('verify_first.num_repeat_every');
   var repeat = isFinite(every) && every > 0 ? every : 0;
-  var cronCtl = null, noticeSeg = null, summaryForTitle = null, ownUnanswered = [], ownInfo = [], ownPreviews = {}, syncNotes = null, ownUnread = 0, ownSigBase = '', ownUrgency = null, orphansSeg = null, orphansSig = null, staleRegSeg = null, broadcastRows = null, parked = null, roster = null, key = null, health = null, banner = null, wakeLine = null, driftNotice = null, derived = null;
+  var ownerRows = [], cronCtl = null, noticeSeg = null, summaryForTitle = null, ownUnanswered = [], ownInfo = [], ownPreviews = {}, syncNotes = null, ownUnread = 0, ownSigBase = '', ownUrgency = null, orphansSeg = null, orphansSig = null, staleRegSeg = null, broadcastRows = null, parked = null, roster = null, key = null, health = null, banner = null, wakeLine = null, driftNotice = null, derived = null;
   if (top !== null) {
     var cli = piCli(opts, home);
     if (cli === null) return piDefer('cli');
@@ -1694,7 +1707,8 @@ function piDecide(p, opts) {
           ownPreviews = own.pendingQuestionPreviews && typeof own.pendingQuestionPreviews === 'object' ? own.pendingQuestionPreviews : {};
           if (own.pendingQuestions.length) {
             var qs = piQuestions({ home: home, key: key, primaryId: primaryId, now: now }, summary, own.pendingQuestions);
-            ownUnanswered = qs.blocking;
+            ownerRows = qs.blocking.filter(piOwnerRow);
+            ownUnanswered = qs.blocking.filter(function (q) { return !piOwnerRow(q); });
             ownInfo = qs.informational;
           }
         }
@@ -1804,6 +1818,7 @@ function piDecide(p, opts) {
   if (staleRegSeg !== null) pending.push({ kind: 'dedupe', rank: 90, o: { sessionId: sid, key: ah.cfg('devswarm_parent.key_stale_registry'), content: staleRegSeg, transcriptPath: tp, keepaliveTurns: ah.cfgNum('devswarm_parent.mesh_issue_keepalive') }, text: staleRegSeg });
   if (broadcastRows !== null) pending.push({ kind: 'plain', rank: 100, text: piBroadcastSegment(broadcastRows.rows) });
   var cliPath = top !== null ? piCli(opts, home) : null;
+  if (ownerRows.length > 0) pending.push({ kind: 'plain', rank: ah.cfgNum('devswarm_parent.owner_chat_rank'), text: piOwnerSegment(ownerRows, ownPreviews, cliPath) });
   if ((ownUnread > 0 || ownUnanswered.length > 0 || ownInfo.length > 0) && primaryId) {
     var titleFor = function (wid) {
       var row = summaryForTitle && summaryForTitle.workspaces && summaryForTitle.workspaces[wid];

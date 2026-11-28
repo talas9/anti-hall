@@ -785,6 +785,34 @@ value = 200
 min = 1
 max = 100000
 
+[mesh_write.owner_chat_cap]
+doc = "Most owner chat rows (the owner's broadcasts and directs, GH #862) a summary hands a Primary as orders; the newest are kept."
+value = 5
+min = 1
+max = 100
+
+[mesh_write.owner_chat_scan_rows]
+doc = "How many of the newest rows of the broadcast partition and of the Primary's own partition a summary scans for owner chat rows."
+value = 200
+min = 1
+max = 100000
+
+[mesh_write.owner_chat_max_age_ms]
+doc = "An owner chat row older than this (ms) is no longer handed out as an order (a day); the owner is not left holding a Stop forever."
+value = 86400000
+min = 1
+max = 31536000000
+
+[mesh_write.owner_chat_body_max]
+doc = "Most characters of an owner chat row the summary carries for its order."
+value = 1200
+min = 1
+max = 100000
+
+[mesh_write.owner_chat_flag]
+doc = "The member of a pendingQuestions entry that marks it as an owner chat row (an order, answered by a reply to the owner's mailbox)."
+value = "owner"
+
 [mesh_write.archive_request_marker]
 doc = "Body marker of an archive-request send."
 value = "[[ANTIHALL_ARCHIVE_REQUEST]]"

@@ -279,7 +279,7 @@ function pgQuestions(home, own, descriptors, selfKey, fx) {
     blocking = [];
     unanswered.forEach(function (q) {
       if (!q || q.from === null || q.from === undefined) blocking.push(q);
-      else if (has(known, String(q.from).trim())) blocking.push(q);
+      else if (piOwnerRow(q) || has(known, String(q.from).trim())) blocking.push(q);
       else informational.push(q);
     });
   }
@@ -291,6 +291,7 @@ function pgQuestions(home, own, descriptors, selfKey, fx) {
   var heldAskers = pgHeldIds();
   var live = blocking.filter(function (q) {
     if (!q || q.from === null || q.from === undefined) return true;
+    if (piOwnerRow(q)) return true; // GH #862: the owner is no workspace: never archived, never held
     var from = String(q.from);
     var row = has(byId, from) ? byId[from] : null;
     if (row === null) return !own.archivedKnown;
