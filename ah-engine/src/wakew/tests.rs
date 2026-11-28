@@ -518,3 +518,154 @@ fn the_arm_print_survives_a_failed_first_read() {
     assert_eq!((lines.len(), st.woke_broadcast), (1, 1), "the owed arm print: {lines:?}");
     assert!(!st.bc_arm_due);
 }
+
+// ---- the coalesce window (GH #845 phase 2) ----------------------------------------------------------------------------------
+
+const COALESCE: Option<f64> = Some(600_000.0);
+const WINDOW: Option<f64> = Some(4_000.0);
+
+/// A child's read with direct mail, an unread count and the broadcast watermark, the window on.
+fn win(now_ms: f64, total2: f64, unread: f64, bc_seq: Option<f64>, bc_pending: f64) -> Snapshot {
+    Snapshot {
+        now_ms,
+        unread: Some(unread),
+        coalesce_ms: COALESCE,
+        window_ms: WINDOW,
+        bc_seq: Some(bc_seq),
+        bc_pending: Some(bc_pending),
+        ..child(0.0, Some(total2), None)
+    }
+}
+
+fn wake_armed() -> State {
+    State { armed: true, bc_arm_due: false, ..State::default() }
+}
+
+/// Several mails (direct and broadcast) inside one window print ONE line when it closes; until then nothing prints and no cursor or
+/// watermark moves, so a restart in the window loses nothing.
+#[test]
+fn a_burst_inside_the_window_prints_one_merged_line_when_it_closes() {
+    let (st, lines) = tick(&wake_armed(), &win(1_000.0, 1.0, 1.0, Some(100.0), 1.0));
+    assert!(lines.is_empty(), "the first edge opens the window and prints nothing: {lines:?}");
+    assert_eq!((st.win_open_ms, st.last_total2, st.last_bc_seq), (Some(1_000.0), 0.0, 0.0), "nothing moved");
+    let (st, lines) = tick(&st, &win(3_000.0, 2.0, 2.0, Some(101.0), 2.0));
+    assert!(lines.is_empty(), "still inside the window: {lines:?}");
+    assert_eq!(st.win_open_ms, Some(1_000.0), "the window keeps its start");
+    let (st, lines) = tick(&st, &win(5_000.0, 2.0, 2.0, Some(101.0), 2.0));
+    assert_eq!(lines.len(), 1, "one line for the direct and the broadcast mail: {lines:?}");
+    assert!(lines[0].contains("direct total 0 -> 2"), "{lines:?}");
+    assert_eq!((st.last_total2, st.last_bc_seq, st.win_open_ms, st.woke_mail), (2.0, 101.0, None, 1));
+    assert!(st.bc_merged, "the broadcast watermark moved with the merged line");
+    let (_, lines) = tick(&st, &win(7_000.0, 2.0, 2.0, Some(101.0), 2.0));
+    assert!(lines.is_empty(), "nothing new: {lines:?}");
+}
+
+/// Broadcast mail alone is windowed too, and prints its own line.
+#[test]
+fn a_lone_broadcast_waits_for_the_window_and_prints_its_own_line() {
+    let (st, lines) = tick(&wake_armed(), &win(1_000.0, 0.0, 0.0, Some(100.0), 1.0));
+    assert!(lines.is_empty() && st.last_bc_seq == 0.0, "{lines:?}");
+    let (st, lines) = tick(&st, &win(5_000.0, 0.0, 0.0, Some(100.0), 1.0));
+    assert_eq!((lines.len(), st.last_bc_seq, st.woke_broadcast, st.bc_merged), (1, 100.0, 1, false), "{lines:?}");
+}
+
+/// Mail the workspace read inside the window needs no wake: the cursors advance silently.
+#[test]
+fn mail_read_inside_the_window_prints_nothing() {
+    let (st, _) = tick(&wake_armed(), &win(1_000.0, 1.0, 1.0, None, 0.0));
+    assert_eq!(st.win_open_ms, Some(1_000.0));
+    let (st, lines) = tick(&st, &win(5_000.0, 1.0, 0.0, None, 0.0));
+    assert!(lines.is_empty(), "already read: {lines:?}");
+    assert_eq!((st.last_total2, st.win_open_ms, st.woke_mail), (1.0, None, 0));
+}
+
+/// A merged line that fails to print rolls every channel back and keeps the window due, so the next tick prints at once.
+#[test]
+fn a_failed_merged_print_keeps_every_cursor_and_the_due_window() {
+    let (open, _) = tick(&wake_armed(), &win(1_000.0, 1.0, 1.0, Some(100.0), 1.0));
+    let (after, lines) = tick(&open, &win(5_000.0, 1.0, 1.0, Some(100.0), 1.0));
+    assert_eq!(lines.len(), 1);
+    let undone = super::edge::undo_unprinted(&open, after, false);
+    assert_eq!((undone.last_total2, undone.last_bc_seq, undone.bc_seq_missing, undone.win_open_ms), (0.0, 0.0, true, Some(1_000.0)));
+    assert!(undone.woke_ms.is_none(), "no wake is outstanding for a line nobody saw");
+    let (_, lines) = tick(&undone, &win(7_000.0, 1.0, 1.0, Some(100.0), 1.0));
+    assert_eq!(lines.len(), 1, "the next tick prints it: {lines:?}");
+}
+
+/// The window is the phase 1 watcher when it is off: every edge prints at once.
+#[test]
+fn without_a_window_every_edge_prints_at_once() {
+    let off = Snapshot { window_ms: None, ..win(1_000.0, 1.0, 1.0, Some(100.0), 1.0) };
+    let (st, lines) = tick(&wake_armed(), &off);
+    assert_eq!((lines.len(), st.win_open_ms), (2, None), "{lines:?}");
+}
+
+/// GH #845 item 2: a direct mail that lands between a drain's scan and its ack used to wait for the 600 s re-wake. The read of the
+/// first mail shows as a falling unread count: the held wake was used, so the mail still unread wakes within the window.
+#[test]
+fn mail_that_lands_between_a_scan_and_its_ack_wakes_within_the_window_not_after_600_s() {
+    let (st, _) = tick(&wake_armed(), &win(1_000.0, 1.0, 1.0, None, 0.0));
+    let (st, lines) = tick(&st, &win(5_000.0, 1.0, 1.0, None, 0.0));
+    assert_eq!((lines.len(), st.woke_ms), (1, Some(5_000.0)), "{lines:?}");
+    // the drain scanned message 1; message 2 landed; the watcher polled before the ack: held behind the wake
+    let (st, lines) = tick(&st, &win(7_000.0, 2.0, 2.0, None, 0.0));
+    assert!(lines.is_empty() && st.held_pending, "{lines:?}");
+    // the ack landed: message 1 is read, message 2 still unread
+    let (st, lines) = tick(&st, &win(9_000.0, 2.0, 1.0, None, 0.0));
+    assert!(lines.is_empty() && st.win_open_ms == Some(9_000.0), "the read opens the window: {lines:?}");
+    let (st, lines) = tick(&st, &win(13_000.0, 2.0, 1.0, None, 0.0));
+    assert_eq!(lines.len(), 1, "woken 4 s after the ack, not 600 s: {lines:?}");
+    assert!(lines[0].contains("direct total 1 -> 2"), "{lines:?}");
+    assert!(!st.held_pending && st.woke_ms == Some(13_000.0));
+}
+
+/// A tick that reads nothing new while mail is held still waits for the re-wake window, as before.
+#[test]
+fn held_mail_nobody_read_still_waits_for_the_rewake_window() {
+    let (st, _) = tick(&wake_armed(), &win(1_000.0, 1.0, 1.0, None, 0.0));
+    let (st, _) = tick(&st, &win(5_000.0, 1.0, 1.0, None, 0.0));
+    let (st, _) = tick(&st, &win(7_000.0, 2.0, 2.0, None, 0.0));
+    let (st, lines) = tick(&st, &win(60_000.0, 2.0, 2.0, None, 0.0));
+    assert!(lines.is_empty() && st.win_open_ms.is_none(), "{lines:?}");
+}
+
+// ---- review follow-ups P2-10 / P2-11 (GH #845 phase 2) -----------------------------------------------------------------------
+
+/// P2-10: the store was recreated or re-homed, so its seq restarts low while the saved watermark stays high. A head below the
+/// watermark (seq only ever grows) means the watermark is stale: the watcher reconciles, and wakes once for the pending mail.
+#[test]
+fn a_store_reset_below_the_saved_watermark_reconciles_instead_of_going_silent() {
+    let st = State { armed: true, last_total: 1.0, last_total2: 1.0, last_bc_seq: 500.0, last_bc_pending: Some(0.0), ..State::default() };
+    let reset = |seq: f64, head: f64| Snapshot { bc_head: Some(head), ..bc(Some(seq), 1.0) };
+    let (after, lines) = tick(&st, &reset(9.0, 10.0));
+    assert_eq!((lines.len(), after.last_bc_seq, after.bc_seq_missing), (1, 9.0, false), "the new store's mail wakes: {lines:?}");
+    let (_, lines) = tick(&after, &reset(11.0, 12.0));
+    assert_eq!(lines.len(), 1, "and the watermark follows the new store: {lines:?}");
+}
+
+/// P2-10: a head at or above the watermark is the same store; a row without the head (an older writer) is never read as a reset.
+#[test]
+fn a_head_at_or_above_the_watermark_or_no_head_is_never_a_reset() {
+    let st = State { armed: true, last_total: 1.0, last_total2: 1.0, last_bc_seq: 500.0, last_bc_pending: Some(1.0), ..State::default() };
+    let (after, lines) = tick(&st, &Snapshot { bc_head: Some(500.0), ..bc(Some(500.0), 1.0) });
+    assert!(lines.is_empty() && after.last_bc_seq == 500.0, "{lines:?}");
+    let (_, lines) = tick(&st, &bc(Some(9.0), 1.0));
+    assert!(lines.is_empty(), "no head: nothing says the store was reset: {lines:?}");
+}
+
+/// P2-11: rows at or under the watermark that become wake-eligible after the fact (the config changed, or a legacy row now resolves
+/// against a roster that gained an id) raise the pending count without raising the highest seq: that wakes.
+#[test]
+fn rows_that_become_eligible_under_the_watermark_wake() {
+    let st = State { armed: true, last_total: 1.0, last_total2: 1.0, last_bc_seq: 100.0, last_bc_pending: Some(1.0), ..State::default() };
+    let (after, lines) = tick(&st, &bc(Some(100.0), 3.0));
+    assert_eq!(lines.len(), 1, "pending rose 1 -> 3 with the highest seq unchanged: {lines:?}");
+    assert_eq!(after.last_bc_seq, 100.0, "the watermark never goes down");
+    let (_, lines) = tick(&after, &bc(Some(100.0), 3.0));
+    assert!(lines.is_empty(), "once: {lines:?}");
+    let (_, lines) = tick(&st, &bc(Some(100.0), 1.0));
+    assert!(lines.is_empty(), "an unchanged count is not new eligibility: {lines:?}");
+    let from_nothing = State { last_bc_pending: Some(0.0), ..st };
+    let (_, lines) = tick(&from_nothing, &bc(Some(100.0), 1.0));
+    assert!(lines.is_empty(), "a row reappearing under the watermark after a drain is a stale write, not a wake: {lines:?}");
+}

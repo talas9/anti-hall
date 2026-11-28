@@ -18,6 +18,47 @@ pub enum Audience {
     Nobody,
     /// These registry ids (sorted, deduped).
     Ids(Vec<String>),
+    /// GH #845 phase 2a: a room message: the room, its members when it was sent (who may read it) and the members it wakes.
+    Room(Room),
+}
+
+/// The stored audience of a room message (`mesh_room.toml`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Room {
+    /// The room name.
+    pub room: String,
+    /// Its members (registry ids, sorted) when the message was sent.
+    pub members: Vec<String>,
+    /// The members it wakes (sorted).
+    pub wake: Vec<String>,
+}
+
+/// GH #845 phase 2a: the audience of a message to room `room` whose members are `members`: `base` is what [`resolve`] made of the
+/// body; mentions (`Ids`) narrow the wake to the mentioned members, anything else wakes every member; the sender never wakes.
+pub fn room_audience(room: &str, members: &[String], base: &Audience, sender: &str) -> Room {
+    let mut m: Vec<String> = members.to_vec();
+    m.sort();
+    m.dedup();
+    let mut wake: Vec<String> = match base {
+        Audience::Ids(v) => m.iter().filter(|x| v.contains(x)).cloned().collect(),
+        _ => m.clone(),
+    };
+    wake.retain(|x| x != sender);
+    Room { room: room.to_string(), members: m, wake }
+}
+
+/// GH #845 phase 2a: whether a room message (`stored`) is hidden from `reader`: a reader that was not a member when it was sent,
+/// while `mesh_room.hide_nonmembers` is on. Any other row is never hidden.
+pub fn hidden(stored: Option<&Audience>, reader: &str) -> bool {
+    matches!(stored, Some(Audience::Room(r)) if defaults::num("mesh_room.hide_nonmembers") == 1 && !r.members.iter().any(|x| x == reader))
+}
+
+/// The room a stored audience names, if it is a room message.
+pub fn room_of(stored: Option<&Audience>) -> Option<&str> {
+    match stored {
+        Some(Audience::Room(r)) => Some(r.room.as_str()),
+        _ => None,
+    }
 }
 
 /// A `--question` broadcast whose mention prefixes several workspaces: refused at send (the token and the ids it matched).
@@ -123,6 +164,13 @@ pub fn encode(a: &Audience) -> String {
         Audience::All => defaults::text("mesh_wake.audience_all").to_string(),
         Audience::Nobody => defaults::text("mesh_wake.audience_none").to_string(),
         Audience::Ids(v) => serde_json::to_string(v).unwrap_or_default(),
+        Audience::Room(r) => {
+            let mut o = serde_json::Map::new();
+            o.insert(defaults::text("mesh_room.audience_room").into(), serde_json::Value::String(r.room.clone()));
+            o.insert(defaults::text("mesh_room.audience_members").into(), serde_json::json!(r.members));
+            o.insert(defaults::text("mesh_room.audience_wake").into(), serde_json::json!(r.wake));
+            serde_json::Value::Object(o).to_string()
+        }
     }
 }
 
@@ -134,6 +182,12 @@ pub fn decode(t: Option<&str>) -> Option<Audience> {
     }
     if t == defaults::text("mesh_wake.audience_none") {
         return Some(Audience::Nobody);
+    }
+    if t.starts_with('{') {
+        let v: serde_json::Value = serde_json::from_str(t).ok()?;
+        let list = |k: &str| -> Option<Vec<String>> { v.get(defaults::text(k))?.as_array()?.iter().map(|x| x.as_str().map(str::to_string)).collect() };
+        let room = v.get(defaults::text("mesh_room.audience_room"))?.as_str()?.to_string();
+        return Some(Audience::Room(Room { room, members: list("mesh_room.audience_members")?, wake: list("mesh_room.audience_wake")? }));
     }
     serde_json::from_str::<Vec<String>>(t).ok().map(Audience::Ids)
 }
@@ -164,6 +218,10 @@ impl Mode {
         if self.ack_suppressed && kind == Some(self.ack_kind) {
             return false;
         }
+        // GH #845 phase 2a: a room message wakes the members it names and no one else; the legacy switches below cover plain broadcasts
+        if let Some(Audience::Room(r)) = stored {
+            return r.wake.iter().any(|x| x == reader);
+        }
         if !force_addressed && (!self.addressed || (self.primary_all && is_primary(reader))) {
             return true;
         }
@@ -179,6 +237,7 @@ impl Mode {
             Audience::All => true,
             Audience::Nobody => false,
             Audience::Ids(v) => v.iter().any(|x| x == reader),
+            Audience::Room(r) => r.wake.iter().any(|x| x == reader),
         }
     }
 }
@@ -274,5 +333,45 @@ mod tests {
         assert!(on.wakes(None, None, A, || Audience::All, false), "a legacy row is resolved on read");
         assert!(!on.wakes(Some(&Audience::All), Some("ack"), A, || Audience::All, false), "an explicit ack wakes no one");
         assert!(!off.wakes(Some(&none), None, A, || Audience::Nobody, true), "the drain's addressed flag ignores the mode");
+    }
+
+    fn room(members: &[&str], wake: &[&str]) -> Audience {
+        Audience::Room(Room { room: "lab".into(), members: members.iter().map(|x| x.to_string()).collect(), wake: wake.iter().map(|x| x.to_string()).collect() })
+    }
+
+    /// GH #845 phase 2a: a room message wakes only the members it names, whatever the legacy switches say: a Primary reader that is
+    /// not a member is not woken (the `primary_reader` legacy rule covers plain broadcasts only), nor is any reader with the mode off.
+    #[test]
+    fn a_room_message_wakes_only_its_members_even_a_primary_reader_or_with_the_mode_off() {
+        let off = Mode { addressed: false, primary_all: true, ack_suppressed: false, ack_kind: "ack" };
+        let on = Mode { addressed: true, primary_all: true, ack_suppressed: true, ack_kind: "ack" };
+        let r = room(&[A, B], &[A]);
+        for m in [&off, &on] {
+            assert!(m.wakes(Some(&r), None, A, || Audience::All, false));
+            assert!(!m.wakes(Some(&r), None, B, || Audience::All, false), "a member the mentions left out is not woken");
+            assert!(!m.wakes(Some(&r), None, &pm(), || Audience::All, false), "a Primary that is not a member is not woken");
+            assert!(!m.wakes(Some(&r), None, A2, || Audience::All, false), "a non-member is not woken");
+        }
+    }
+
+    #[test]
+    fn mentions_narrow_a_room_wake_to_mentioned_members_and_the_sender_never_wakes() {
+        let members: Vec<String> = vec![B.into(), A.into(), pm()];
+        let all = room_audience("lab", &members, &Audience::Nobody, B);
+        assert_eq!(all.wake, { let mut v = vec![A.to_string(), pm()]; v.sort(); v }, "no mention: every member but the sender");
+        let narrowed = room_audience("lab", &members, &Audience::Ids(vec![A.into(), A2.into()]), B);
+        assert_eq!(narrowed.wake, vec![A.to_string()], "a mentioned non-member (A2) is not added");
+        assert_eq!(room_audience("lab", &members, &Audience::All, B).wake.len(), 2);
+        assert_eq!(all.members.len(), 3);
+    }
+
+    #[test]
+    fn a_room_audience_round_trips_and_hides_from_non_members() {
+        let r = room(&[A, B], &[B]);
+        assert_eq!(decode(Some(&encode(&r))), Some(r.clone()));
+        assert!(!hidden(Some(&r), A));
+        assert!(hidden(Some(&r), A2), "a reader that was not a member does not see it");
+        assert!(!hidden(Some(&Audience::Nobody), A2), "a plain broadcast is never hidden");
+        assert_eq!(room_of(Some(&r)), Some("lab"));
     }
 }

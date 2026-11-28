@@ -123,26 +123,107 @@ fn registry(st: &MeshStore) -> R<Vec<Reg>> {
     Ok(out)
 }
 
+fn msg_of(m: &Value) -> Msg {
+    Msg {
+        store_seq: m["storeSeq"].as_f64(),
+        ts: fv(&m["ts"]),
+        body: sv(&m["body"]).unwrap_or_default(),
+        sender: sv(&m["sender"]),
+        mtype: sv(&m["mtype"]),
+        urgency: sv(&m["urgency"]),
+        is_heartbeat: m["isHeartbeat"].as_bool().unwrap_or(false),
+        needs_reply: m["needsReply"].as_bool().unwrap_or(false),
+        sender_kind: sv(&m[defaults::text("mesh_identity.row_kind_field")]),
+    }
+}
+
 fn messages(st: &MeshStore, id: &str, since: f64) -> R<Vec<Msg>> {
     let since = if since.is_finite() && since > 0.0 { since.floor() as u64 } else { 0 };
     let mut out = Vec::new();
     st.reader()
         .for_each_message(id, since, |m| {
-            out.push(Msg {
-                store_seq: m["storeSeq"].as_f64(),
-                ts: fv(&m["ts"]),
-                body: sv(&m["body"]).unwrap_or_default(),
-                sender: sv(&m["sender"]),
-                mtype: sv(&m["mtype"]),
-                urgency: sv(&m["urgency"]),
-                is_heartbeat: m["isHeartbeat"].as_bool().unwrap_or(false),
-                needs_reply: m["needsReply"].as_bool().unwrap_or(false),
-                sender_kind: sv(&m[defaults::text("mesh_identity.row_kind_field")]),
-            });
+            out.push(msg_of(&m));
             true
         })
         .unwrap_or_else(|e| soft("messages", e));
     Ok(out)
+}
+
+/// The rows of partition `id` past store seq `after_seq` (GH #845 P2-12), in insertion order.
+fn messages_after_seq(st: &MeshStore, id: &str, after_seq: i64) -> Vec<Msg> {
+    let mut out = Vec::new();
+    st.reader()
+        .for_each_message_after_seq(id, after_seq, |m| {
+            out.push(msg_of(&m));
+            true
+        })
+        .unwrap_or_else(|e| soft("messages", e));
+    out
+}
+
+/// One run of consecutive identical broadcasts (`recent[]`): same sender (and its alias), summary text and urgency collapse.
+struct Run {
+    from: Option<String>,
+    raw: Option<String>,
+    summary: String,
+    urgency: Option<String>,
+    count: usize,
+    raw_ts: f64,
+    max_ts: Option<f64>,
+    min_ts: Option<f64>,
+}
+
+/// The runs of `rows` (oldest first): consecutive identical (from, rawFrom, summary, urgency) rows collapse.
+fn build_runs(rows: &[Msg], aliases: &[(String, String)]) -> Vec<Run> {
+    let mut runs: Vec<Run> = Vec::new();
+    for r in rows {
+        let raw = r.sender.clone();
+        let from = match &raw {
+            Some(x) => aliases.iter().find(|(k, _)| k == x).map(|(_, to)| to.clone()).or_else(|| raw.clone()),
+            None => None,
+        };
+        if let Some(last) = runs.last_mut()
+            && last.from == from
+            && last.raw == raw
+            && last.summary == r.body
+            && last.urgency == r.urgency
+        {
+            last.count += 1;
+            if r.ts.is_finite() {
+                last.max_ts = Some(last.max_ts.map_or(r.ts, |m| m.max(r.ts)));
+                last.min_ts = Some(last.min_ts.map_or(r.ts, |m| m.min(r.ts)));
+            }
+            continue;
+        }
+        runs.push(Run {
+            from,
+            raw,
+            summary: r.body.clone(),
+            urgency: r.urgency.clone(),
+            count: 1,
+            raw_ts: r.ts,
+            max_ts: r.ts.is_finite().then_some(r.ts),
+            min_ts: r.ts.is_finite().then_some(r.ts),
+        });
+    }
+    runs
+}
+
+/// The last `cap` runs of partition `id`, read from its tail only (GH #845 P2-12): newest rows are read in growing windows until the
+/// window holds more than `cap` runs (then the oldest, possibly cut, run is dropped and the `cap` after it are whole) or reaches the
+/// start of the partition. The result equals the last `cap` runs of the whole partition.
+fn recent_runs(st: &MeshStore, id: &str, cap: usize, aliases: &[(String, String)]) -> Vec<Run> {
+    let mut want = cap.saturating_add(1).max(1) as u64;
+    loop {
+        let rows: Vec<Msg> = st.reader().last_messages(id, want).unwrap_or_else(|e| soft("messages", e)).iter().map(msg_of).collect();
+        let whole = (rows.len() as u64) < want;
+        let mut runs = build_runs(&rows, aliases);
+        if whole || runs.len() > cap {
+            let skip = runs.len().saturating_sub(cap);
+            return runs.split_off(skip);
+        }
+        want = want.saturating_mul(2);
+    }
 }
 
 fn read_text(p: &Path) -> Option<String> {
@@ -647,18 +728,28 @@ pub fn compute(st: &MeshStore, inv: &Inv, _touched: Option<&str>) -> R<OVal> {
     let recent_cap = defaults::num("mesh_write.summary_recent_cap") as usize;
     let pq_cap = defaults::num("mesh_write.summary_pending_questions_cap") as usize;
     let bpart = defaults::text("mesh_write.broadcast_partition");
-    let broadcast_all = messages(st, bpart, 0.0)?;
     // GH #845 (contract §3-§4): who each unread broadcast wakes. The stored audience is decoded, and a legacy row's audience
     // resolved, once per call, the first time some reader has the row unread.
     let mode = crate::meshw::wakepolicy::Mode::load();
     let ack_kind = defaults::text("mesh_chat.kind_ack");
     let ack_suppressed = defaults::num("mesh_chat.ack_suppression") == 1;
-    let bc_extras = st.reader().extras_of(bpart, 0).unwrap_or_else(|e| soft("broadcast-extras", e));
+    let rows = registry(st)?;
+    let archived = archive_complete_ids(home);
+    // GH #845 P2-12: the broadcast partition grows without bound, so a summary reads only what some reader still has unread (past the
+    // lowest live broadcast cursor), the tail the recent[] list shows, and one heartbeat per sender, never the whole partition
+    let bc_head = st.reader().max_seq_of(bpart).unwrap_or_else(|e| soft("broadcast-head", e)).map(|q| q as f64);
+    let lowest_cursor = rows
+        .iter()
+        .filter(|d| d.id_is_str && is_safe_id(&d.id) && d.id != bpart && !archived.contains(&d.id))
+        .map(|d| st.reader().broadcast_cursor(&d.id).unwrap_or_else(|e| soft("broadcast-cursor", e)) as i64)
+        .min()
+        .unwrap_or(i64::MAX);
+    let broadcast_all = messages_after_seq(st, bpart, lowest_cursor);
+    let last_heartbeats = st.reader().last_heartbeats_of(bpart).unwrap_or_else(|e| soft("heartbeats", e));
+    let bc_extras = st.reader().extras_of(bpart, lowest_cursor).unwrap_or_else(|e| soft("broadcast-extras", e));
     let mut bc_audience: HashMap<usize, Option<crate::meshw::wakepolicy::Audience>> = HashMap::new();
     let mut bc_legacy: HashMap<usize, crate::meshw::wakepolicy::Audience> = HashMap::new();
-    let rows = registry(st)?;
     let roster_ids: Vec<&str> = rows.iter().map(|d| d.id.as_str()).collect();
-    let archived = archive_complete_ids(home);
     let registry_ids: HashSet<String> = rows.iter().map(|d| d.id.clone()).filter(|id| !archived.contains(id)).collect();
     let aliases = crate::meshw::common::read_aliases(home, &inv.env);
     let mut resolver = Resolver { rows: &rows, aliases: aliases.clone(), pwid: HashMap::new() };
@@ -827,8 +918,17 @@ pub fn compute(st: &MeshStore, inv: &Inv, _touched: Option<&str>) -> R<OVal> {
             st.reader().message_count_from_others(&d.id, &family, wake_prefix)
         }
         .unwrap_or_else(|e| soft("count", e)) as f64;
-        let unread_bc: Vec<(usize, &Msg)> =
-            broadcast_all.iter().enumerate().filter(|(_, r)| !r.is_heartbeat && r.store_seq.is_some_and(|q| q.is_finite() && q > bc_cursor)).collect();
+        // GH #845 phase 2a: a room message this workspace was not a member of is neither unread nor wakes it
+        let unread_bc: Vec<(usize, &Msg)> = broadcast_all
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| !r.is_heartbeat && r.store_seq.is_some_and(|q| q.is_finite() && q > bc_cursor))
+            .filter(|(i, r)| {
+                let text = r.store_seq.and_then(|q| bc_extras.get(&(q as i64))).and_then(|(_, a)| a.as_deref());
+                let stored = bc_audience.entry(*i).or_insert_with(|| crate::meshw::wakepolicy::decode(text));
+                !crate::meshw::wakepolicy::hidden(stored.as_ref(), &d.id)
+            })
+            .collect();
         let from_others = |r: &Msg| !(!family.is_empty() && r.sender.as_ref().is_some_and(|x| family.contains(x)));
         let bc_from_others = unread_bc.iter().filter(|(_, r)| from_others(r)).count();
         // broadcastWakeSeq / broadcastWakePending: the unread broadcasts of others that wake this workspace (contract §3-§4); the
@@ -860,12 +960,7 @@ pub fn compute(st: &MeshStore, inv: &Inv, _touched: Option<&str>) -> R<OVal> {
                 wake_seq = Some(wake_seq.map_or(q, |m| m.max(q)));
             }
         }
-        let mut working_on = OVal::Null;
-        for r in &broadcast_all {
-            if r.is_heartbeat && r.sender.as_deref() == Some(d.id.as_str()) {
-                working_on = s(&r.body);
-            }
-        }
+        let working_on = last_heartbeats.get(d.id.as_str()).map_or(OVal::Null, |body| s(body));
         let mut w = vec![
             ("id".to_string(), d.raw_id.clone()),
             ("worktreePath".into(), s_or_null(d.worktree_path.as_deref())),
@@ -886,6 +981,8 @@ pub fn compute(st: &MeshStore, inv: &Inv, _touched: Option<&str>) -> R<OVal> {
             (defaults::text("mesh_wake.summary_field_pending").into(), n(wake_pending as f64)),
             // re-review N-3: the reader's broadcast cursor, so a watcher sees an ack that left wake-eligible rows unread
             (defaults::text("mesh_wake.summary_field_cursor").into(), n(bc_cursor)),
+            // P2-10: the newest broadcast seq of the store, so a watcher sees a store that was recreated (its seq restarted below the watermark)
+            (defaults::text("mesh_wake.summary_field_head").into(), opt_num(bc_head)),
             ("urgencyMax".into(), urgency_max),
             ("broadcastUrgencyMax".into(), max_urgency(unread_bc.iter().map(|(_, r)| *r))),
             ("working_on".into(), working_on),
@@ -951,50 +1048,9 @@ pub fn compute(st: &MeshStore, inv: &Inv, _touched: Option<&str>) -> R<OVal> {
             None => workspaces.push((d.id.clone(), entry)),
         }
     }
-    // recent[]: consecutive identical (from, rawFrom, summary, urgency) runs collapse
-    struct Run {
-        from: Option<String>,
-        raw: Option<String>,
-        summary: String,
-        urgency: Option<String>,
-        count: usize,
-        raw_ts: f64,
-        max_ts: Option<f64>,
-        min_ts: Option<f64>,
-    }
-    let mut runs: Vec<Run> = Vec::new();
-    for r in &broadcast_all {
-        let raw = r.sender.clone();
-        let from = match &raw {
-            Some(x) => aliases.iter().find(|(k, _)| k == x).map(|(_, to)| to.clone()).or_else(|| raw.clone()),
-            None => None,
-        };
-        if let Some(last) = runs.last_mut()
-            && last.from == from
-            && last.raw == raw
-            && last.summary == r.body
-            && last.urgency == r.urgency
-        {
-            last.count += 1;
-            if r.ts.is_finite() {
-                last.max_ts = Some(last.max_ts.map_or(r.ts, |m| m.max(r.ts)));
-                last.min_ts = Some(last.min_ts.map_or(r.ts, |m| m.min(r.ts)));
-            }
-            continue;
-        }
-        runs.push(Run {
-            from,
-            raw,
-            summary: r.body.clone(),
-            urgency: r.urgency.clone(),
-            count: 1,
-            raw_ts: r.ts,
-            max_ts: r.ts.is_finite().then_some(r.ts),
-            min_ts: r.ts.is_finite().then_some(r.ts),
-        });
-    }
-    let skip = runs.len().saturating_sub(recent_cap);
-    let recent: Vec<OVal> = runs[skip..]
+    // recent[]: consecutive identical (from, rawFrom, summary, urgency) runs collapse; only the tail of the partition is read
+    let runs = recent_runs(st, bpart, recent_cap, &aliases);
+    let recent: Vec<OVal> = runs
         .iter()
         .map(|run| {
             let ts = if run.count > 1 && run.max_ts.is_some() { run.max_ts.unwrap_or(run.raw_ts) } else { run.raw_ts };
@@ -1227,6 +1283,94 @@ mod tests {
             _ => panic!("{k} is no number"),
         };
         assert_eq!((num("unread"), num("directUnread")), (3, 2));
+        crate::discard::harmless(std::fs::remove_dir_all(dir)); // keep: test cleanup; an absent directory is the goal state
+    }
+
+    fn bcast(st: &MeshStore, from: &str, body: &str, ts: i64, heartbeat: bool) {
+        use crate::meshw::store::{mesh_message_hash, mesh_message_row};
+        let mtype = defaults::text("mesh_write.mtype_broadcast");
+        let h = mesh_message_hash(Some(from), None, mtype, "normal", body, &ts.to_string(), false);
+        let mut row = mesh_message_row(Some(from), None, true, body, ts, "normal", &h, false, None);
+        row.is_heartbeat = heartbeat;
+        st.append_mesh_row(&row).unwrap();
+    }
+
+    fn run_key(r: &Run) -> (Option<String>, String, usize, Option<f64>, Option<f64>) {
+        (r.from.clone(), r.summary.clone(), r.count, r.min_ts, r.max_ts)
+    }
+
+    /// GH #845 P2-12: the runs read from the tail equal the last runs of the whole partition, whatever the run lengths at the cut.
+    #[test]
+    fn the_tail_runs_equal_the_last_runs_of_the_whole_partition() {
+        defaults::init().unwrap();
+        let dir = scratch("tailruns");
+        let st = MeshStore::open(&dir.join(defaults::text("mesh_write.store_file"))).unwrap();
+        let bpart = defaults::text("mesh_write.broadcast_partition");
+        let mut x: u64 = 12345;
+        for i in 0..400i64 {
+            x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            let (from, body) = (["w-a", "w-b"][(x >> 33) as usize % 2], ["same", "same", "other", "third"][(x >> 40) as usize % 4]);
+            // hash from the index: identical bodies must still be distinct rows
+            bcast(&st, from, body, 1_000 + i, false);
+        }
+        let all = messages(&st, bpart, 0.0).unwrap();
+        assert!(all.len() >= 400);
+        let full = build_runs(&all, &[]);
+        for cap in [1usize, 2, 3, 5, 8, 50, 399, 400, 500] {
+            let tail = recent_runs(&st, bpart, cap, &[]);
+            let want: Vec<_> = full[full.len().saturating_sub(cap)..].iter().map(run_key).collect();
+            assert_eq!(tail.iter().map(run_key).collect::<Vec<_>>(), want, "cap {cap}");
+        }
+        crate::discard::harmless(std::fs::remove_dir_all(dir)); // keep: test cleanup; an absent directory is the goal state
+    }
+
+    /// GH #845 P2-12: one heartbeat per sender (the newest) is what the old whole-partition loop ended with.
+    #[test]
+    fn the_last_heartbeat_per_sender_is_what_the_whole_partition_loop_ended_with() {
+        defaults::init().unwrap();
+        let dir = scratch("hbs");
+        let st = MeshStore::open(&dir.join(defaults::text("mesh_write.store_file"))).unwrap();
+        let bpart = defaults::text("mesh_write.broadcast_partition");
+        for i in 0..30i64 {
+            bcast(&st, ["w-a", "w-b", "w-c"][(i % 3) as usize], &format!("working {i}"), 1_000 + i, i % 5 != 0);
+        }
+        let all = messages(&st, bpart, 0.0).unwrap();
+        let mut want: HashMap<String, String> = HashMap::new();
+        for r in all.iter().filter(|r| r.is_heartbeat) {
+            want.insert(r.sender.clone().unwrap(), r.body.clone());
+        }
+        assert!(!want.is_empty());
+        assert_eq!(st.reader().last_heartbeats_of(bpart).unwrap(), want);
+        assert_eq!(st.reader().max_seq_of(bpart).unwrap(), all.iter().filter_map(|r| r.store_seq).reduce(f64::max).map(|q| q as i64));
+        crate::discard::harmless(std::fs::remove_dir_all(dir)); // keep: test cleanup; an absent directory is the goal state
+    }
+
+    /// GH #845 P2-12: a summary of a long broadcast partition reports what a full read reported: the unread counts of a lagging and a
+    /// caught-up reader, the head and the working_on line.
+    #[test]
+    fn a_summary_of_a_long_partition_reports_the_unread_past_each_cursor() {
+        use crate::meshw::store::RegistryRow;
+        defaults::init().unwrap();
+        let dir = scratch("longbc");
+        let st = MeshStore::open(&dir.join(defaults::text("mesh_write.store_file"))).unwrap();
+        for id in ["X", "Y"] {
+            let row = RegistryRow { id: id.into(), worktree_path: Some(format!("/w/{id}")), session_id: None, inbox_path: None, cursor_path: None, nudge_command: None };
+            st.upsert_registry(&row, 1, |a, b| a == b).unwrap();
+        }
+        for i in 0..200i64 {
+            bcast(&st, "other", &format!("m{i}"), 1_000 + i, false);
+        }
+        bcast(&st, "X", "X is on it", 2_000, true);
+        let head = st.reader().max_seq_of(defaults::text("mesh_write.broadcast_partition")).unwrap().unwrap();
+        st.raise_broadcast_cursor("X", head - 3, 1).unwrap();
+        st.raise_broadcast_cursor("Y", 50, 1).unwrap();
+        let sum = compute(&st, &inv_in(&dir), None).unwrap();
+        let w = |id: &str, k: &str| sum.get("workspaces").and_then(|w| w.get(id)).and_then(|r| r.get(k)).cloned();
+        assert_eq!(w("X", "broadcastUnread"), Some(OVal::Num(2.0)), "3 past the cursor, the heartbeat is not unread mail");
+        assert_eq!(w("Y", "broadcastUnread"), Some(OVal::Num((head - 50 - 1) as f64)));
+        assert_eq!(w("X", "working_on"), Some(OVal::Str("X is on it".into())));
+        assert_eq!(w("Y", "working_on"), Some(OVal::Null));
+        assert_eq!(w("X", defaults::text("mesh_wake.summary_field_head")), Some(OVal::Num(head as f64)));
         crate::discard::harmless(std::fs::remove_dir_all(dir)); // keep: test cleanup; an absent directory is the goal state
     }
 

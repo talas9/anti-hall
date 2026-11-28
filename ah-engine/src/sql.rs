@@ -331,6 +331,9 @@ pub const TEL_DAILY_RANGE: &str = "SELECT day, k, h, e, o, n, us_sum, ib_sum, hi
 /// Messages of one workspace in insertion order, from the n-th (`?2` rows skipped); the positional index of a row is
 /// its place in this order (Node's `listMessages`).
 pub const MESH_MESSAGES: &str = "SELECT id, ts, hash, body, sender, recipient, mtype, urgency, is_heartbeat, needs_reply, orig_hash, instance_nonce, seq FROM messages WHERE workspace_id = ?1 ORDER BY id ASC LIMIT -1 OFFSET ?2";
+/// [`MESH_MESSAGES`] for the rows of one workspace past store seq `?2` only (GH #845 P2-12: a reader of the broadcast partition needs
+/// what is unread past its cursor, never the whole partition). A row with no seq is never past one.
+pub const MESH_MESSAGES_AFTER_SEQ: &str = "SELECT id, ts, hash, body, sender, recipient, mtype, urgency, is_heartbeat, needs_reply, orig_hash, instance_nonce, seq FROM messages WHERE workspace_id = ?1 AND seq > ?2 ORDER BY id ASC";
 /// The newest `?2` messages of one workspace, newest first.
 pub const MESH_MESSAGES_LAST: &str = "SELECT id, ts, hash, body, sender, recipient, mtype, urgency, is_heartbeat, needs_reply, orig_hash, instance_nonce, seq FROM messages WHERE workspace_id = ?1 ORDER BY id DESC LIMIT ?2";
 /// The newest `?2` messages a workspace SENT, whichever inbox they went to (the evidence sweep reads what a child told its parent).
@@ -346,6 +349,12 @@ pub const MESH_MESSAGE_COUNT_FROM_OTHERS_EXCEPT_KIND: &str = "SELECT COUNT(*) AS
 /// GH #845 (identities): the seq and stored sender_kind of a partition's rows whose kind is set and is not `?2` (the workspace kind).
 pub const MESH_SENDER_KINDS_OF: &str =
     "SELECT seq, sender_kind FROM messages WHERE workspace_id = ?1 AND sender_kind IS NOT NULL AND sender_kind <> ?2 AND seq IS NOT NULL";
+/// The newest store seq of one workspace partition (the broadcast head).
+pub const MESH_MAX_SEQ_OF: &str = "SELECT MAX(seq) AS m FROM messages WHERE workspace_id = ?1";
+/// The body of the newest heartbeat each sender left in one partition (a workspace's `working_on` line), by sender.
+pub const MESH_LAST_HEARTBEATS_OF: &str = "SELECT sender, body FROM messages WHERE workspace_id = ?1 AND is_heartbeat = 1 AND sender IS NOT NULL AND id IN (SELECT MAX(id) FROM messages WHERE workspace_id = ?1 AND is_heartbeat = 1 AND sender IS NOT NULL GROUP BY sender)";
+/// [`MESH_SENDER_KINDS_OF`] for the rows past store seq `?3` only.
+pub const MESH_SENDER_KINDS_AFTER_SEQ: &str = "SELECT seq, sender_kind FROM messages WHERE workspace_id = ?1 AND sender_kind IS NOT NULL AND sender_kind <> ?2 AND seq > ?3";
 /// GH #845 review P1-4: the seq and hash of every row of a partition with chat kind `?2` (the explicit acks a tick does not wake on).
 pub const MESH_ROWS_OF_KIND: &str = "SELECT seq, hash FROM messages WHERE workspace_id = ?1 AND chat_kind = ?2";
 /// The GH #845 columns of one workspace's rows past seq `?2` that have any (fails on a store without them).
@@ -392,6 +401,13 @@ pub const MESH_LAST_META: &str = "SELECT ts, seq, sender, recipient, mtype FROM 
 
 /// Node's `messages` table.
 pub const MESHW_DDL_MESSAGES: &str = "CREATE TABLE IF NOT EXISTS messages ( id INTEGER PRIMARY KEY AUTOINCREMENT, workspace_id TEXT NOT NULL, ts INTEGER NOT NULL, hash TEXT, body TEXT, sender TEXT, recipient TEXT, mtype TEXT, urgency TEXT, is_heartbeat INTEGER, needs_reply INTEGER, orig_hash TEXT, instance_nonce TEXT, seq INTEGER, UNIQUE(hash));";
+/// GH #845 P2-12: the reads past a seq (`MESH_MESSAGES_AFTER_SEQ`, `MESH_EXTRAS_OF`, `MESH_SENDER_KINDS_AFTER_SEQ`, `MESH_MAX_SEQ_OF`) walk this index
+/// instead of the whole partition. Additive, like the needs-reply index: Node ignores it.
+pub const MESHW_DDL_SEQ_INDEX: &str = "CREATE INDEX IF NOT EXISTS idx_messages_seq ON messages (workspace_id, seq);";
+/// GH #845 P2-12: the newest heartbeat of each sender in a partition (`MESH_LAST_HEARTBEATS_OF`) without reading the heartbeats before it.
+pub const MESHW_DDL_HEARTBEAT_INDEX: &str = "CREATE INDEX IF NOT EXISTS idx_messages_heartbeat ON messages (workspace_id, is_heartbeat, sender, id);";
+/// GH #845 P2-12: a partition's newest rows by `id` (`MESH_MESSAGES_LAST`, the `recent[]` tail) without sorting the whole partition.
+pub const MESHW_DDL_WORKSPACE_INDEX: &str = "CREATE INDEX IF NOT EXISTS idx_messages_workspace ON messages (workspace_id);";
 /// Node's needs-reply index.
 pub const MESHW_DDL_NEEDS_REPLY_INDEX: &str = "CREATE INDEX IF NOT EXISTS idx_messages_needs_reply ON messages (workspace_id, needs_reply);";
 /// Node's `registry` table.
@@ -405,6 +421,23 @@ pub const MESHW_DDL_BROADCAST_CURSORS: &str =
     "CREATE TABLE IF NOT EXISTS broadcast_cursors ( workspace_id TEXT PRIMARY KEY, value INTEGER NOT NULL, updated_at INTEGER);";
 /// Node's `reader_cursors` table.
 pub const MESHW_DDL_READER_CURSORS: &str = "CREATE TABLE IF NOT EXISTS reader_cursors ( partition TEXT NOT NULL, ns TEXT NOT NULL CHECK (ns IN ('store','nd')), reader TEXT NOT NULL, value INTEGER NOT NULL CHECK (value >= 0), retired_line INTEGER, updated_at INTEGER NOT NULL, PRIMARY KEY (partition, ns, reader)) WITHOUT ROWID;";
+/// GH #845 phase 2a: the project's mesh rooms (engine only; Node never reads them).
+pub const MESHW_DDL_ROOMS: &str = "CREATE TABLE IF NOT EXISTS mesh_rooms ( name TEXT PRIMARY KEY, created_by TEXT, created_at INTEGER);";
+/// GH #845 phase 2a: who is subscribed to which room (registry ids).
+pub const MESHW_DDL_ROOM_MEMBERS: &str =
+    "CREATE TABLE IF NOT EXISTS mesh_room_members ( room TEXT NOT NULL, member TEXT NOT NULL, joined_at INTEGER, PRIMARY KEY (room, member)) WITHOUT ROWID;";
+/// Create a room (an existing one is kept as it is).
+pub const MESHW_ROOM_CREATE: &str = "INSERT OR IGNORE INTO mesh_rooms (name, created_by, created_at) VALUES (?1, ?2, ?3);";
+/// Subscribe a member (an existing subscription is kept).
+pub const MESHW_ROOM_JOIN: &str = "INSERT OR IGNORE INTO mesh_room_members (room, member, joined_at) VALUES (?1, ?2, ?3);";
+/// Unsubscribe a member (the caller's own request; the room stays).
+pub const MESHW_ROOM_LEAVE: &str = "DELETE FROM mesh_room_members WHERE room = ?1 AND member = ?2;";
+/// Every room name, sorted (fails on a store the room tables were never created in).
+pub const MESH_ROOMS: &str = "SELECT name FROM mesh_rooms ORDER BY name";
+/// Whether a room exists.
+pub const MESH_ROOM_EXISTS: &str = "SELECT 1 FROM mesh_rooms WHERE name = ?1";
+/// A room's members, sorted.
+pub const MESH_ROOM_MEMBERS: &str = "SELECT member FROM mesh_room_members WHERE room = ?1 ORDER BY member";
 /// Column names of a table (`PRAGMA table_info`), for Node's additive migrations.
 pub const MESHW_TABLE_INFO_MESSAGES: &str = "PRAGMA table_info(messages);";
 /// Column names of the registry.
