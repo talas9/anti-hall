@@ -438,6 +438,16 @@ value = "parent-inbox-stale-registry"
 doc = "Turns after which a mesh-issue segment is repeated."
 value = 10
 
+[devswarm_parent.owner_chat_rank]
+doc = "The rank (segment order, low first) of the owner chat order among the prompt's segments: before every roster segment."
+value = 5
+min = 0
+max = 1000
+
+[devswarm_parent.owner_chat_row]
+doc = "The order for one owner chat row (GH #862), shown every prompt until the Primary answers it in the chat. Placeholders: {body} (the owner's text), {cli} (the engine CLI path), {seq} (the store seq to reply to)."
+value = "⚠️ Do now: the owner wrote in the chat: {body}. Reply in the chat with `{cli} mesh send --to admin --reply-to {seq} --message-file <path>` (to the owner's mailbox, never to a workspace)."
+
 [devswarm_parent.broadcast_head]
 doc = "The head of the broadcast feed segment."
 value = "💡 anti-hall · devswarm-broadcast: (advisory roster/FYI feed — react ONLY if you judge it relevant; NEVER blocks your turn, regardless of urgency):\n"

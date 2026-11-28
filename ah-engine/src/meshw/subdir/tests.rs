@@ -556,3 +556,33 @@ fn replies_to_the_owner_land_in_the_admin_mailbox_and_wake_nobody() {
     assert_ne!(send::run(&primary, &argv(&["send", "--reply-to", &seq.to_string(), "--to", "child-1", "--message", "x"])).unwrap().code, 0, "two targets");
 }
 
+
+/// GH #862: the owner's chat reaches a Primary as an order, never as the advisory roster feed: an `admin` broadcast and an `admin` direct
+/// are pendingQuestions flagged `owner` (with the text as a preview), they are left out of recent[], and a child's broadcast stays in it.
+#[test]
+fn owner_chat_rows_are_orders_for_the_primary_not_roster_feed() {
+    use crate::checks::guardkit::ojson::OVal;
+    let f = fx("owner-chat");
+    let (primary, key) = registry(&f, &["child-1"]);
+    let mut owner = primary.clone();
+    owner.env.insert(defaults::text("mesh_identity.sender_env").to_string(), "admin".into());
+    assert_eq!(send::run(&owner, &argv(&["send", "--broadcast", "--message", "owner says hi to all"])).unwrap().code, 0);
+    assert_eq!(send::run(&owner, &argv(&["send", "--to-primary", "--message", "owner direct to you"])).unwrap().code, 0);
+    assert_eq!(send::run(&f.inv, &argv(&["send", "--broadcast", "--message", "child fyi"])).unwrap().code, 0);
+    let st = crate::meshw::common::open_store(&f.inv, &key).unwrap();
+    let (sum, _) = crate::meshw::summary::derive_value(&st, &f.inv, &key).unwrap();
+    let flag = defaults::text("mesh_write.owner_chat_flag");
+    let own = sum.get("workspaces").and_then(|w| w.get(&f.primary)).expect("the primary's entry").clone();
+    let Some(OVal::Arr(pq)) = own.get("pendingQuestions") else { panic!("no pendingQuestions: {}", own.stringify()) };
+    let owners: Vec<&OVal> = pq.iter().filter(|q| matches!(q.get(flag), Some(OVal::Bool(true)))).collect();
+    assert_eq!(owners.len(), 2, "both owner rows (the broadcast and the direct): {}", own.stringify());
+    assert!(owners.iter().all(|q| matches!(q.get("from"), Some(OVal::Str(x)) if x == "admin")));
+    let previews = own.get("pendingQuestionPreviews").expect("previews").stringify();
+    assert!(previews.contains("owner says hi to all") && previews.contains("owner direct to you"), "{previews}");
+    let recent = sum.get("recent").expect("recent").stringify();
+    assert!(!recent.contains("owner says hi to all"), "the owner's row is in the advisory feed: {recent}");
+    assert!(recent.contains("child fyi"), "a child's broadcast stays in the feed: {recent}");
+    // a child's entry carries no owner order
+    let child = sum.get("workspaces").and_then(|w| w.get("child-1")).expect("child entry").stringify();
+    assert!(!child.contains(&format!("\"{flag}\":true")), "{child}");
+}
