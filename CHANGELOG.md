@@ -6,7 +6,20 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
-## Unreleased
+## 0.303.0
+
+First release since v0.301.1: it carries everything merged since then (the notes below and the Engine 0.3.x integration sections). Highlights of the last two engine builds (0.3.31, 0.3.32):
+
+- Mesh messages wake only the addressee: a broadcast or a mention wakes the workspaces it names, read and ack use an exact delivered boundary (mail that arrives between a read and its ack stays unread), and a broadcast backlog no longer crowds out mail that should wake the reader.
+- Sender identities: the human owner (`admin`) and the engine acting for the owner (`ah-engine`) rank above the Primary and are never stamped as it; agents cannot impersonate either (config `mesh_identity.toml`).
+- Overload: the daemon request path has a priority queue with adaptive limits and a per-session barrier, so control verbs and guards keep answering under load (#969); exact latency percentiles in status and metrics.
+- Crash-latch fixes: a watchdog exit, a hung-daemon kill or a memory-cap exit under load no longer latches the crash-loop cooldown, and a fresh cooldown holds risky calls instead of passing everything.
+- Fewer false "too busy" holds: under load the capacity fallback passes read-only and local commands, including the engine's own verbs (#969, #971).
+- Workspace child duties: roster flags become a Do-now order and a parent Stop-gate count, the child Stop gate honours its latest heartbeat, a teammate shut down through the protocol counts as stopped, and spawn repairs a submodule worktree whose branch is in use (#983).
+- Task list window and recurring-misfire tracking (#982, #972); OMC coexistence fixes (#981).
+- Build speed: `test-fast` and `release-fast` profiles, incremental thin-LTO release builds, and a version stamp that no longer recompiles the library on every commit.
+
+### Changes since v0.301.1
 
 - Archive no longer refuses on pure submodule checkout drift (#943). `ah-engine mesh archive` treats a `git status` entry for a submodule as unsaved work only when the submodule worktree is dirty (recursively), its HEAD is on no remote branch, or git cannot read it; a submodule that is clean and at a pushed commit passes and the answer lists it as `submoduleDrift`. Switch `devswarm.archiveIgnoreSubmoduleDrift` (default on); counter `archive_submodule_drift_passed`.
 - Capacity-hold false holds and passes (#928). Under load, `dispatch.capacity_hold` (engine and ah-hook alike) no longer holds a tool that only lives in a project-local tool dir inside the repo (`.venv/bin`, `node_modules/.bin`, `target/debug|release`; its file is read as a script run by path is), a command behind a wrapper option's value (`sudo -u bob cmd`, `env -u X`, `timeout -s KILL`), or a trusted script: `script.trusted` lists (repo-relative path glob, sha256 of the content) entries, seeded with `ah-engine/test.sh` and `ah-engine/tests/wrapper.sh`; a script run by path that matches an entry on both is not matched, and any edit changes the hash so it is checked like any other. The list is never refreshed by itself: `ah-engine capacity-hashes [<path>...]` prints the current hashes. A recursive delete of a variable is never exempt (the own-temp exemption of the first cut is gone: the review found 15 bypasses). It now also holds a variable in command position with risky arguments in a script (`$CMD push`) and an argv list or exec call that starts with a literal git/gh/rm and continues with a non-literal (`run(['git', op])`). Every list and rule is in `dispatch.capacity_hold` (`script.trusted`, `unknown.local_dirs`, `script.wrapper_opts`, `script.raw_rules`, rules `dynamic-command-risky` and `exec-list-dynamic`); counters capacity_hold trusted_script / local_tool / wrapper_opt (ah-hook: capacity_trusted_script, capacity_local_tool, capacity_wrapper_opt). Corpus cases for each in the shared capacity_hold_corpus.txt.
