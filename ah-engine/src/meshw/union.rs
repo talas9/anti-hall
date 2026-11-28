@@ -59,7 +59,14 @@ pub struct Union {
 /// rule). It is never read from a process-wide value: a daemon serves requests whose settings differ from its own environment.
 pub fn is_wake_line(line: &str, provenance: bool) -> bool {
     line_body(line).is_some_and(|b| b.starts_with(defaults::text("agent_tracker.wake_prefix")))
-        && (!provenance || line_sender(line).is_none_or(|s| s.starts_with(defaults::text("mesh_write.primary_prefix"))))
+        && (!provenance || line_sender(line).is_none_or(|s| s.starts_with(defaults::text("mesh_write.primary_prefix")) || is_engine_sender(&s)))
+}
+
+/// Whether `sender` is the engine speaking for the owner (GH #845 phase 2): a declared identity that acts on behalf of another
+/// (`mesh_identity.identities`, a proxy such as `ah-engine`), never a workspace and never the owner's own `admin`. A wake prompt the
+/// engine sends under its own identity is as much the engine's outbound as the Primary's.
+pub(crate) fn is_engine_sender(sender: &str) -> bool {
+    crate::meshw::senders::declared(sender).is_some_and(|d| d.on_behalf_of.is_some())
 }
 
 /// `devswarm.noiseProvenance` (`devswarm_role.pg_sw_provenance`) under the settings of the request that runs the read (GH #429): its
@@ -87,8 +94,14 @@ pub fn is_poke_row(row: &Value) -> bool {
 /// which writes no `mtype`; a `mesh send` row always carries one (`mesh_write.mtype_direct` / `mtype_broadcast`). So a row with an
 /// `mtype` is mail whatever its body says (GH #428: a child's question that starts with the prefix still counts).
 pub fn is_wake_row(row: &Value) -> bool {
-    row.get("mtype").is_none_or(Value::is_null)
-        && row.get("body").and_then(Value::as_str).is_some_and(|b| b.starts_with(defaults::text("agent_tracker.wake_prefix")))
+    let prefixed = row.get("body").and_then(Value::as_str).is_some_and(|b| b.starts_with(defaults::text("agent_tracker.wake_prefix")));
+    // a row the engine itself sent under its identity carries an mtype like any `mesh send`, but its STORED kind says who sent it
+    // (never the sender's name): a proxy's wake prompt is a wake row, not mail (GH #845 phase 2)
+    let from_engine = row[defaults::text("mesh_identity.row_kind_field")]
+        .as_str()
+        .and_then(crate::meshw::senders::by_kind)
+        .is_some_and(|d| d.on_behalf_of.is_some());
+    prefixed && (row.get("mtype").is_none_or(Value::is_null) || from_engine)
 }
 
 /// The inputs of [`union_unread`] (Node's `unionUnread` opts).
@@ -523,6 +536,36 @@ mod tests {
         // devswarm.noiseProvenance off: the prefix alone decides (the earlier rule)
         assert!(is_wake_line(&line(Some("child-b")), false), "off: a child's line with the prefix is a wake prompt");
         assert!(!is_wake_line(r#"{"sender":"child-b","message":"hello"}"#, false), "off: no prefix, no wake");
+    }
+
+    /// GH #845 phase 2: a wake prompt the engine sends under its own identity (a declared proxy) is the engine's outbound, as the
+    /// Primary's is; the owner's `admin` and any workspace are not, so their prefixed messages stay mail. A store row is told by its
+    /// STORED kind, never by the sender's name.
+    #[test]
+    fn a_wake_prompt_the_engine_sent_under_its_own_identity_is_not_mail() {
+        defaults::init().unwrap();
+        let w = defaults::text("agent_tracker.wake_prefix");
+        let line = |s: &str| format!(r#"{{"fromBranch":"x/y","sender":"{s}","message":"{w} read your inbox"}}"#);
+        assert!(is_wake_line(&line("ah-engine"), true), "the engine's own prompt");
+        assert!(!is_wake_line(&line("admin"), true), "the owner's prefixed message is mail");
+        assert!(!is_wake_line(&line("child-b"), true));
+        let proxy = crate::meshw::senders::declared("ah-engine").unwrap().kind;
+        let human = crate::meshw::senders::declared("admin").unwrap().kind;
+        let kind_field = defaults::text("mesh_identity.row_kind_field");
+        let row = |mtype: serde_json::Value, kind: Option<&str>| {
+            let mut r = serde_json::json!({"mtype": mtype, "body": format!("{w} read your inbox")});
+            if let Some(k) = kind {
+                r[kind_field] = serde_json::json!(k);
+            }
+            r
+        };
+        let direct = serde_json::json!(defaults::text("mesh_write.mtype_direct"));
+        assert!(is_wake_row(&row(direct.clone(), Some(proxy))), "an engine-sent row is a wake row though it carries an mtype");
+        assert!(!is_wake_row(&row(direct.clone(), Some(human))), "the owner's row is mail");
+        assert!(!is_wake_row(&row(direct.clone(), None)), "a workspace's row is mail");
+        assert!(is_wake_row(&row(serde_json::Value::Null, None)), "a native ingest row, as before");
+        let plain = serde_json::json!({"mtype": direct, "body": "hello", kind_field: proxy});
+        assert!(!is_wake_row(&plain), "the prefix is still required");
     }
 
     /// Runs `f` on a thread and returns its answer, failing when it takes longer than the bound (a read that blocks on a FIFO).
