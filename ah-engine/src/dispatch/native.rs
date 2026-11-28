@@ -136,6 +136,20 @@ pub(crate) fn shed_tier(check: &str) -> &'static str {
 /// check's answer is dropped (a runaway), the checks after it still run and answer. A cumulative request budget made one slow check
 /// sink every later check's answer (live 2026-10-23); the request as a whole is bounded by the hard deadline instead.
 pub fn evaluate(meta: &Meta, p: &Value, over_cpu: &dyn Fn(u64) -> bool, observe: &dyn Fn(&Entry, &Answer, u64)) -> Vec<(String, Answer)> {
+    // #857 R5/R6: an unchanged repeated Stop whose last answer was quiet is answered from the memo (`super::stopmemo`)
+    if !super::stopmemo::applies(meta, p) {
+        return evaluate_checks(meta, p, over_cpu, observe);
+    }
+    let k = super::stopmemo::key(meta, p);
+    if let Some(hit) = super::stopmemo::recall(meta, p, k) {
+        return hit;
+    }
+    let out = evaluate_checks(meta, p, over_cpu, observe);
+    super::stopmemo::store(meta, p, k, &out);
+    out
+}
+
+fn evaluate_checks(meta: &Meta, p: &Value, over_cpu: &dyn Fn(u64) -> bool, observe: &dyn Fn(&Entry, &Answer, u64)) -> Vec<(String, Answer)> {
     // one dispatch of the prompt event is one turn of the session, which is what the injection gate counts keepalives in
     if meta.event == crate::defaults::text("inject_gate.ups_event")
         && let Some(sid) = p.get("session_id").and_then(Value::as_str).filter(|s| !s.is_empty())
@@ -221,7 +235,7 @@ pub fn evaluate(meta: &Meta, p: &Value, over_cpu: &dyn Fn(u64) -> bool, observe:
                 // It has a real table row (and honors --only); emit after all blocking guards are known.
                 Answer::Decided(HookResult::quiet(&e.id), Vec::new())
             } else {
-                run_entry(e, meta, p)
+                prefiltered(e, check, meta, p)
             };
             if window.as_ref().is_some_and(crate::deadline::CheckWindow::cut) {
                 // cut at its cap: its answer is a drop (counted with its own reason), and the checks after it keep their time
@@ -274,6 +288,32 @@ pub fn evaluate(meta: &Meta, p: &Value, over_cpu: &dyn Fn(u64) -> bool, observe:
     }
     crate::learn::upfront_notice(meta, p, &mut out);
     out
+}
+
+/// #969 R1: `entry`'s check, or its allow when the prefilter vouches the call is read-only for it (`super::prefilter`); a shadowed
+/// call runs the check, gives its answer and compares it with the allow the prefilter would have given.
+fn prefiltered(e: &Entry, check: &str, meta: &Meta, p: &Value) -> Answer {
+    use super::prefilter::{self, Pre};
+    match prefilter::decide(check, &meta.event, p) {
+        Pre::Run => {
+            if prefilter::applies(check, &meta.event) {
+                prefilter::count(check, "prefilter.outcome_run");
+            }
+            run_entry(e, meta, p)
+        }
+        Pre::Skip => {
+            prefilter::count(check, "prefilter.outcome_skip");
+            Answer::Decided(HookResult::quiet(&e.id), Vec::new())
+        }
+        Pre::Shadow => {
+            let a = run_entry(e, meta, p);
+            let said = matches!(&a, Answer::Decided(r, _) if r.code != Some(0) || !r.out.is_empty() || !r.err.is_empty());
+            let field = crate::defaults::text("prefilter.field");
+            let command = p.get("tool_input").and_then(|i| i.get(field)).and_then(Value::as_str).unwrap_or_default();
+            prefilter::shadow_result(check, said, command);
+            a
+        }
+    }
 }
 
 /// How long `check` (on `event`) may run when that is less than the request has left (#763): what is left less the time reserved for
