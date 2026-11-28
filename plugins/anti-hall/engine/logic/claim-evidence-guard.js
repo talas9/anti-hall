@@ -240,6 +240,21 @@ function ceUnquote(t) {
   return out + t.slice(at);
 }
 
+// The reply with each quoted MENTION of a claim phrase blanked: a double-quoted span (claim_evidence.mention_span_re) that stands next to a
+// noun naming a phrase or a verdict (claim_evidence.mention_before_re / mention_after_re: 'the "check passes" claim', 'the phrase "tests
+// pass"') talks about those words, it does not assert them. A bare quoted claim ('CI is "green"') is no mention and stays judged.
+function ceMaskMentions(t) {
+  var spans = ah.re.findAll(ah.cfg('claim_evidence.mention_span_re'), '', t), out = '', at = 0;
+  for (var i = 0; i < spans.length; i++) {
+    var a = spans[i][0], b = spans[i][1];
+    if (!ah.re.find(ah.cfg('claim_evidence.mention_before_re'), 'i', t.slice(Math.max(0, a - ah.cfgNum('claim_evidence.mention_reach')), a)) &&
+        !ah.re.find(ah.cfg('claim_evidence.mention_after_re'), 'i', t.slice(b, b + ah.cfgNum('claim_evidence.mention_reach')))) continue;
+    out += t.slice(at, a) + t.slice(a, b).replace(/[^\n]/g, ' ');
+    at = b;
+  }
+  return out + t.slice(at);
+}
+
 // Telemetry: one engine-log line (claim_evidence.log_kind) per suppressed hit, at most claim_evidence.max_suppress_logs per reply.
 function ceLogSuppressed(seen) {
   var n = Math.min(seen.length, ah.cfgNum('claim_evidence.max_suppress_logs'));
@@ -449,7 +464,7 @@ function decide(p) {
   if (r1) {
     // rule 1 reads quoted text too (quote marks out, code, fences and blockquotes still masked): a quote is covered only by a
     // reporting verb that opens its clause, never by its quote marks alone
-    var seen = [], scan1 = ah.text.maskQuoted(ceUnquote(sreply));
+    var seen = [], scan1 = ah.text.maskQuoted(ceUnquote(ceMaskMentions(sreply)));
     claim = ceFindClaim(scan1, seen);
     // a claim that exists only inside code, a fence or a blockquote is suppressed (the masked scan cannot see it)
     if (claim === null && scan1 !== sreply) {
