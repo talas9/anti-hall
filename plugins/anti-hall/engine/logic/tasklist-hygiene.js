@@ -119,7 +119,8 @@ function twBacklogLine(st) {
   waiting.forEach(function (it) { byP[it.p] = (byP[it.p] || 0) + 1; });
   Object.keys(byP).sort().forEach(function (k) { counts.push(twR('backlog_count', { n: String(byP[k]), p: k })); });
   var top = twTop(st, null);
-  return twR('backlog_line', { n: String(waiting.length), counts: counts.join(twC('backlog_count_sep')), next: top ? twSubject(top.n, top.p, top.title) : twC('backlog_none'), skill: twC('reconcile_skill') });
+  var nBlocked = st.tasks.filter(function (it) { return it.state === twStates().blocked; }).length;
+  return twR('backlog_line', { n: String(waiting.length), counts: counts.join(twC('backlog_count_sep')), blocked: nBlocked > 0 ? twR('backlog_blocked', { b: String(nBlocked) }) : '', next: top ? twSubject(top.n, top.p, top.title) : twC('backlog_none'), skill: twC('reconcile_skill') });
 }
 
 function twNextN(st, live) {
@@ -160,7 +161,8 @@ function twLiveNs(open) {
 // The live open tasks (the backlog line is not one) plus the creates still holding a reserved slot.
 function twWindowCount(st, open, now) {
   var S = twStates(), ttl = ah.cfgNum('task_window.reserve_ttl_ms'), liveN = twLiveNs(open);
-  return open.length + st.tasks.filter(function (it) {
+  var blockedLive = open.filter(function (t) { var pr = twParse(t.content), it = pr === null ? null : twFind(st, pr.n); return it !== null && it.state === S.blocked; }).length;
+  return open.length - blockedLive + st.tasks.filter(function (it) {
     return it.state === S.window && !it.id && typeof it.reservedAt === 'number' && now - it.reservedAt < ttl && liveN[it.n] !== true;
   }).length;
 }
@@ -271,7 +273,7 @@ function twPre(p, tool, inp) {
     if (rd.absent) {
       var res = twResume(sp, sid, now);
       if (res !== null && res.adopt) { st = res.adopt; dirty = true; twMetric('adopted'); }
-      else if (res !== null && res.importPath && isCreate) return twBlock('block_import', twR('what_import', { path: res.importPath }), twR('instead_import', { skill: twC('reconcile_skill') }));
+      else if (res !== null && res.importPath && isCreate) return twBlock('block_import', twR('what_import', { path: res.importPath }), twR('instead_import', { skill: twC('reconcile_skill') }), [twR('import_detail', { skill: twC('reconcile_skill'), path: res.importPath })]);
     }
     if (twSync(st, live, now)) dirty = true;
     ah.commit();
@@ -280,9 +282,13 @@ function twPre(p, tool, inp) {
       var tpr = twParse(target.content), tt = twTitleOf(target.content);
       if (tpr === null) tpr = { n: twNextN(st, live), p: tt.p === null ? ah.cfgNum('task_guard.priority_default_rank') : tt.p, title: tt.title };
       var reason = bo !== '' ? bo : inp.addBlockedBy.join(' ');
+      var keep = ah.settings.num('task_window.blocked_keep_setting');
+      // the blocked tasks already visible in the live list (not this one): the cap keeps the window readable
+      var shown = live.filter(function (t) { var q = twParse(t.content), it = q === null ? null : twFind(st, q.n); return it !== null && it.state === S.blocked && q.n !== tpr.n && !tk.isDone(t); }).length;
       twSave(st, tpr, S.blocked, { blockedOn: reason, owner: String(target.owner || '') }, now);
       if (!twWrite(sp, st)) return null; // never ordered deleted unless saved
-      return twBlock('block_blocked', twR('what_blocked', { n: String(tpr.n) }), twR('instead_blocked', { id: id }));
+      if (shown < keep) { twMetric('blocked_kept'); return null; } // saved, and it stays visible
+      return twBlock('block_blocked', twR('what_blocked', { n: String(tpr.n), keep: String(keep) }), twR('instead_blocked', { id: id }));
     }
     var pr = twParse(subject), open = live.filter(tk.isOpen), liveN = twLiveNs(open), mine = twFind(st, pr.n);
     var write = function () { if (dirty) twWrite(sp, st); };
@@ -346,6 +352,11 @@ function twPost(p, tool, inp) {
     st.tasks.forEach(function (it) { if (it.id) prior[it.id] = it.state; });
     var dirty = twSync(st, live, now), freed = false;
     if (tool === ah.cfg('tasklist_hygiene.update_tool') && id !== '') {
+      // a kept blocked task that is worked again (in progress, or its blockedOn cleared) is a window task once more
+      var cleared = jx.isObj(inp.metadata) && typeof inp.metadata.blockedOn === 'string' && inp.metadata.blockedOn.trim() === '';
+      if (cleared || ah.cfg('taskstate.in_progress_statuses').indexOf(status) >= 0) {
+        st.tasks.forEach(function (it) { if (it.id === id && it.state === S.blocked) { it.state = S.window; it.blockedOn = ''; dirty = true; } });
+      }
       if (ah.cfg('tasklist_hygiene.delete_trigger').indexOf(status) >= 0) {
         st.tasks.forEach(function (it) { if (it.id === id && it.state === S.window) { it.state = S.dropped; dirty = true; freed = true; } });
       } else if (ah.cfg('taskstate.done_statuses').indexOf(status) >= 0) freed = prior[id] === S.window;
