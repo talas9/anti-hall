@@ -512,3 +512,46 @@ fn a_room_message_wakes_and_shows_only_its_members() {
     let list = room(&c1, &["room", "list"]);
     assert!(list.stdout.contains("\"members\":[\"child-1\"]") && list.stdout.contains("\"member\":true"), "{}", list.stdout);
 }
+
+/// GH #845 item 0: the owner's mailbox. Any agent may send `--to admin`; the row is stored in admin's own partition with recipient
+/// admin, wakes nobody and never lands in the Primary's partition. A row from admin tells the reader to answer `--to admin`, and
+/// `--reply-to <seq>` of it routes there; an unknown seq and a second target mode are refused.
+#[test]
+fn replies_to_the_owner_land_in_the_admin_mailbox_and_wake_nobody() {
+    let f = fx("mailbox");
+    let (primary, key) = registry(&f, &["child-1"]);
+    let r = send::run(&f.inv, &argv(&["send", "--to", "admin", "--message", "child to owner"])).unwrap();
+    assert_eq!(r.code, 0, "child -> admin: {}", r.stdout);
+    assert!(r.stdout.contains("\"to\":\"admin\"") && !r.stdout.contains("nativeWake"), "{}", r.stdout);
+    let st = crate::meshw::common::open_store(&f.inv, &key).unwrap();
+    let rows_of = |part: &str| {
+        let mut v = Vec::new();
+        st.reader()
+            .for_each_message(part, 0, |m| {
+                v.push(m);
+                true
+            })
+            .unwrap();
+        v
+    };
+    let admin_rows = rows_of("admin");
+    assert!(admin_rows.iter().any(|m| m["body"] == "child to owner" && m["recipient"] == "admin" && m["sender"] == "child-1"), "{admin_rows:?}");
+    assert!(rows_of(&f.primary).iter().all(|m| m["body"] != "child to owner"), "an owner reply landed in the Primary's partition");
+    let (sum, _) = crate::meshw::summary::derive_value(&st, &f.inv, &key).unwrap();
+    assert!(sum.get("workspaces").and_then(|w| w.get("admin")).is_none(), "the mailbox is no watched workspace");
+
+    // the owner writes to the Primary; the Primary's read says how to answer, and --reply-to routes to the mailbox
+    let mut owner = primary.clone();
+    owner.env.insert(defaults::text("mesh_identity.sender_env").to_string(), "admin".into());
+    assert_eq!(send::run(&owner, &argv(&["send", "--to-primary", "--message", "owner asks"])).unwrap().code, 0);
+    let peek = crate::meshw::readprimary::run_peek(&primary, &argv(&["inbox", "peek-primary", &f.primary])).unwrap().stdout;
+    let key_reply = defaults::text("mesh_identity.key_reply_with");
+    assert!(peek.contains(key_reply) && peek.contains("--to admin"), "no reply hint on the owner's row: {peek}");
+    let seq = rows_of(&f.primary).iter().find(|m| m["body"] == "owner asks").and_then(|m| m["storeSeq"].as_f64()).unwrap() as i64;
+    let re = send::run(&primary, &argv(&["send", "--reply-to", &seq.to_string(), "--message", "primary answers owner"])).unwrap();
+    assert_eq!(re.code, 0, "{}", re.stdout);
+    assert!(rows_of("admin").iter().any(|m| m["body"] == "primary answers owner" && m["sender"] == f.primary), "the reply missed the mailbox");
+    assert!(rows_of(&f.primary).iter().all(|m| m["body"] != "primary answers owner"), "a self-addressed reply");
+    assert_ne!(send::run(&primary, &argv(&["send", "--reply-to", "999999", "--message", "x"])).unwrap().code, 0, "an unknown seq");
+    assert_ne!(send::run(&primary, &argv(&["send", "--reply-to", &seq.to_string(), "--to", "child-1", "--message", "x"])).unwrap().code, 0, "two targets");
+}

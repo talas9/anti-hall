@@ -24,6 +24,8 @@ pub struct Declared {
     pub on_behalf_of: Option<&'static str>,
     /// Whether a CLI caller may declare it (`--as` / the sender variable).
     pub cli: bool,
+    /// Whether any agent may send to it (`send --to <id>`): a mailbox of its own that wakes nobody (the owner's).
+    pub mailbox: bool,
 }
 
 fn field(name: &str) -> &'static str {
@@ -40,6 +42,7 @@ fn entry(id: &'static str, v: &'static V) -> Declared {
         rank: v.get(field("rank")).and_then(V::as_integer).unwrap_or_else(|| defaults::num("mesh_identity.rank_child") as i64),
         on_behalf_of: (!on_behalf_of.is_empty()).then_some(on_behalf_of),
         cli: v.get(field("cli")).and_then(V::as_bool).unwrap_or(false),
+        mailbox: v.get(field("mailbox")).and_then(V::as_bool).unwrap_or(false),
     }
 }
 
@@ -50,6 +53,17 @@ fn all() -> Vec<Declared> {
 /// The declared identity named `id` (exact), if any.
 pub fn declared(id: &str) -> Option<Declared> {
     all().into_iter().find(|d| d.id == id)
+}
+
+/// The declared identity named `id` when it has a mailbox (`send --to admin`): rows to it are stored in its own partition and
+/// wake nobody.
+pub fn mailbox(id: &str) -> Option<Declared> {
+    declared(id).filter(|d| d.mailbox)
+}
+
+/// The sender of the stored message with mesh seq `seq` (`send --reply-to`), if any.
+pub fn sender_of_seq(r: &crate::mesh::MeshReader, seq: i64) -> Option<String> {
+    r.conn().prepare_cached(crate::sql::MESH_SENDER_OF_SEQ).ok()?.query_row(rusqlite::params![seq], |row| row.get::<_, String>(0)).ok()
 }
 
 /// The declared identity whose stored kind is `kind`, if any.
@@ -146,6 +160,12 @@ pub fn put_from(o: &mut Obj, row: &serde_json::Value) {
     }
     if let Some(p) = d.on_behalf_of {
         o.put(defaults::text("mesh_identity.key_on_behalf_of"), crate::meshw::common::s(p));
+    }
+    // GH #845 item 0: a row from a mailbox identity (the owner) says how to answer it: to the mailbox, never to the Primary
+    if d.mailbox && row["sender"].as_str() == Some(d.id) {
+        let seq = row["storeSeq"].as_f64().map_or_else(String::new, |q| (q as i64).to_string());
+        let hint = defaults::render("mesh_identity.msg_reply_hint", &[("id", &d.id), ("display", &d.display), ("seq", &seq)]);
+        o.put(defaults::text("mesh_identity.key_reply_with"), crate::meshw::common::s(&hint));
     }
 }
 

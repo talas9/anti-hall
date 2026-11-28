@@ -432,6 +432,8 @@ pub const MESHW_ROOM_CREATE: &str = "INSERT OR IGNORE INTO mesh_rooms (name, cre
 pub const MESHW_ROOM_JOIN: &str = "INSERT OR IGNORE INTO mesh_room_members (room, member, joined_at) VALUES (?1, ?2, ?3);";
 /// Unsubscribe a member (the caller's own request; the room stays).
 pub const MESHW_ROOM_LEAVE: &str = "DELETE FROM mesh_room_members WHERE room = ?1 AND member = ?2;";
+/// The sender of the stored message with mesh seq `?1` (`send --reply-to`).
+pub const MESH_SENDER_OF_SEQ: &str = "SELECT sender FROM messages WHERE seq = ?1 AND sender IS NOT NULL LIMIT 1";
 /// Every room name, sorted (fails on a store the room tables were never created in).
 pub const MESH_ROOMS: &str = "SELECT name FROM mesh_rooms ORDER BY name";
 /// Whether a room exists.

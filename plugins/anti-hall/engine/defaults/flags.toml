@@ -157,6 +157,10 @@ value = "--memory"
 doc = "The body of a mesh message (`mesh send`)."
 value = "--message"
 
+[flag.reply-to]
+doc = "Answer the stored message with this seq (`mesh send --reply-to <seq>`): the send goes to its sender; a reply to admin lands in the owner's mailbox (GH #845)."
+value = "--reply-to"
+
 [flag.room]
 doc = "The room a mesh message goes to (`mesh send --room <name>`): it wakes only the room's members (GH #845)."
 value = "--room"

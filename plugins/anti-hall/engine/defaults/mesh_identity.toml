@@ -9,12 +9,12 @@
 # precedence when instructions conflict (the higher rank wins) and display (`fromKind` / `fromRank` on listed rows).
 
 [mesh_identity.identities]
-doc = "The declared (non-workspace) senders, by the id stored on their messages: `display` (the name shown), `kind` (stored as the row's sender_kind; unique per identity), `rank`, `cli` (whether a non-agent CLI caller may declare it), and for a proxy `on_behalf_of` (the identity it acts for)."
-value = { admin = { display = "admin", kind = "human", rank = 100, cli = true }, ah-engine = { display = "ah-engine", kind = "human-proxy", on_behalf_of = "admin", rank = 90, cli = false } }
+doc = "The declared (non-workspace) senders, by the id stored on their messages: `display` (the name shown), `kind` (stored as the row's sender_kind; unique per identity), `rank`, `cli` (whether a non-agent CLI caller may declare it), `mailbox` (any agent may send to it with `send --to <id>`: its rows are stored in a partition of its own, with the identity as recipient, and wake nobody, since the owner reads them in their room, never through a watcher), and for a proxy `on_behalf_of` (the identity it acts for)."
+value = { admin = { display = "admin", kind = "human", rank = 100, cli = true, mailbox = true }, ah-engine = { display = "ah-engine", kind = "human-proxy", on_behalf_of = "admin", rank = 90, cli = false } }
 
 [mesh_identity.identity_fields]
 doc = "The field names of an `identities` entry (the schema the engine reads)."
-value = { display = "display", kind = "kind", rank = "rank", cli = "cli", on_behalf_of = "on_behalf_of" }
+value = { display = "display", kind = "kind", rank = "rank", cli = "cli", on_behalf_of = "on_behalf_of", mailbox = "mailbox" }
 
 [mesh_identity.agent_env_markers]
 doc = "Environment variables whose presence marks the caller as an agent (Claude Code, Codex, a DevSwarm agent): such a caller is refused when it declares an identity. The owner's room spawns its sends with a clean environment that has none of them."
@@ -79,3 +79,27 @@ value = "onBehalfOf"
 [mesh_identity.msg_no_engine_identity]
 doc = "Error of the in-process engine send helper when no identity of mesh_identity.identities is declared as the engine (nothing is written)."
 value = "no engine identity is declared"
+
+[mesh_identity.flag_reply_to]
+doc = "`send --reply-to <seq>`: answer the message with that store seq: the send goes to its sender (a mailbox identity such as admin to its mailbox, a workspace to that workspace). It is a target mode of its own (not combined with --to, --to-primary, --broadcast or --room)."
+value = "reply-to"
+
+[mesh_identity.key_reply_with]
+doc = "The field of a listed row from a mailbox identity (admin) that says how to answer it."
+value = "replyWith"
+
+[mesh_identity.msg_reply_hint]
+doc = "The `replyWith` text of a listed row from a mailbox identity: {id} is the identity, {display} its name, {seq} the row's store seq. The answer goes to the identity's mailbox, never to the Primary."
+value = "from {display} (the owner): answer with `ah-engine mesh send --to {id} --message-file <path>` (or `--reply-to {seq}`), never to the Primary"
+
+[mesh_identity.msg_reply_unknown]
+doc = "Refusal of a `send --reply-to` whose seq names no stored message (or one with no sender); {seq} is the value given."
+value = "no message with seq {seq} to reply to"
+
+[mesh_identity.reason_reply_unknown]
+doc = "`reason` of a refusal for a `--reply-to` seq that names no message."
+value = "reply-unknown"
+
+[mesh_identity.suppressed_mailbox]
+doc = "The `reason` label of metric mesh_wake_suppressed for a send to a mailbox identity (admin): it wakes nobody."
+value = "mailbox"

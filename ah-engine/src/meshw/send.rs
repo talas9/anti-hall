@@ -473,6 +473,10 @@ fn wake_target(inv: &Inv, out: &mut Obj) {
         return;
     }
     let Some(OVal::Str(to)) = out.0.iter().find(|(k, _)| k == "toId").map(|(_, v)| v.clone()) else { return };
+    // GH #845 item 0: the owner's mailbox has no session to wake
+    if crate::meshw::senders::mailbox(&to).is_some() {
+        return;
+    }
     // GH #845: an ack-only message never wakes its recipient
     if LAST_ACK.take() {
         crate::metrics::bump_shared("mesh_wake_suppressed", &[("reason", defaults::text("mesh_wake.suppressed_ack"))]);
@@ -740,14 +744,29 @@ pub(crate) fn cmd_send_mode(inv: &Inv, a: &Args, plan: bool) -> R<Obj> {
         let msg = defaults::render("devswarm_cli.msg_send_from_mismatch", &[("from_flag", &quote(ff)), ("from", &quote(&from))]);
         return Ok(refused(&[("error", s(&msg))]));
     }
-    let to_flag = a.one(defaults::text("mesh_write.flag_to"));
+    // GH #845 item 0: `--reply-to <seq>` answers a stored message: the send goes to its sender (admin's rows to admin's mailbox)
+    let reply_to = a.one(defaults::text("mesh_identity.flag_reply_to"));
+    let replied: Option<String> = match reply_to {
+        Some(q) => match q.trim().parse::<i64>().ok().and_then(|n| crate::meshw::senders::sender_of_seq(st.reader(), n)) {
+            Some(sender) => Some(sender),
+            None => {
+                let msg = defaults::render("mesh_identity.msg_reply_unknown", &[("seq", &quote(q))]);
+                return Ok(refused(&[("reason", s(defaults::text("mesh_identity.reason_reply_unknown"))), ("error", s(&msg))]));
+            }
+        },
+        None => None,
+    };
+    let to_given = a.one(defaults::text("mesh_write.flag_to"));
+    let to_flag = to_given.or(replied.as_deref());
+    // a mailbox identity (admin) as the recipient: stored in its own partition, wakes nobody (any agent may write to it)
+    let mailbox_to = to_flag.and_then(crate::meshw::senders::mailbox).map(|d| d.id);
     let bc_flag = a.has(defaults::text("mesh_write.flag_broadcast"))
         || a.one(defaults::text("mesh_write.flag_type")) == Some(defaults::text("mesh_write.mtype_broadcast"));
     // GH #845 phase 2a: `--room <name>` is a broadcast row whose audience is the room (one target mode of its own)
     let room = a.one(defaults::text("mesh_room.flag_room"));
     let broadcast = bc_flag || room.is_some();
     let to_primary = a.has(defaults::text("mesh_write.flag_to_primary"));
-    let modes = usize::from(to_flag.is_some()) + usize::from(bc_flag) + usize::from(to_primary) + usize::from(room.is_some());
+    let modes = usize::from(to_given.is_some()) + usize::from(replied.is_some()) + usize::from(bc_flag) + usize::from(to_primary) + usize::from(room.is_some());
     if modes != 1 {
         let key = if modes > 1 { "devswarm_cli.msg_send_target_many" } else { "devswarm_cli.msg_send_target_none" };
         return Ok(refused(&[("error", s(defaults::text(key)))]));
@@ -855,7 +874,7 @@ pub(crate) fn cmd_send_mode(inv: &Inv, a: &Args, plan: bool) -> R<Obj> {
     // target resolution (direct)
     let mut reroute: Option<(String, &'static str)> = None;
     let mut redirect: Option<String> = None;
-    let target: Option<Row> = if broadcast {
+    let target: Option<Row> = if broadcast || mailbox_to.is_some() {
         None
     } else if let Some(pm) = &primary_mesh {
         match resolve_mesh_target(inv, Some(st.reader()), &rows, Some(pm))? {
@@ -907,8 +926,8 @@ pub(crate) fn cmd_send_mode(inv: &Inv, a: &Args, plan: bool) -> R<Obj> {
         }
         None => None,
     };
-    let partition = target.as_ref().map(|t| t.id.clone());
-    let no_reader = !broadcast && target.as_ref().is_some_and(|t| label_without_reader(t, st.reader().reader_cursors(&t.id).map_or(1, |r| r.len())));
+    let partition = target.as_ref().map(|t| t.id.clone()).or_else(|| mailbox_to.map(str::to_string));
+    let no_reader = !broadcast && mailbox_to.is_none() && target.as_ref().is_some_and(|t| label_without_reader(t, st.reader().reader_cursors(&t.id).map_or(1, |r| r.len())));
     crate::meshw::stages::since("resolve", t_resolve);
     // the summary refresh after the write must be one the engine can do (else Node runs the whole verb)
     crate::meshw::summary::check(&st, inv, partition.as_deref())?;
@@ -992,7 +1011,10 @@ pub(crate) fn cmd_send_mode(inv: &Inv, a: &Args, plan: bool) -> R<Obj> {
         sender_kind: crate::meshw::senders::stored_kind(declared),
         room,
     };
-    if broadcast {
+    if broadcast || mailbox_to.is_some() {
+        if mailbox_to.is_some() {
+            crate::metrics::bump_shared("mesh_wake_suppressed", &[("reason", defaults::text("mesh_identity.suppressed_mailbox"))]);
+        }
         return do_append(&ctx);
     }
     let pid = partition.clone().unwrap_or_default();
