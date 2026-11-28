@@ -128,5 +128,6 @@ files = [
     "mesh_wake.toml",
     "mesh_chat.toml",
     "mesh_identity.toml",
+    "mesh_room.toml",
 ]
 extra_dir = "hooks.d"
