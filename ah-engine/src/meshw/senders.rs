@@ -87,6 +87,31 @@ pub fn cli_declared(env: &crate::meshw::ident::Env, a: &Args) -> Result<Option<D
     }
 }
 
+/// The identity the engine speaks as when IT decides to send (a daemon tick, an escalation, an alert): the declared proxy
+/// (`on_behalf_of` set). A verb an agent runs keeps that agent's identity; only a row nobody invoked goes through [`append_as_engine`].
+pub fn engine_identity() -> Option<Declared> {
+    all().into_iter().find(|d| d.on_behalf_of.is_some())
+}
+
+/// The one in-process way to write a mesh row as the engine (GH #845 phase 2). Never reachable from the CLI (`cli = false`). A row
+/// to `to` is direct mail; with no `to` it is a broadcast to every reader. The row stores the identity's `sender_kind`, so its rank
+/// and its wake prompt classification come from the stored kind, never the name.
+pub fn append_as_engine(
+    st: &crate::meshw::store::MeshStore,
+    to: Option<&str>,
+    body: &str,
+    urgency: &str,
+    ts: i64,
+) -> Result<crate::meshw::store::Appended, String> {
+    use crate::meshw::store::{mesh_message_hash, mesh_message_row};
+    let me = engine_identity().ok_or_else(|| "no engine identity is declared".to_string())?;
+    let mtype = defaults::text(if to.is_some() { "mesh_write.mtype_direct" } else { "mesh_write.mtype_broadcast" });
+    let hash = mesh_message_hash(Some(me.id), to, mtype, urgency, body, &ts.to_string(), false);
+    let row = mesh_message_row(Some(me.id), to, to.is_none(), body, ts, urgency, &hash, false, None);
+    let audience = to.is_none().then(|| defaults::text("mesh_wake.audience_all"));
+    st.append_mesh_row_with(&row, None, audience, Some(me.kind)).map_err(|e| e.to_string())
+}
+
 /// The rank of a sender: its stored kind's declared rank when the row carries one, else the Primary's or a child's (by its id).
 /// The sender's name alone never grants a declared rank.
 pub fn rank_of(sender: Option<&str>, stored_kind: Option<&str>) -> i64 {
@@ -168,5 +193,31 @@ mod tests {
         let mut via_env = plain.clone();
         via_env.insert(defaults::text("mesh_identity.sender_env").to_string(), "admin".into());
         assert_eq!(cli_declared(&via_env, &args(&["send"])).unwrap().map(|d| d.id), Some("admin"));
+    }
+
+    /// The engine's own sends go through one helper: the row carries the engine id and the proxy kind, a broadcast is addressed to
+    /// all, and the stored kind makes its wake prompt a wake row (never mail) while an agent's identical text stays mail.
+    #[test]
+    fn the_engine_helper_writes_a_row_as_the_proxy_identity() {
+        defaults::init().unwrap();
+        let d = crate::testtmp::child("test-engine-send", format!("{}", std::process::id()));
+        crate::discard::harmless(std::fs::remove_dir_all(&d)); // keep: leftover of an earlier run
+        std::fs::create_dir_all(&d).unwrap();
+        let st = crate::meshw::store::MeshStore::open(&d.join("devswarm.db")).unwrap();
+        let me = engine_identity().expect("a proxy identity is declared");
+        assert_eq!((me.id, me.kind), ("ah-engine", "human-proxy"));
+        let prompt = format!("{} read your inbox", defaults::text("agent_tracker.wake_prefix"));
+        assert!(append_as_engine(&st, Some("child-1"), &prompt, "normal", 1_000).unwrap().inserted);
+        assert!(append_as_engine(&st, None, "engine notice", "normal", 1_001).unwrap().inserted);
+        let mut rows = Vec::new();
+        st.reader().for_each_message("child-1", 0, |m| { rows.push(m); true }).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0]["sender"], me.id);
+        assert_eq!(rows[0][defaults::text("mesh_identity.row_kind_field")], me.kind);
+        assert!(crate::meshw::union::is_wake_row(&rows[0]), "the engine's prompt is not mail");
+        let mut b = Vec::new();
+        st.reader().for_each_message(defaults::text("mesh_write.broadcast_partition"), 0, |m| { b.push(m); true }).unwrap();
+        assert_eq!((b.len(), b[0]["sender"].as_str()), (1, Some("ah-engine")));
+        assert_eq!(rank_of(b[0]["sender"].as_str(), b[0][defaults::text("mesh_identity.row_kind_field")].as_str()), me.rank);
     }
 }
