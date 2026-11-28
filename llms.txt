@@ -172,6 +172,8 @@ Shared libraries (historical, Node era; no Node hook ships and each is now an en
 | devswarm | DevSwarm integration: mesh CLI, recovery, auto-archive/prune, retention, app DB, screenshot sync. |
 | jev | Jev classifier activation, modes per integration, report. |
 | defects | File/list/show/rule on anti-hall defect reports. |
+| tasks-reconcile | Reconcile the task list with its task store: log finished tasks, merge duplicates, re-rank, fill free window slots, rewrite the backlog line. |
+| engine, engine-* | The engine guide: `engine` is the entry point; sub-skills agents, devswarm, devswarm-supervisor, doctor, github, guards, handovers, mesh, processes, replies, resources, rules, settings, tasks. |
 
 `skills/MODEL-POLICY.md` is the shared model roster (Claude + Codex tables).
 
@@ -201,6 +203,7 @@ Shared libraries (historical, Node era; no Node hook ships and each is now an en
 | anti-hall-simplify | simplify |
 | anti-hall-system-briefing | system-briefing |
 | anti-hall-update | update |
+| anti-hall-engine, anti-hall-engine-* | engine, engine-* (same sub-skills) |
 
 ## Scripts and companions
 
