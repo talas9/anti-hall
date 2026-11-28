@@ -555,3 +555,4 @@ fn replies_to_the_owner_land_in_the_admin_mailbox_and_wake_nobody() {
     assert_ne!(send::run(&primary, &argv(&["send", "--reply-to", "999999", "--message", "x"])).unwrap().code, 0, "an unknown seq");
     assert_ne!(send::run(&primary, &argv(&["send", "--reply-to", &seq.to_string(), "--to", "child-1", "--message", "x"])).unwrap().code, 0, "two targets");
 }
+

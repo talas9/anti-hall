@@ -289,3 +289,44 @@ fn read_primary_prints_strict_json_for_a_body_with_control_characters() {
     assert_eq!(printed, text, "printf keeps the JSON exact");
     assert!(serde_json::from_str::<serde_json::Value>(&both[..both.len() - printed.len() - 1]).is_err(), "zsh echo breaks the same JSON: {both}");
 }
+
+/// Field report (#845 (a)): the Primary's own reply stored in its own partition (a self-addressed row; the live trigger was an
+/// answer to the owner before the admin mailbox existed) made the summary's positional `unread` 1. The read verbs leave the reader's
+/// own sends out (read-primary listed nothing and peek-primary said 0), but the gate read the positional count, so every Stop said
+/// "1 unread (cached)" with nothing to read. The gate now reads `directUnread` (own-family sends and explicit acks left out), the
+/// count the read verbs and the parent inbox use.
+#[test]
+fn the_primarys_own_sent_row_is_not_its_unread_mail() {
+    for with_reader in [false, true] {
+    let e = Env::new(if with_reader { "own-row-r" } else { "own-row" });
+    if with_reader {
+        e.reader_session();
+    }
+    let primary = ah_engine::meshw::ident::primary_workspace_id(e.repo.to_str().unwrap()).unwrap();
+    let st = e.store();
+    let prow = RegistryRow { id: primary.clone(), worktree_path: Some(e.repo.to_string_lossy().to_string()), session_id: Some("s1".into()), ..RegistryRow::default() };
+    st.upsert_registry(&prow, NOW_MS as i64, |a, b| a == b).unwrap();
+    let h = ah_engine::meshw::store::mesh_message_hash(Some(&primary), Some(&primary), "direct", "normal", "my answer to the owner", "7", false);
+    st.append_mesh_row(&ah_engine::meshw::store::mesh_message_row(Some(&primary), Some(&primary), false, "my answer to the owner", 7, "normal", &h, false, None))
+        .unwrap();
+    let home = e.dir.join("home");
+    let inv = ah_engine::meshw::common::Inv {
+        home: home.clone(),
+        env: Default::default(),
+        cwd: e.repo.to_string_lossy().to_string(),
+        now: NOW_MS as i64,
+        stdin: None,
+        write_home: home,
+        store_override: None,
+    };
+    let Ok(sum) = ah_engine::meshw::summary::compute(&st, &inv, None) else { panic!("summary") };
+    let v: serde_json::Value = serde_json::from_str(&sum.stringify()).unwrap();
+    assert_eq!(v["workspaces"][&primary]["unread"], serde_json::json!(1), "the positional count holds the own row: {v}");
+    assert_eq!(v["workspaces"][&primary]["directUnread"], serde_json::json!(0));
+    e.put(&format!("summaries/{}.json", e.key), &v);
+    let peek = e.mesh_in(&e.repo, &["inbox", "peek-primary", &primary]);
+    assert_eq!(peek["unreadCount"], serde_json::json!(0), "peek-primary: {peek}");
+    let stop = e.stop();
+    assert!(!(stop.contains("(you)") && stop.contains("1 unread")), "reader={with_reader}: the gate counts the Primary's own row as unread: {stop:?}");
+    }
+}
