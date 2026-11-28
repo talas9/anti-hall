@@ -5040,7 +5040,7 @@ fn rt_snooze_holds_a_reopened_runtime_nudge_until_it_runs_out() {
     // the child runs again: inside the snooze no new nudge opens, so no new ref
     rt_tick(&h, &child, &mut st, n + 50 * MIN, 4);
     rt_tick(&h, &child, &mut st, n + 90 * MIN, 5);
-    assert!(st.nudges.get("abc").is_none(), "held for the snooze period; first ref was {first}");
+    assert!(!st.nudges.contains_key("abc"), "held for the snooze period; first ref was {first}");
     // after the snooze ran out the next step opens a new nudge
     rt_tick(&h, &child, &mut st, n + 120 * MIN, 6);
     assert!(st.nudges.get("abc").is_some_and(|nd| nd.ref_id != first), "a new nudge once the snooze is over");
@@ -5107,7 +5107,7 @@ fn health_snooze_holds_across_a_finished_close() {
     tick_at(&mut st, b + MIN);
     append(&child, &spend);
     tick_at(&mut st, b + 18 * MIN);
-    assert!(st.nudges.get("abc").is_none(), "held by the snooze; first ref was {}", first.ref_id);
+    assert!(!st.nudges.contains_key("abc"), "held by the snooze; first ref was {}", first.ref_id);
 }
 
 /// #972 wave 2 (item 6): a snooze the parent gave a HEALTH nudge (`agents nudge <child> snooze 45`) holds every nag about the child, the
@@ -7380,7 +7380,7 @@ fn n862_past_the_hard_token_budget_the_nudge_blocks_the_stop() {
         t += 4 * MIN;
         rt_tick(&h, &child, &mut st, t, 100 + k);
     }
-    assert!(st.nudges.get("abc").is_none(), "under soft nothing fires for a productive agent");
+    assert!(!st.nudges.contains_key("abc"), "under soft nothing fires for a productive agent");
     while spent < hard {
         let (commit, spend) = spend_cycle(&child, k, t);
         append(&child, &commit);

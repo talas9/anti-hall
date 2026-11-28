@@ -56,13 +56,17 @@ fn a_task_change_misses() {
     std::fs::create_dir_all(&dir).unwrap();
     // the stamp reads the variable named by `stopmemo.home_env`; HOME is process-wide, so it is set and restored around the two keys
     let old = std::env::var_os("HOME");
+    // SAFETY: test-only env mutation. Only the stamp below reads HOME, on this thread, inside this window; no lock serialises other
+    // tests' reads of HOME (the same open gap as the crate's other test-only env mutations).
     unsafe { std::env::set_var("HOME", &home) };
     let m = meta();
     let before = key(&m, &p);
     std::fs::write(dir.join("1.json"), r#"{"id":"1","status":"pending"}"#).unwrap();
     let after = key(&m, &p);
     match old {
+        // SAFETY: restores the value set above, under the same single-reader condition.
         Some(o) => unsafe { std::env::set_var("HOME", o) },
+        // SAFETY: as above.
         None => unsafe { std::env::remove_var("HOME") },
     }
     assert_ne!(before, after, "a task file appearing changes the key");

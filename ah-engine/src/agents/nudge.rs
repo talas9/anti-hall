@@ -1357,25 +1357,25 @@ fn record(env: &Env, st: &mut State, key: &str, mut class: String, text: String,
         st.nudges.insert(key, n);
         return; // an unclassified reply counts as no answer
     }
-    if class == ans("snooze") || class == ans("other") {
-        if let Some((why, msg_key)) = snooze_refusal(st, &n, &a) {
-            // #862: a snooze is not free: no progress since the nudge (or the last snooze), or the agent's snoozes are used up
-            crate::metrics::bump("agent_nudge_snooze_refused", &[("why", why)]);
-            n.reason.clone_from(&text);
-            n.answer_class.clear();
-            let cmd = defaults::text("agent_nudge.cmd");
-            let said = defaults::render(
-                msg_key,
-                &[("kind", &n.child_kind), ("name", &n.child_name), ("child", &n.child), ("cmd", &cmd), ("max", &budget_num("snooze_max"))],
-            );
-            if live(st, &n.parent) {
-                let to = n.parent.clone();
-                n.path = send_to(env, &to, &n, said);
-            }
-            emit(env, word("ev_answered"), &n);
-            st.nudges.insert(key, n);
-            return;
+    if (class == ans("snooze") || class == ans("other"))
+        && let Some((why, msg_key)) = snooze_refusal(st, &n, &a)
+    {
+        // #862: a snooze is not free: no progress since the nudge (or the last snooze), or the agent's snoozes are used up
+        crate::metrics::bump("agent_nudge_snooze_refused", &[("why", why)]);
+        n.reason.clone_from(&text);
+        n.answer_class.clear();
+        let cmd = defaults::text("agent_nudge.cmd");
+        let said = defaults::render(
+            msg_key,
+            &[("kind", &n.child_kind), ("name", &n.child_name), ("child", &n.child), ("cmd", &cmd), ("max", &budget_num("snooze_max"))],
+        );
+        if live(st, &n.parent) {
+            let to = n.parent.clone();
+            n.path = send_to(env, &to, &n, said);
         }
+        emit(env, word("ev_answered"), &n);
+        st.nudges.insert(key, n);
+        return;
     }
     n.answer_class.clone_from(&class);
     n.answer_source = source.to_string();

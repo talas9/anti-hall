@@ -68,6 +68,8 @@ impl From<rusqlite::Error> for MeshError {
 }
 
 type Res<T> = Result<T, MeshError>;
+/// A row's GH #845 columns: `(chat_kind, wake_audience)`.
+type Extras = (Option<String>, Option<String>);
 
 /// JavaScript's number-to-JSON: a whole number prints as an integer, NaN and infinities as null.
 fn num_value(f: f64) -> Value {
@@ -314,7 +316,7 @@ impl MeshReader {
 
     /// The GH #845 columns (`chat_kind`, `wake_audience`) of workspace `id`'s rows with seq above `since`, by seq; rows with neither
     /// are left out (a legacy row). None at all on a store without the columns.
-    pub fn extras_of(&self, id: &str, since: i64) -> Res<std::collections::HashMap<i64, (Option<String>, Option<String>)>> {
+    pub fn extras_of(&self, id: &str, since: i64) -> Res<std::collections::HashMap<i64, Extras>> {
         let Ok(mut st) = self.conn.prepare_cached(sql::MESH_EXTRAS_OF) else { return Ok(std::collections::HashMap::new()) };
         let rows = st.query_map(params![id, since], |r| Ok((r.get::<_, i64>(0)?, (r.get::<_, Option<String>>(1)?, r.get::<_, Option<String>>(2)?))))?;
         Ok(rows.collect::<Result<std::collections::HashMap<_, _>, _>>()?)

@@ -207,7 +207,7 @@ fn the_capacity_corpus_holds_stay_with_the_check_and_its_passes_agree() {
 #[test]
 fn a_shadow_disagreement_latches_the_prefilter_off_until_the_marker_goes() {
     let p = json!({"tool_name": "Bash", "tool_input": {"command": "ls -la"}});
-    let _ = std::fs::remove_file(latch_path());
+    crate::discard::harmless(std::fs::remove_file(latch_path())); // keep: an absent latch is the goal state
     reset_latch_for_test();
     assert_ne!(decide("git", "PreToolUse", &p), Pre::Run, "armed: a plain read is prefiltered");
     assert_eq!(decide("git", "PostToolUse", &p), Pre::Run, "only the listed events");
@@ -226,7 +226,7 @@ fn a_shadow_disagreement_latches_the_prefilter_off_until_the_marker_goes() {
 
 #[test]
 fn the_shadow_sample_runs_the_full_check_at_its_rate() {
-    let _ = std::fs::remove_file(latch_path());
+    crate::discard::harmless(std::fs::remove_file(latch_path())); // keep: an absent latch is the goal state
     reset_latch_for_test();
     let p = json!({"tool_name": "Bash", "tool_input": {"command": "ls"}});
     let shadows = (0..1000).filter(|_| decide("git", "PreToolUse", &p) == Pre::Shadow).count() as u64;
@@ -236,7 +236,7 @@ fn the_shadow_sample_runs_the_full_check_at_its_rate() {
 #[test]
 fn a_prefiltered_entry_answers_allow_through_the_dispatcher_and_a_force_push_still_blocks() {
     use crate::dispatch::native::{Answer, Meta, evaluate};
-    let _ = std::fs::remove_file(latch_path());
+    crate::discard::harmless(std::fs::remove_file(latch_path())); // keep: an absent latch is the goal state
     reset_latch_for_test();
     let meta = Meta {
         host: "claude".into(),
@@ -297,7 +297,7 @@ fn measure_prefilter_over_a_recorded_corpus() {
         let pass = why.is_none();
         *reasons.entry(why.unwrap_or("pass")).or_insert(0usize) += 1;
         if let Some(w) = why.filter(|w| *w == "lead" || *w == "cmd") {
-            let lead = c.split(|ch: char| ch == ';' || ch == '&' || ch == '|').flat_map(|el| el.split_whitespace().next()).filter(|l| !["cd", "ls", "cat", "grep", "head", "tail", "echo", "wc", "git"].contains(l)).next().unwrap_or("").to_string();
+            let lead = c.split([';', '&', '|']).flat_map(|el| el.split_whitespace().next()).find(|l| !["cd", "ls", "cat", "grep", "head", "tail", "echo", "wc", "git"].contains(l)).unwrap_or("").to_string();
             *leads_off.entry(format!("{w}:{lead}")).or_insert(0usize) += 1;
         }
         let t1 = crate::limits::thread_cpu_us();

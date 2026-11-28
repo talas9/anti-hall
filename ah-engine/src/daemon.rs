@@ -3142,6 +3142,7 @@ mod tests {
         match &prev {
             // SAFETY: as above
             Some(v) => unsafe { std::env::set_var("AH_ENGINE_DIR", v) },
+            // SAFETY: as above
             None => unsafe { std::env::remove_var("AH_ENGINE_DIR") },
         }
         assert!(!loaded, "watchdog exits on a loaded machine (5 per core) latched the crash-loop cooldown");

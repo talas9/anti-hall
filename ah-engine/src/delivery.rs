@@ -481,7 +481,7 @@ mod tests {
     fn a_delivered_answer_reports_the_reaction_as_the_outcome_of_the_jev_decision_behind_it() {
         use crate::jev::testkit::{install_scripted, log_rows};
         let home = std::env::temp_dir().join(format!("ah-delivery-jev-{}", std::process::id()));
-        let _ = std::fs::create_dir_all(&home);
+        crate::discard::harmless(std::fs::create_dir_all(&home)); // keep: a failure surfaces when the test writes there
         let env = [("ANTIHALL_JEV", "1")];
         let _lane = install_scripted(&home, &env, vec![]);
         let jenv = crate::jev::Env::from_pairs(env.iter().copied());

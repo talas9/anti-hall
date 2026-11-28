@@ -13,8 +13,9 @@ use std::sync::Mutex;
 use std::time::Instant;
 
 type Answers = Vec<(String, Answer)>;
+type Remembered = (u64, Instant, Answers);
 /// session id -> (key, when remembered, answers)
-static MEMO: Mutex<Option<HashMap<String, (u64, Instant, Answers)>>> = Mutex::new(None);
+static MEMO: Mutex<Option<HashMap<String, Remembered>>> = Mutex::new(None);
 
 /// Whether the memo applies to this dispatch.
 pub fn applies(meta: &Meta, p: &Value) -> bool {

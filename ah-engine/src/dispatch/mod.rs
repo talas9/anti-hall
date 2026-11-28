@@ -1882,7 +1882,7 @@ mod tests {
         let at = d("bash ah-engine/test.sh", repo);
         assert_eq!((at.rule, at.exempt), (None, vec!["trusted_script"]), "the seeded test script is trusted at its current hash");
         let tmp = std::env::temp_dir().join(format!("ah-928-trust-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&tmp); // keep: this test's own scratch dir, named by pid
+        crate::discard::harmless(std::fs::remove_dir_all(&tmp)); // keep: this test's own scratch dir, named by pid
         std::fs::create_dir_all(tmp.join("ah-engine")).unwrap();
         std::fs::create_dir_all(tmp.join("other")).unwrap();
         std::fs::write(tmp.join(".git"), "gitdir: x").unwrap();

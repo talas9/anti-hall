@@ -218,7 +218,7 @@ fn is_owner_kind(kind: Option<&str>) -> bool {
 /// `mesh_write.owner_chat_cap` kept: rows from the owner younger than `mesh_write.owner_chat_max_age_ms`. Answered rows are
 /// dropped by the reader (the reply records), exactly as a question is.
 fn owner_rows(st: &MeshStore, parts: &[&str], now: f64) -> Vec<Msg> {
-    let scan = defaults::num("mesh_write.owner_chat_scan_rows") as u64;
+    let scan = defaults::num("mesh_write.owner_chat_scan_rows");
     let max_age = defaults::num("mesh_write.owner_chat_max_age_ms") as f64;
     let mut out: Vec<Msg> = Vec::new();
     for part in parts {

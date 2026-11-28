@@ -1045,10 +1045,8 @@ fn split_at(cmd: &str, cfg: &Cfg) -> Option<(Vec<Tok>, Vec<Span>)> {
                 if c == '{' && (i == 0 || cs[i - 1] != '$') {
                     brace = true;
                 }
-                if arith == 0 {
-                    if let Some(h) = heredoc_at(&cs, i) {
-                        pending.push(h);
-                    }
+                if arith == 0 && let Some(h) = heredoc_at(&cs, i) {
+                    pending.push(h);
                 }
                 cur.push(c);
                 raw.push(c);
@@ -1445,31 +1443,25 @@ fn once(cmd: &str, cfg: &Cfg, depth: usize) -> Option<(Normalised, Vec<String>)>
             return;
         }
         // gh <pr|issue|release> ...: the value words of the text options are data
-        if !cfg.text_verb.is_empty() {
-            if let Some(v) = group.iter().position(|(w, ..)| base(w) == cfg.text_verb) {
-                let sub = group[v + 1..].iter().map(|(w, ..)| w.as_str()).find(|w| cfg.text_subs.iter().any(|s| s == w) || *w == "api");
-                if sub.is_some_and(|s| s != "api") {
-                    let mut k = v + 1;
-                    while k < group.len() {
-                        let w = group[k].0.clone();
-                        if cfg.text_opts.iter().any(|o| *o == w) {
-                            if let Some(val) = group.get_mut(k + 1) {
-                                if !val.1 && !val.0.is_empty() {
-                                    val.0.clear();
-                                    *stripped = true;
-                                }
-                            }
-                            k += 2;
-                            continue;
+        if !cfg.text_verb.is_empty() && let Some(v) = group.iter().position(|(w, ..)| base(w) == cfg.text_verb) {
+            let sub = group[v + 1..].iter().map(|(w, ..)| w.as_str()).find(|w| cfg.text_subs.iter().any(|s| s == w) || *w == "api");
+            if sub.is_some_and(|s| s != "api") {
+                let mut k = v + 1;
+                while k < group.len() {
+                    let w = group[k].0.clone();
+                    if cfg.text_opts.contains(&w) {
+                        if let Some(val) = group.get_mut(k + 1) && !val.1 && !val.0.is_empty() {
+                            val.0.clear();
+                            *stripped = true;
                         }
-                        if let Some(o) = cfg.text_opts.iter().find(|o| o.starts_with("--") && w.starts_with(&format!("{o}="))) {
-                            if !group[k].1 && w.len() > o.len() + 1 {
-                                group[k].0 = format!("{o}=");
-                                *stripped = true;
-                            }
-                        }
-                        k += 1;
+                        k += 2;
+                        continue;
                     }
+                    if let Some(o) = cfg.text_opts.iter().find(|o| o.starts_with("--") && w.starts_with(&format!("{o}="))) && !group[k].1 && w.len() > o.len() + 1 {
+                        group[k].0 = format!("{o}=");
+                        *stripped = true;
+                    }
+                    k += 1;
                 }
             }
         }
@@ -2017,7 +2009,7 @@ mod tests {
     #[test]
     fn issue_928_a_script_is_identified_by_its_repo_relative_path_and_bytes() {
         let root = std::env::temp_dir().join(format!("ah-928id-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root); // keep: this test's own scratch dir, named by pid
+        crate::discard::harmless(std::fs::remove_dir_all(&root)); // keep: this test's own scratch dir, named by pid
         let (repo, out) = (root.join("repo"), root.join("out"));
         std::fs::create_dir_all(repo.join("ah-engine")).unwrap();
         std::fs::create_dir_all(&out).unwrap();
@@ -2030,7 +2022,7 @@ mod tests {
         assert!(id("t.sh", &out, 100).is_none(), "outside any repo");
         assert!(id("ah-engine/test.sh", &repo, 3).is_none(), "over the cap");
         assert!(id("ah-engine/test.sh", &repo, 0).is_none(), "off");
-        assert!(script_identity("ah-engine/test.sh", &[repo.clone()], None, 100, "").is_none(), "off without the marker");
+        assert!(script_identity("ah-engine/test.sh", std::slice::from_ref(&repo), None, 100, "").is_none(), "off without the marker");
         std::fs::remove_dir_all(&root).unwrap(); // keep: this test's own scratch dir
     }
 
@@ -2095,7 +2087,7 @@ mod tests {
     #[test]
     fn issue_928_a_tool_in_a_project_local_dir_inside_the_repo_is_known() {
         let root = std::env::temp_dir().join(format!("ah-928-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root); // keep: this test's own scratch dir, named by pid
+        crate::discard::harmless(std::fs::remove_dir_all(&root)); // keep: this test's own scratch dir, named by pid
         let (repo, other) = (root.join("repo"), root.join("other"));
         let bin = repo.join(".venv/bin");
         let sub = repo.join("pkg/src");

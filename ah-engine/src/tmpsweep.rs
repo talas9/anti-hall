@@ -68,6 +68,7 @@ pub fn remove_registered() {
 
 /// A fresh scratch directory `<temp>/<prefix><tag>-<pid>` (any older one of that name is replaced), removed when this process
 /// exits. A process killed before exit leaves it for [`sweep_configured`], which this runs once per process when the defaults are loaded.
+#[allow(clippy::panic)] // a test-only helper (every caller is a test) that is compiled into the lib: a scratch dir that cannot be made must fail the test loudly
 pub fn scratch(prefix: &str, tag: &str) -> PathBuf {
     REGISTER.get_or_init(|| {
         if defaults::is_loaded() {
