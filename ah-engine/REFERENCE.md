@@ -455,6 +455,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
+| `cli.help_delegate` | `defect` |  |  | Commands that answer `<command> <subcommand> --help` themselves, because their help lists values the command registry does not know (for example the defect classes). |
 | `cli.help_flags` | `--help, -h` |  |  | The arguments that make an `ah-engine` or `ah-hook` command print its usage and stop before anything runs (checked once, before dispatch; an argument after a bare `--` is never one). |
 
 ### engine.toml / client
@@ -1478,7 +1479,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `command.eg_claude_dir` | `.claude` |  |  | The host's configuration directory under the home directory. |
 | `command.eg_default_allow` | `12 items` |  |  | Files and globs edit-guard always allows. |
 | `command.eg_edit_allow_file` | `.anti-hall/edit-allow.json` |  |  | The repository-relative path of the edit allowlist, which no one edits through the guard. |
-| `command.eg_home_allow` | `.claude/claude.md, .claude/projects/*/memory/**, .claude/skills/**, .claude/a...` |  |  | Globs, relative to the home directory and written in lower case (paths are folded), that edit-guard allows from any working directory: a narrow named list inside the host's configuration folder (the global instructions file, the memory, the skills and the agents), which the global rule lets the main thread write directly (GH #783). Never the whole folder: plugin code and the usage cache live in it. Empty = none. |
+| `command.eg_home_allow` | `.claude/claude.md, .claude/claude.*.md, .claude/projects/*/memory/**, .claude...` |  |  | Globs, relative to the home directory and written in lower case (paths are folded), that edit-guard allows from any working directory: a narrow named list inside the host's configuration folder (the global instructions file and its variants such as CLAUDE.shareable.md, the memory, the skills and the agents), which the global rule lets the main thread write directly (GH #783). Never the whole folder: plugin code and the usage cache live in it. Empty = none. |
 | `command.eg_home_deny_files` | `settings.json, settings.local.json, hooks.json` |  |  | File names (lower case) that command.eg_home_allow never reaches: the host's settings and hook configuration. |
 | `command.eg_home_deny_globs` | `.claude/plugins/**, .claude/settings*.json, .claude/**/settings*.json, .claud...` |  |  | Globs, relative to the home directory, that command.eg_home_allow never reaches, checked first: the installed plugins (their rules, their logic and the usage cache read by the usage relief), and the host's settings and hook configuration under any name. |
 | `command.eg_hooks_file` | `hooks.json` |  |  | A file with this name is never allowed by the per-project edit allowlist. |
@@ -3570,6 +3571,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `idle_order.steps_min` | `30, 60, 120` |  |  | The escalation schedule: minutes to wait after the 1st order before the 2nd, after the 2nd before the 3rd, and so on; the last entry repeats. Never every turn. |
 | `idle_order.sw_enabled` | `4 entries` |  |  | Where the on/off switch of the idle orders is read from (guards.idleOrder, default on). Off: no order is given, a long-idle child workspace counts as live again for the mailbox wake path, and the idle-agents advisory stays as before. |
 | `idle_order.sw_stall` | `4 entries` |  |  | Where the on/off switch of the stalled-delivery orders is read from (guards.stallOrder, default on). A workspace that reports working but has made no commit for guards.stallOrderAfterMin minutes is named to the Primary on the idle-order schedule (idle_order.steps_min, idle_order.max_orders): the first time as a status check, then as an order to converge or be archived. Off: no stalled-delivery order. |
+| `idle_order.sw_stall_pushed` | `4 entries` |  |  | Where the switch that exempts a delivered workspace from the stalled-delivery order is read from (guards.stallSkipPushed, default on). A workspace whose own newest commit (one made after its checkout was created) is pushed, nothing ahead of its upstream, has delivered: it waits on review or CI, not on itself. Off: only a new commit restarts the stall clock. |
 | `idle_order.task_joiner` | `; ` |  |  | Separator between the open tasks named in one resume order. |
 | `idle_order.task_max` | `80` |  |  | Most characters of an open task's subject named in the resume order; a longer one is cut with an ellipsis. |
 | `idle_order.waiting_after_min` | `15` |  |  | Minutes a teammate must stay idle with no idleReason (its report said it is waiting on its own background work) before the coordinator is ordered to check it. Shorter than the finished-teammate threshold because a dead background job is otherwise found only by the owner. |
@@ -4318,6 +4320,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `claim_evidence.gap_word_re` | `[\w#@][\w#@\x27\x{2019}/-]*` |  |  | One word of the text between a suppressor and the claim (punctuation is not a word: a lone dash in 'Unverified - files are deployed' counts nothing). Rust regular expression. |
 | `claim_evidence.guard_name` | `claim-evidence-guard` |  |  | The guard id this check answers to in skip.json and in its messages. |
 | `claim_evidence.heading_line_re` | `^\s*(?:#{1,6}\s+\S\|\*\*[^\n]+\*\*\s*:?\s*$\|[^\n.!?]{1,160}:\s*$)` |  |  | A line that heads the paragraphs after it (#972 wave 2): a markdown heading, a bold line, or a short line that ends with a colon. Rust regular expression, matched against one line. |
+| `claim_evidence.hedge_res` | `\b(?:likely\\|probably\\|possibly\\|perhaps\\|maybe\\|presumably\\|plausibly\\|appar...` |  |  | An adverb hedge that opens the claim's own clause (rule 1): 'it is likely that the tests pass', 'probably CI is green'. The sentence already says it is unconfirmed, so it is no flat claim ('I think ...' still is one: it asserts the claim); the speculation guard judges the hedge itself. Reach claim_evidence.reach_clause. A hedge in another sentence or clause covers nothing. Regular expressions, case-insensitive, matched against the clause before the claim. |
 | `claim_evidence.instruction_res` | `\bmake\s+sure(?:\s+(?:that\\|if\\|whether))?\b\\|\bensure(?:\s+(?:that\\|if\\|whet...` |  |  | An instruction or check request that opens the claim's own clause (rule 1, GH #933): 'and make sure CI passes', 'please ensure the tests pass', 'then verify that CI is green' ask for a result, they do not report one. Only the bare imperative or infinitive forms count: 'make sure' and 'ensure' (not 'made sure', 'ensures', 'ensuring', 'making sure'), and 'verify\|check that\|if\|whether' only right after a clause start, comma, semicolon, colon, 'then', 'please' or 'to'. 'I can verify that CI passes', 'I can confirm that ...', 'I see that ...', 'We checked and CI is green' stay claims. Reach claim_evidence.reach_clause. Regular expressions, case-insensitive, matched against the clause before the claim. |
 | `claim_evidence.list_para_re` | `\A\s*(?:[-*+]\|[0-9]+[.)])\s` |  |  | A paragraph that is a list (#972 wave 2): its scope also holds the line just before it, the lead-in that governs the list ('Lane-reported results; I have not re-run them yet.' then '- tests pass: 410/410'). Rust regular expression, matched against the paragraph. |
 | `claim_evidence.log_kind` | `claim_evidence` |  |  | Engine log kind written for a hit (block or log mode). |
@@ -4362,7 +4365,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `claim_evidence.state_prefix` | `claim-evidence-state-` |  |  | Prefix of the per-session state file name under the replykit state directory (the sanitised session id and the JSON extension follow). |
 | `claim_evidence.state_res` | `\bgh\s+run\s+(?:view\\|watch\\|list)\b, \bgh\s+pr\s+(?:checks\\|view\\|merge\\|sta...` |  |  | Commands that look at CI or the merge state: matched against the commands run AFTER the last push of the turn. Any hit satisfies rule 2. |
 | `claim_evidence.summary` | `Stop (Claude): holds once a reply that claims a result (tests pass, verified,...` |  |  | One-line description of the claim-evidence-guard check in the generated reference. |
-| `claim_evidence.suppress` | `9 items` |  |  | Why a claim hit is not a claim, in the order checked: reason = the label written to the log, list = the config key of the pattern list (matched against the clause before the hit), reach = the config key of the most counted words allowed between a list hit and the claim (gap_skip_re words are free; gap_restart_re after a counted word ends the reach). idiom (optional) = the config key of a regex matched against the text between a list hit and the claim: a match makes that hit an idiom that covers nothing. chain = true: a claim that follows a claim this row covered, in the same clause with at most claim_evidence.reach_consequent counted words between them, is that condition's consequent and is covered too ('If CI is green the change is merged by the bot'). Every hit of every list is tried; the first row with a hit in reach names the reason. |
+| `claim_evidence.suppress` | `10 items` |  |  | Why a claim hit is not a claim, in the order checked: reason = the label written to the log, list = the config key of the pattern list (matched against the clause before the hit), reach = the config key of the most counted words allowed between a list hit and the claim (gap_skip_re words are free; gap_restart_re after a counted word ends the reach). idiom (optional) = the config key of a regex matched against the text between a list hit and the claim: a match makes that hit an idiom that covers nothing. chain = true: a claim that follows a claim this row covered, in the same clause with at most claim_evidence.reach_consequent counted words between them, is that condition's consequent and is covered too ('If CI is green the change is merged by the bot'). Every hit of every list is tried; the first row with a hit in reach names the reason. |
 | `claim_evidence.suppress_after` | `3 entries` |  |  | Why a claim hit is not a claim, judged from the words AFTER it (checked after claim_evidence.suppress): reason = the label written to the log, list = the config key of the pattern list matched against the rest of the claim's sentence, anchored at the end of the claim; before = the config key of a pattern list one of which must match the sentence text BEFORE the claim (so a plain status line 'All tests pass, then merge.' stays a claim). A claim followed by a next step is an item of a plan, not a statement. |
 | `claim_evidence.sw_claim` | `6 entries` |  |  | Require evidence for factual claims. Switch guards.claimEvidence (default on): off lets a reply assert a check or outcome with no matching tool call this turn. |
 | `claim_evidence.sw_mask_table_header` | `4 entries` |  |  | Mask genuine table-header labels. Switch guards.claimEvidenceMaskTableHeader (default on): the header row of a markdown table is not scanned for claims, because it only labels the columns (a column named Verified or Merged is not a statement). The body rows are still scanned. Off scans the header like any other line. |
@@ -5515,20 +5518,23 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
+| `task_window.backlog_blocked` | ` · {b} blocked` |  |  | The blocked part of the backlog line when some backlog tasks are blocked; `{b}` how many. |
 | `task_window.backlog_count` | `{n} P{p}` |  |  | One priority's count in the backlog line; `{n}` the count, `{p}` the priority digit. |
 | `task_window.backlog_count_sep` | `, ` |  |  | Separator between the per-priority counts. |
-| `task_window.backlog_line` | `T-∞ Backlog: {n} more ({counts}) · next: {next} · run {skill}` |  |  | The backlog line's subject as the guard renders it: `{n}` tasks in the backlog, `{counts}` the per-priority counts, `{next}` the top backlog task, `{skill}` task_window.reconcile_skill. |
+| `task_window.backlog_line` | `T-∞ Backlog: {n} more ({counts}){blocked} · next: {next} · run {skill}` |  |  | The backlog line's subject as the guard renders it: `{n}` tasks in the backlog, `{counts}` the per-priority counts, `{blocked}` task_window.backlog_blocked when some of them are blocked (else empty), `{next}` the top backlog task, `{skill}` task_window.reconcile_skill. |
 | `task_window.backlog_none` | `none` |  |  | The `{next}` of a backlog line when nothing waits. |
 | `task_window.backlog_re` | `^T-∞ Backlog:` |  |  | JavaScript (and Rust) regex source of the backlog line's subject (slot N+1). That task is an index of the backlog, not work: it never counts as an open task for the task guards (tk.isOpen) or the compliance nudges, and never takes a window slot. |
+| `task_window.blocked_keep_setting` | `6 entries` |  |  | guards.taskWindowBlockedKeep: most blocked tasks (metadata.blockedOn with a reason, or blockedBy) that stay visible in the live list. They are saved to the backlog store as blocked and counted in the backlog line, and they do not take an active slot of guards.taskWindowSize. A blocked task past this count is refused with the order to delete it from the window (it stays saved). 0: every blocked task is ordered out. |
 | `task_window.blocked_setting` | `5 entries` |  |  | Switch guards.taskWindowBlocked (default on): a task update that marks a task blocked (metadata.blockedOn with a reason, or addBlockedBy) saves it to the backlog and is refused with the order to delete it from the window. |
 | `task_window.drift_detail` | `Load these saved window tasks first, then the backlog line: {list}` |  |  | Details line: the saved window subjects to create, in order; `{list}` joined by task_window.drift_sep. |
 | `task_window.drift_sep` | ` \| ` |  |  | Separator of the saved window subjects in the drift details. |
+| `task_window.import_detail` | `Snapshot: {path}. TaskCreate each window task in its order as `T-<n> [P<0-3>]...` |  |  | Details line of the import block: how to load the snapshot without the skill; `{path}` the handover state file, `{skill}` the reconcile skill. |
 | `task_window.instead_backlog_dup` | `TaskUpdate taskId={id} with the new backlog subject` |  |  | Do instead: update the existing backlog line; `{id}` its task id. |
 | `task_window.instead_blocked` | `TaskUpdate taskId={id} status=deleted` |  |  | Do now when a blocked task was saved; `{id}` the task id. |
 | `task_window.instead_create` | `TaskCreate subject="{subject}"` |  |  | Do instead of a malformed create; `{subject}` is the expected subject. |
 | `task_window.instead_drift` | `TaskCreate subject="{subject}" (load the saved window first)` |  |  | Do instead: load the saved window; `{subject}` the first saved window subject. |
 | `task_window.instead_full` | `finish or move a window task first; {skill} swaps in higher priorities.` |  |  | Do instead when the window is full; `{skill}` the reconcile skill. |
-| `task_window.instead_import` | `run {skill} (it imports the snapshot into the store)` |  |  | Do now: import the snapshot; `{skill}` the reconcile skill. |
+| `task_window.instead_import` | `TaskCreate its window tasks yourself, or run {skill} if loaded` |  |  | Do now: import the snapshot by hand; `{skill}` the reconcile skill (an option only: a session started before it was installed does not have it loaded). Kept short: the visible line is cut near 115 units. |
 | `task_window.instead_order` | `TaskCreate subject="{subject}" first.` |  |  | Do instead: pull the backlog task first; `{subject}` its subject. |
 | `task_window.instead_owner` | `TaskUpdate taskId={id} status=in_progress owner="{owner}"` |  |  | Do instead; `{id}` the task id, `{owner}` task_window.owner_hint. |
 | `task_window.instead_rename` | `TaskUpdate taskId={id} subject="{subject}"` |  |  | Do instead of a malformed rename; `{id}` the task id, `{subject}` the expected subject. |
@@ -5545,7 +5551,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `task_window.setting` | `5 entries` |  |  | Switch guards.taskWindow (default on): the task-list window rules are enforced when a task is created or changed (subject format, window size, top priorities in the window, an owner on an in-progress task, blocked tasks moved to the backlog, the resume check), and the full list is kept in the per-session task store. Off: none of this runs, and the backlog line counts as an open task again. |
 | `task_window.size_setting` | `6 entries` |  |  | guards.taskWindowSize: most active tasks in the live list (the backlog line is extra, slot N+1). When the switch is on this replaces handover.taskListBudget as the open-task limit. |
 | `task_window.skill_rules` | `Task list rules (enforced at TaskCreate/TaskUpdate by tasklist-hygiene): at m...` |  |  | The task-list rules as the skills state them (tasks-reconcile and handover, Claude and Codex). A test checks that each of those skills holds this text exactly, so the guard and the skills cannot drift. `{size}` is not filled: the skills name the setting. |
-| `task_window.slot_free` | `a window slot is free: run {skill} (next: {next}).` |  |  | Order after a window task was finished or deleted while the backlog holds tasks; `{skill}` the reconcile skill, `{next}` the top backlog task. |
+| `task_window.slot_free` | `a window slot is free: TaskCreate the next backlog task ({next}), or run {ski...` |  |  | Order after a window task was finished or deleted while the backlog holds tasks; `{skill}` the reconcile skill, `{next}` the top backlog task. |
 | `task_window.slot_free_then` | ` Then run {skill}: a window slot is free (next: {next}).` |  |  | The slot-free order folded into the done order of the same call (one order per message); same placeholders as task_window.slot_free. |
 | `task_window.snapshot_end_re` | `^#` |  |  | JavaScript regex source of the line that ends the snapshot section (the next markdown heading). |
 | `task_window.snapshot_file` | `state.md` |  |  | The detail file of a handover that holds its markdown task snapshot (read only when the predecessor session left no store). |
@@ -5561,7 +5567,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `task_window.title_max` | `50` |  |  | Longest title the guard quotes in an expected form (UTF-16 units); longer ones are cut with taskkit.ellipsis. |
 | `task_window.title_strip_re` | `^\s*(?:(?:T-\S+\|#\d+)\s*)?(?:\[[^\]]*\]\s*)*` |  |  | JavaScript regex source (case-insensitive) removed from the start of a malformed subject to get its title: a `T-<n>`/`#<n>` id and bracketed tags. |
 | `task_window.what_backlog_dup` | `a backlog line already exists (task {id}).` |  |  | Block: a second backlog line; `{id}` the existing one's task id. |
-| `task_window.what_blocked` | `blocked tasks leave the window: T-{n} saved to the backlog store as blocked.` |  |  | Block: a blocked task belongs in the backlog; `{n}` its number. It is already saved there as blocked. |
+| `task_window.what_blocked` | `{keep} blocked tasks are already visible in the window: T-{n} saved to the ba...` |  |  | Block: a blocked task past the visible cap leaves the window; `{n}` its number, `{keep}` the cap (task_window.blocked_keep_setting). It is already saved in the backlog store as blocked. |
 | `task_window.what_drift` | `resumed list: {missing} saved window task(s) not loaded yet.` |  |  | Block: a resumed session creates a task before loading the saved window; `{missing}` how many saved window tasks are not live yet. |
 | `task_window.what_dup` | `T-{n} is already "{other}".` |  |  | Block: the number is taken by another task; `{n}` the number, `{other}` the title that has it. |
 | `task_window.what_format` | `task subject "{subject}" is not `T-<n> [P<0-3>] title`.` |  |  | Block: the subject is not in the window form; `{subject}` is the subject given (cut). |
@@ -6942,7 +6948,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `migrate.settings_schema` | `478 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
+| `migrate.settings_schema` | `480 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
 
 ### doctor.toml / doctor
 
@@ -9423,7 +9429,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `settings_cli.items` | `491 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
+| `settings_cli.items` | `493 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
 | `settings_cli.not_toggleable` | `9 items` |  |  | The parts of anti-hall that deliberately have no switch, with the reason `settings show` prints. |
 | `settings_cli.sections` | `23 items` |  |  | The settings sections in display order: key, label, description. |
 
@@ -9506,6 +9512,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `defect.component_steps` | `^\.\/ => , ^plugins\/anti-hall\/ => , \/lib\/ => /, \.(c\\|m)?js$\\|\.(sh\\|py\\|...` |  |  | The steps that reduce a path to its module, each `regex => replacement` in order: separators, leading ./, the plugin directory, lib segments, the file extension. |
 | `defect.control_re` | `[\x00-\x1f\x7f]` |  |  | A control character. |
 | `defect.dash` | `-` |  |  | Shown for a missing value in the text reports. |
+| `defect.default_class` | `other` |  |  | The class a report gets when --class is omitted. |
 | `defect.default_top` | `10` |  |  | How many rows the text reports show unless --top says otherwise. |
 | `defect.dir` | `defects` |  |  | The defect store directory, under the base directory of the home. |
 | `defect.err_line` | `❌ anti-hall · defect: {e}` |  |  | An error line of `defect`. Placeholder: e. |
@@ -9514,6 +9521,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `defect.field_caps` | `5 entries` |  |  | The length caps, in UTF-16 units, of the narrative and identifying fields of a report or ruling. |
 | `defect.file_ext` | `.jsonl` |  |  | The extension of a defect file. |
 | `defect.fix_subject` | `^fix(\(([^)]*)\))?!?:\s*` |  |  | A fix commit subject (case-insensitive); group 2 is the scope. |
+| `defect.flag_aliases` | `title sym, body repro` |  |  | Alias flags of `defect report`, each `alias target`: the alias fills the target flag when the target itself is not given. |
 | `defect.flag_not_valid` | `--{k} is not a valid flag for `{cmd}`` |  |  | An unknown flag. Placeholders: k, cmd. |
 | `defect.flag_valid_for` | `--{k} is valid for `{others}`, not `{cmd}`` |  |  | A flag typed against the wrong subcommand. Placeholders: k, others, cmd. |
 | `defect.fp_len` | `12` |  |  | Length of a fingerprint (and of the supersededBy field). |
@@ -9524,6 +9532,9 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `defect.git_revlist_args` | `rev-list, {tag}` |  |  | The arguments of the git command that lists the commits under a tag. |
 | `defect.git_spawn_failed` | `spawnSync {bin} ENOENT` |  |  | Why git could not run. Placeholder: bin. |
 | `defect.git_tag_args` | `tag, --list` |  |  | The arguments of the git command that lists the tags. |
+| `defect.help_flag` | `help` |  |  | The bare flag that prints a subcommand's help. |
+| `defect.help_values` | `classes (--class, default {default_class}): {classes}\nseverities (--sev): {s...` |  |  | The value lists printed under `defect report --help`. Placeholders: classes, default_class, severities, aliases. |
+| `defect.help_values_cmd` | `report` |  |  | The subcommand whose help also lists the accepted values. |
 | `defect.history_changelog_cap` | `600` |  |  | Cap of a backfilled changelog bullet. |
 | `defect.history_dir` | `history` |  |  | Where `backfill` keeps the fixed bugs imported from git history, inside the store directory. |
 | `defect.history_subject_cap` | `200` |  |  | Cap of a backfilled commit subject. |
@@ -9550,6 +9561,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `defect.key_text` | `text` |  |  | The record or result key `text`. |
 | `defect.key_truncated` | `truncated` |  |  | The record or result key `truncated`. |
 | `defect.key_v` | `v` |  |  | The record or result key `v`. |
+| `defect.key_valid_classes` | `validClasses` |  |  | The result key naming the classes a rejected report may use. |
+| `defect.key_valid_severities` | `validSeverities` |  |  | The result key naming the severities a rejected report may use. |
 | `defect.kind_component` | `component` |  |  | The hotspot kind for one component. |
 | `defect.kind_pair` | `component+cause` |  |  | The hotspot kind for a component and cause. |
 | `defect.label_proj_flag` | `--proj` |  |  | Names the --proj flag in a truncation warning. |
@@ -10658,16 +10671,24 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `disk_watch.growth_top` | `3` |  |  | The most growth directories an advisory names. |
 | `disk_watch.heavy_command_re` | `(^\|[;&\|\s])(cargo +(build\|test\|check\|bench\|install)\|npm +(ci\|install\|i)\b\|yar...` |  |  | Regular expression (JavaScript source, matched case-insensitively) of the shell commands that write a lot of data: the ones warned about at the critical level. |
 | `disk_watch.impact_kind` | `disk_warning` |  |  | Impact kind recorded for every disk warning. |
+| `disk_watch.level_rank` | `warn, critical` |  |  | The levels of a volume, mildest first: a level later in the list is worse (it is never held back by the quiet window). |
 | `disk_watch.msg_blocked` | `this command is blocked: disk space is critical ({list}). Free some space, or...` |  |  | Block reason when diskWatch.blockAtCritical is on; {list} the volume lines. |
 | `disk_watch.msg_growth` | ` Biggest build or cache directories under the watched paths: {list} (suggesti...` |  |  | Growth suggestion; {list} the directories with sizes. |
 | `disk_watch.msg_heavy` | `This command writes a lot of data.` |  |  | Line added at the critical level before a heavy command. |
-| `disk_watch.msg_instead` | `Free space before starting more builds, clones or worktrees; nothing was dele...` |  |  | What to do; {growth} names the biggest growth or is empty. |
+| `disk_watch.msg_instead` | `Free space before starting more builds, clones or worktrees; nothing was dele...` |  |  | What to do; {growth} names the biggest growth or is empty, {reclaim} the known-reclaimable locations (msg_reclaim) or is empty. |
+| `disk_watch.msg_reclaim` | ` Reclaimable, biggest first: {list} (the commands are yours to run, nothing r...` |  |  | Reclaimable locations; {list} the items joined by msg_reclaim_sep. |
+| `disk_watch.msg_reclaim_cmd` | `: `{cmd}`` |  |  | The command of a reclaimable location; {cmd} the command. |
+| `disk_watch.msg_reclaim_item` | `{path} ({size}){cmd}` |  |  | One reclaimable location; {path}, {size}, {cmd} (msg_reclaim_cmd, or empty when none). |
+| `disk_watch.msg_reclaim_sep` | `; ` |  |  | Between reclaimable locations. |
 | `disk_watch.msg_vol` | `{path}: {free} free ({pct}%), {level}` |  |  | One volume line; {path} a path on it, {free} free, {pct} percent free, {level} warn or critical. |
 | `disk_watch.msg_what` | `Low disk space: {list}.` |  |  | Advisory first line; {list} the volume lines. |
 | `disk_watch.msg_why` | `A full disk fails builds and writes, and a machine with almost no space left ...` |  |  | Why it matters. |
+| `disk_watch.num_quiet_s` | `7 entries` |  |  | Quiet window (diskWatch.quietSeconds) after a low-space warning was shown: no warning again inside it unless the level got worse (warn to critical), whatever the volume does in between (a volume hovering at a floor, or a recovery and relapse, no longer warns every turn). 0 = no quiet window. Used while diskWatch.repeatOnChangeOnly is on. |
 | `disk_watch.num_repeat_drop_gb` | `7 entries` |  |  | Free space (GB) a low volume must lose since its last warning for the same level to warn again (diskWatch.repeatDropGb; used while diskWatch.repeatOnChangeOnly is on). |
 | `disk_watch.num_repeat_s` | `7 entries` |  |  | Reminder floor (diskWatch.repeatSeconds): an unchanged low-space warning is shown again after this many seconds; 0 = never repeat an unchanged one (used while diskWatch.repeatOnChangeOnly is on). |
 | `disk_watch.percent_base` | `100` |  |  | The whole in a percentage. |
+| `disk_watch.reclaim_locations` | `9 items` |  |  | Known-reclaimable locations the low-space advisory names with their sizes (scanned only while a volume is low, within the growth scan's entry and time budget, reused for growth_every_s). Each row: path = relative to the home directory, a segment may use `*`; cmd = the command that frees it, `{path}` the directory (omitted: the owner's own tool clears it, so none is named). Regenerable caches and build output, and the host's pile of archived worktrees awaiting deletion. Nothing is deleted by the watch; empty = none. |
+| `disk_watch.reclaim_top` | `4` |  |  | The most reclaimable locations an advisory names. |
 | `disk_watch.sw_enabled` | `6 entries` |  |  | Where the disk watch's on/off switch is read from (diskWatch.enabled, default on). |
 | `disk_watch.sw_repeat_on_change_only` | `6 entries` |  |  | Switch diskWatch.repeatOnChangeOnly (default on): the low-space warning is shown again only when a volume's level changed, its free space fell by diskWatch.repeatDropGb since the last warning, or diskWatch.repeatSeconds passed. Off restores one warning per cooldown at an unchanged level. |
 | `disk_watch.temp_default` | `/tmp` |  |  | The temp directory when the TMPDIR variable of the process is unset. |
@@ -15190,6 +15211,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_parent.re_table_activity_label` | `^(\\|(?:[^\|\\]\|\\.)*\\|\s*)(?:active\|idle \(alive\)\|idle\|dormant)(\s*\\|)` |  |  | A table row's status cell when it only reflects recent activity (active, idle, idle (alive), dormant): capture 1 is the row up to the cell, capture 2 the cell's closing bar. The hash treats these as one label, so an activity flap alone does not re-send the table (JavaScript regex). |
 | `devswarm_parent.read_seen_scan` | `8` |  |  | How many of a child's newest read receipts the Primary's inbox check opens when looking for a recent read (file names sort by time). |
 | `devswarm_parent.read_seen_window_ms` | `1200000` |  |  | How recent a child's `inbox read` must be for its unread backlog not to be flagged (GH: read, replied, never acked). A recent unacked read receipt, made after the oldest unread mail arrived and delivering at least one row, relabels the row 'read, not acked' (the child must ack); the row stays flagged. Matches mesh_write.not_draining_age_ms (20 minutes) by default. |
+| `devswarm_parent.reflog_head_rel` | `logs/HEAD` |  |  | The path, inside a worktree's git directory, of its HEAD reflog: its oldest entry dates the checkout, so a commit older than that is inherited from the commit the workspace was cut from, not its own delivery. |
 | `devswarm_parent.registry_scopes` | `user, project` |  |  | The scopes of a registry entry in the order the version lookup prefers them. |
 | `devswarm_parent.relative_none` | `—` |  |  | What a relative age shows when the time is unknown. |
 | `devswarm_parent.reply_state_suffix` | `-replies.json` |  |  | The file name suffix of a project's reply record. |
@@ -16512,7 +16534,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `notice_turn_skipped` | counter | prompts | kind, check | Dispatch entries dropped from the plan of a notice turn while notice_turn.sw_main is on, by notice kind and by the base id of the check (notice_turn.skip_checks). |
 | `claim_evidence_fired` | counter | replies | rule | Replies the claim-evidence guard held or logged (a claim with no matching check, or pushed work called done), by rule (claim, pushed). |
 | `claim_evidence_log_read_ok` | counter | claims | claim | Claims the claim-evidence guard let pass because a read of a log or output file this turn showed the claimed figure (claim_evidence.log_read_counts; GH #376), by claim kind. |
-| `claim_evidence_suppressed` | counter | claims | reason | Claim hits the claim-evidence guard let pass, by reason (nonsoftware, featurename, negated, future, condition, reported, criterion, purpose, instruction, planned, labelled, quoted). |
+| `claim_evidence_suppressed` | counter | claims | reason | Claim hits the claim-evidence guard let pass, by reason (nonsoftware, featurename, negated, future, hedged, condition, reported, criterion, purpose, instruction, planned, labelled, quoted). |
 | `claim_evidence_suppressor_rejected` | counter | candidates | reason | Suppressor candidates the claim-evidence guard refused because they do not really cover the claim, by reason (filler_opener, source_noun, source_compound, label_not_a_label); each refused candidate is one that used to let a claim through (GH #427). |
 | `claim_evidence_tool_ok` | counter | claims | claim | Claims the claim-evidence guard let pass because a tool of this turn (claim_evidence.tool_evidence: an Artifact publish, an MCP deploy or publish tool) returned its own success result, by claim kind. |
 | `reply_style_fired` | counter | replies | form, again | Replies the R-style guard held or noted (guards.styleRule on), by form (block, note) and again (true: an earlier hit of this owner turn is in the transcript; false: the first). Acted-on = 1 - again=true / again=false. |
@@ -16552,7 +16574,7 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `snapshot_lock` | counter | takes | kind, result | Task snapshot lock takes, by kind (flock: the kernel lock; file: the lock file of the Node protocol, by taskstate.snapshot_lock_kind; fallback: this platform or filesystem has no flock at all, the lock file was used) and result (taken; busy: held elsewhere past taskstate.snapshot_lock_wait_ms, nothing written; failed: the flock could not be acquired (the file would not open or is a link, or flock failed with an errno other than unsupported), nothing written). On the file and fallback kinds busy also covers a lock file that cannot be made (a directory or link in its place, an unwritable directory) and failed a lock call that raised: nothing is written either way. A write happens only under a lock that is positively held. |
 | `snapshot_overlaid` | counter | tasks |  | Tasks a rebuild recovered from the session's snapshot because the transcript tail no longer showed them. |
 | `snapshot_written` | counter | files |  | Task snapshot files written (taskstate.snapshot_enabled): the session's rebuilt list saved so a later rebuild can recover tasks that left the transcript tail. |
-| `task_window` | counter | events | action | Task-window actions at TaskCreate/TaskUpdate, by action (block_format, block_dup, block_full, block_order, block_owner, block_blocked, block_drift, block_import, block_backlog_dup, saved_backlog, reserved, adopted, slot_free, store_write_failed, store_unreadable, lock_busy). |
+| `task_window` | counter | events | action | Task-window actions at TaskCreate/TaskUpdate, by action (block_format, block_dup, block_full, block_order, block_owner, block_blocked, blocked_kept, block_drift, block_import, block_backlog_dup, saved_backlog, reserved, adopted, slot_free, store_write_failed, store_unreadable, lock_busy). |
 | `tasklist_hygiene` | counter | events | event | Task-list hygiene events (completed-task note shown, task deleted, prune suggestion shown, and the done_order events completed_lingering, order_emitted and followed), by event; recorded through the advisory counters (`ah.advisory(advisory_kind, event)`), so the engine report's `advisory` section shows tasklist_hygiene.<event>. |
 | `tasklist_integration_skipped` | counter | stops | kind | Stops where git integration commands (merge, cherry-pick, checkout, switch) alone would have reached the tasklist-guard work threshold and were not counted as the session's own work. |
 | `tasklist_progress_carried` | counter | stops | kind | Stops where tasklist-guard used the session's progress file under an earlier date (the session crossed midnight). |
