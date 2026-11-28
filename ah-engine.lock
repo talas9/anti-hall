@@ -1,16 +1,16 @@
 {
   "schema": 1,
-  "version": "0.3.33",
-  "tag": "ah-engine-v0.3.33",
-  "fingerprint": "108ab9316eceee6650b4d4a2aa7bbf88e36be3c91e1a1fe0abe7de92a22a92cb",
-  "prepare_run": 46151872052,
+  "version": "0.3.34",
+  "tag": "ah-engine-v0.3.34",
+  "fingerprint": "716ab06d23a84706b29affcb84c5b0629f0d1826e7ef79884e309ddee35feeb8",
+  "prepare_run": 46175995168,
   "assets": {
-    "ah-engine-v0.3.33-aarch64-apple-darwin.tar.gz": "cea1e2ecfe06672c0105982bd3d86257f0284ef890d94f056f7b07c215831754",
-    "ah-engine-v0.3.33-aarch64-unknown-linux-gnu.tar.gz": "c03343c36d3b6dc571943dab905c7be9be5feaee90c9a85a9240ca2953f9571f",
-    "ah-engine-v0.3.33-aarch64-unknown-linux-musl.tar.gz": "967aa465aa542df33a82f36cac2cf0e13b5bf1405bd00ffce4ba28436f54fc90",
-    "ah-engine-v0.3.33-src.tar.gz": "b96f706762bc84d2e0a68c36394f2592fca762b89716a64dc9a99751c895b64d",
-    "ah-engine-v0.3.33-x86_64-apple-darwin.tar.gz": "450e9cf37648b3aacf59cc414a065a1808bd7144af580523791f96101c18e656",
-    "ah-engine-v0.3.33-x86_64-unknown-linux-gnu.tar.gz": "80f85ef448275a61fbd0b595e9f5484ea7474b208c156045d5852c29d9101780",
-    "ah-engine-v0.3.33-x86_64-unknown-linux-musl.tar.gz": "72e5055ce464f2481d4171e95017f8924ba683d5b3fa142940061c44acbf34ef"
+    "ah-engine-v0.3.34-aarch64-apple-darwin.tar.gz": "1fb57d9fddb0011b88c51979f4db013dac9601bd5c44194844f37015783a8caf",
+    "ah-engine-v0.3.34-aarch64-unknown-linux-gnu.tar.gz": "ce9f6628e20f91c474df174f637ec6990ff4dbc5b2e0aa255d05b3dc7881408c",
+    "ah-engine-v0.3.34-aarch64-unknown-linux-musl.tar.gz": "5c0fda1d034d3d9bcd933762399c2103cee552a9dbc309a34506ffdf49d1040f",
+    "ah-engine-v0.3.34-src.tar.gz": "554118b512d340a6f848d5013ee7a8b18587df0a3bddf06739f8dcbdead4964b",
+    "ah-engine-v0.3.34-x86_64-apple-darwin.tar.gz": "e5a06e126c191a57915ec0d214d8dbed3d724cebec32e5fb5f2cccc9f7f96bc0",
+    "ah-engine-v0.3.34-x86_64-unknown-linux-gnu.tar.gz": "a0c649565ca7fa4eb088af67dc641d1c30db1d6f20bb97e04d212716d14fad4a",
+    "ah-engine-v0.3.34-x86_64-unknown-linux-musl.tar.gz": "607aa90ab052188ac3bd049bb87039c781cee43f8ea8319b53c46349a88ae170"
   }
 }
