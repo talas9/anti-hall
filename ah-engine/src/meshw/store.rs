@@ -171,6 +171,9 @@ impl MeshStore {
             }
         }
         crate::discard::harmless(conn.execute_batch(sql::MESHW_DDL_NEEDS_REPLY_INDEX)); // keep: an index is a performance aid; Node ignores a failure
+        crate::discard::harmless(conn.execute_batch(sql::MESHW_DDL_SEQ_INDEX)); // keep: an index is a performance aid (GH #845 P2-12)
+        crate::discard::harmless(conn.execute_batch(sql::MESHW_DDL_HEARTBEAT_INDEX)); // keep: same
+        crate::discard::harmless(conn.execute_batch(sql::MESHW_DDL_WORKSPACE_INDEX)); // keep: same
         conn.execute_batch(sql::MESHW_DDL_REGISTRY)?;
         if let Some(cols) = table_columns(&conn, sql::MESHW_TABLE_INFO_REGISTRY)
             && !cols.iter().any(|c| c == defaults::text("mesh_write.write_seq_column"))

@@ -367,6 +367,51 @@ impl MeshReader {
         Ok(())
     }
 
+    /// [`for_each_message`](Self::for_each_message) for the rows past store seq `after_seq` only, in insertion order (GH #845 P2-12): a
+    /// drain, a summary or a tick reads what is unread past a cursor, so a partition that holds thousands of rows costs what is new,
+    /// not what exists. `index` is 0 (a position in the partition is not known without counting the rows skipped).
+    pub fn for_each_message_after_seq(&self, id: &str, after_seq: i64, mut f: impl FnMut(Value) -> bool) -> Res<()> {
+        let kinds = self.sender_kinds_after(id, after_seq);
+        let kind_field = crate::defaults::text("mesh_identity.row_kind_field");
+        let mut st = self.conn.prepare_cached(sql::MESH_MESSAGES_AFTER_SEQ)?;
+        let mut rows = st.query(params![id, after_seq])?;
+        while let Some(r) = rows.next()? {
+            let mut m = Self::message(r, 0)?;
+            if !kinds.is_empty()
+                && let Some(k) = m["storeSeq"].as_i64().and_then(|q| kinds.get(&q))
+                && let Value::Object(o) = &mut m
+            {
+                o.insert(kind_field.into(), Value::from(k.clone()));
+            }
+            if !f(m) {
+                break;
+            }
+        }
+        Ok(())
+    }
+
+    /// The newest store seq of partition `id`, `None` when it holds no row with a seq.
+    pub fn max_seq_of(&self, id: &str) -> Res<Option<i64>> {
+        let mut st = self.conn.prepare_cached(sql::MESH_MAX_SEQ_OF)?;
+        Ok(st.query_row(params![id], |r| r.get::<_, Option<i64>>(0))?)
+    }
+
+    /// The body of the newest heartbeat each sender left in partition `id` (a workspace's `working_on` line), by sender.
+    pub fn last_heartbeats_of(&self, id: &str) -> Res<std::collections::HashMap<String, String>> {
+        let mut st = self.conn.prepare_cached(sql::MESH_LAST_HEARTBEATS_OF)?;
+        let rows = st.query_map(params![id], |r| Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?.unwrap_or_default())))?;
+        Ok(rows.collect::<Result<std::collections::HashMap<_, _>, _>>()?)
+    }
+
+    /// [`sender_kinds`](Self::sender_kinds) for the rows past store seq `after_seq`.
+    fn sender_kinds_after(&self, id: &str, after_seq: i64) -> std::collections::HashMap<i64, String> {
+        let Ok(mut st) = self.conn.prepare_cached(sql::MESH_SENDER_KINDS_AFTER_SEQ) else { return std::collections::HashMap::new() };
+        let agent = crate::defaults::text("mesh_identity.kind_agent");
+        st.query_map(params![id, agent, after_seq], |r| Ok((r.get::<_, i64>(0)?, r.get::<_, String>(1)?)))
+            .map(|rows| rows.filter_map(Result::ok).collect())
+            .unwrap_or_default()
+    }
+
     /// The stored sender_kind of partition `id`'s rows that a declared identity sent, by seq; none on a store without the column.
     fn sender_kinds(&self, id: &str) -> std::collections::HashMap<i64, String> {
         let Ok(mut st) = self.conn.prepare_cached(sql::MESH_SENDER_KINDS_OF) else { return std::collections::HashMap::new() };
