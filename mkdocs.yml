@@ -72,6 +72,10 @@ not_in_nav: |
   DEVELOPMENT.md
   DEVSWARM-2.5.7-COMPAT-EVIDENCE.md
   specs/2026-08-02-devswarm-parent-decide-gate.md
+  EFFECTIVENESS-AUDIT-2026-10.md
+  KB-account-hotswap-gates.md
+  KB-hook-nudge-effectiveness.md
+  KB-hook-nudge-message-review.md
 
 validation:
   nav:
