@@ -66,7 +66,10 @@ fn transcript_tasks_rebuilds_the_task_list_in_map_order_for_each_variant() {
     assert_eq!(gone, json!({"tasks": [], "unreadable": true}));
     let quiet = format!("{h}/q.jsonl");
     std::fs::write(&quiet, "null\n").unwrap();
-    assert_eq!(serde_json::from_str::<Value>(&host_d::transcript_tasks(&quiet, "scan", 1000.0, 1000.0)).unwrap(), json!({"quiet": true}));
+    assert_eq!(
+        serde_json::from_str::<Value>(&host_d::transcript_tasks(&quiet, "scan", 1000.0, 1000.0)).unwrap(),
+        json!({"skippedRows": 1, "sawTaskActivity": false, "taskStoreReset": false, "inProgressCount": 0, "openTaskIds": []})
+    );
     // through the script API
     put_override(
         &h,
@@ -246,4 +249,30 @@ fn every_ahhost_function_the_api_scripts_call_is_registered() {
     let missing: Vec<_> = used.difference(&registered).collect();
     assert!(missing.is_empty(), "ahHost functions the API scripts call but the engine never registers: {missing:?}");
     assert!(used.len() > 40, "the scan found the API ({} names)", used.len());
+}
+
+#[test]
+fn transcript_tasks_excludes_replays_in_primary_and_widened_windows() {
+    let h = home("replay-tasks-438");
+    let p = format!("{h}/replay.jsonl");
+    let replay = json!({"type":"api-request-blob","messages":[{"type":"assistant","message":{"content":[
+        {"type":"tool_use","id":"ghost","name":"TaskCreate","input":{"subject":"ghost"}},
+        {"type":"tool_use","name":"TaskUpdate","input":{"taskId":"8","status":"completed"}}
+    ]}}]});
+    std::fs::write(&p, format!("{replay}\nnull\ninvalid JSON\n")).unwrap();
+    for variant in ["guard", "state", "scan"] {
+        let v: Value = serde_json::from_str(&host_d::transcript_tasks(&p, variant, 100000.0, 100000.0)).unwrap();
+        assert_eq!(v["skippedRows"], json!(2));
+        if variant == "scan" {
+            assert_eq!(v["sawTaskActivity"], json!(false));
+            assert_eq!(v["openTaskIds"], json!([]));
+        } else {
+            assert_eq!(v["tasks"], json!([]));
+        }
+    }
+    // Replay is outside the task tail but inside the widened activity window.
+    let padding = json!({"type":"assistant","message":{"content":"x".repeat(2000)}});
+    std::fs::write(&p, format!("{replay}\n{padding}\n")).unwrap();
+    let v: Value = serde_json::from_str(&host_d::transcript_tasks(&p, "scan", 1024.0, 100000.0)).unwrap();
+    assert_eq!(v["sawTaskActivity"], json!(false));
 }

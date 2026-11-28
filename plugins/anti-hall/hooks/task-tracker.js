@@ -476,7 +476,7 @@ try {
     },
   };
   emit = emit || !!primaryBlock;
-  if (emit && finalText) process.stdout.write(JSON.stringify(out) + '\n');
+  if (emit && finalText) fs.writeSync(1, JSON.stringify(out) + '\n');
   const mHome2 = emit && demandShown > 0 ? metricsHome() : null;
   if (mHome2) DD.recordDemand({ home: mHome2, sessionId: payload && payload.session_id, count: demandShown });
 } catch (_) {

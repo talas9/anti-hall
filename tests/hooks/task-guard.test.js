@@ -1115,3 +1115,18 @@ test('PRUNE ADVISORY: guards.pruneCompletedTasksAfter env override lowers the th
     h.cleanup();
   }
 });
+
+
+test('#438: request replay ghosts do not block Stop or produce completed advisories', () => {
+  const h = makeHome();
+  try {
+    const replay = { type: 'api-request-blob', messages: [todoWrite([
+      { id: 'ghost', content: 'replayed pending', status: 'pending' },
+      ...Array.from({ length: 8 }, (_, i) => ({ id: String(i), content: 'old task', status: 'completed' })),
+    ])] };
+    const tp = h.writeTranscript([replay]);
+    const r = testHook(HOOK, stopPayload(tp), { home: h.home });
+    assert.equal(r.status, 0);
+    assert.equal(r.stdout.trim(), '');
+  } finally { h.cleanup(); }
+});

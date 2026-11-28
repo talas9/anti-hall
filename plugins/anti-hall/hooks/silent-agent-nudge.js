@@ -490,7 +490,7 @@ function main() {
     extra: [sessionId ? stopAck.ackHint('silent-agent-nudge', signature, home, sessionId) : ''],
   });
 
-  process.stdout.write(JSON.stringify({ decision: 'block', reason }) + '\n');
+  fs.writeSync(1, JSON.stringify({ decision: 'block', reason }) + '\n');
   process.exit(0);
 }
 

@@ -87,8 +87,10 @@ fn title_only() {
 }
 
 #[test]
-fn a_line_that_is_json_null_is_not_understood() {
-    assert!(reconstruct(&["null"], Variant::Guard).is_err(), "Node throws on `entry.type` and the hook exits quietly");
+fn a_line_that_is_json_null_is_excluded() {
+    let facts = reconstruct(&["null"], Variant::Guard).unwrap();
+    assert_eq!(facts.skipped_rows, 1);
+    assert_eq!(facts.tasks.len(), 0);
 }
 
 #[test]
@@ -126,4 +128,30 @@ fn a_line_only_javascript_can_parse_is_unsure_not_skipped() {
     // a line both parsers reject is skipped
     assert!(!super::parse::maybe_valid_for_js("{\"x\": 1,"));
     assert!(reconstruct(&["{\"x\": 1,"], Variant::Guard).is_ok());
+}
+
+#[test]
+fn replay_rows_cannot_create_complete_or_delete_tasks() {
+    let live = json!({"type":"assistant","message":{"content":[{"type":"tool_use","id":"live","name":"TaskCreate","input":{"subject":"real"}}]}});
+    let result = json!({"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"live","content":"Task #1 created successfully: real"}]}});
+    let blob = json!({"type":"api-request-blob","messages":[live.clone(), {"type":"assistant","message":{"content":[
+        {"type":"tool_use","id":"ghost","name":"TaskCreate","input":{"subject":"ghost"}},
+        {"type":"tool_use","name":"TaskUpdate","input":{"taskId":"1","status":"completed"}},
+        {"type":"tool_use","name":"TaskUpdate","input":{"taskId":"8","status":"completed"}},
+        {"type":"tool_use","name":"TaskUpdate","input":{"taskId":"1","status":"deleted"}}
+    ]}}]});
+    let missing = json!({"message":live["message"]});
+    let unknown = json!({"type":"future-row","message":live["message"]});
+    let text = lines_of(&[live, result, blob, missing, unknown, Value::Null]);
+    let mut refs: Vec<&str> = text.iter().map(String::as_str).collect();
+    refs.push("bad JSON");
+    for variant in [Variant::Guard, Variant::State] {
+        let facts = reconstruct(&refs, variant).unwrap();
+        assert_eq!(facts.skipped_rows, 4);
+        assert_eq!(facts.tasks.len(), 1);
+        let task = facts.tasks.values().next().unwrap();
+        assert_eq!(task.id, "1");
+        assert_eq!(task.status.as_deref(), Some("pending"));
+        assert_eq!(task.content, "real");
+    }
 }

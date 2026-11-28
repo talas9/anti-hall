@@ -173,6 +173,10 @@ value = '^\s*Task\s*(?:#\S+)?\s*not\s+found\b'
 doc = "The input fields a task tool call may name its task id in, in order: the harness's `taskId`, then `id`, then `task_id`."
 value = ["taskId", "id", "task_id"]
 
+[taskstate.conversation_row_types]
+doc = "Only these transcript row types feed task reconstruction and task activity; API request replay blobs are excluded at the row boundary."
+value = ["user", "assistant"]
+
 [taskstate.tools_collect_keys]
 doc = "The object keys the tool-use collector descends into, in order (the Node `collectToolUses`)."
 value = ["content", "message", "messages", "tool_uses", "parts"]

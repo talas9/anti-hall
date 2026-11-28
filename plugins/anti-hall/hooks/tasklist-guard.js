@@ -831,6 +831,7 @@ function hasTaskActivityInText(text) {
     if (!trimmed) continue;
     let entry;
     try { entry = JSON.parse(trimmed); } catch (_) { continue; }
+    if (!require('./lib/task-state.js').isConversationRow(entry)) continue;
     const toolUses = collectToolUses(entry);
     for (const tu of toolUses) {
       const name = tu.name || '';
@@ -858,7 +859,7 @@ function scanTranscript(filePath, opts) {
   const progressAbsPath = opts && typeof opts.progressAbsPath === 'string' ? opts.progressAbsPath : null;
   const tail = readTranscriptTail(filePath);
   if (!tail) {
-    return { workCount: 0, sawTaskActivity: false, hasStaleInProgress: false, openTaskIds: [], lastWorkTs: 0, lastProgressWriteTs: 0, taskStoreReset: false };
+    return { skippedRows: 0, workCount: 0, sawTaskActivity: false, hasStaleInProgress: false, openTaskIds: [], lastWorkTs: 0, lastProgressWriteTs: 0, taskStoreReset: false };
   }
   const lines = tail.data.split(/\r?\n/);
   if (tail.truncated && lines.length > 0) lines.shift();
@@ -867,6 +868,7 @@ function scanTranscript(filePath, opts) {
   // A clipped window cannot prove the request count, so then nothing is exempt.
   const workOpts = { requested: singleRequestPaths(lines, opts && opts.cwd, !tail.truncated), cwd: opts && opts.cwd };
 
+  let skippedRows = 0; // Primary-tail parsed rows only, not malformed JSON or widened re-reads.
   let workCount = 0;
   let lastWorkTs = 0; // ms epoch of the NEWEST counted file-changing action (0 = unknown)
   let lastProgressWriteTs = 0; // ms epoch of the NEWEST write targeting progressAbsPath (0 = none seen)
@@ -908,6 +910,8 @@ function scanTranscript(filePath, opts) {
     } catch (_) {
       continue;
     }
+
+    if (!TS.isConversationRow(entry)) { skippedRows++; continue; }
 
     // TaskCreate results carry the harness-assigned numeric id.
     if (entry.type === 'user') {
@@ -1129,7 +1133,7 @@ function scanTranscript(filePath, opts) {
     if (wider && hasTaskActivityInText(wider.data)) sawTaskActivity = true;
   }
 
-  return { workCount, sawTaskActivity, hasStaleInProgress, inProgressCount, openTaskIds, lastWorkTs, lastProgressWriteTs, taskStoreReset };
+  return { skippedRows, workCount, sawTaskActivity, hasStaleInProgress, inProgressCount, openTaskIds, lastWorkTs, lastProgressWriteTs, taskStoreReset };
 }
 
 // checkResumeVerification({homeDir, sessionId, workCount, threshold}) ->

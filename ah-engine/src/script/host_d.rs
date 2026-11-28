@@ -73,7 +73,8 @@ fn task_json(t: &Task) -> Value {
 /// - `guard` and `state`: `{"tasks":[...], "windowReset":bool, "firstCreated":number|null, "truncated":bool}` in the order a
 ///   JavaScript `Map` would hold them, or `{"tasks":[],"unreadable":true}` when the file cannot be read;
 /// - `scan`: `{"sawTaskActivity", "taskStoreReset", "inProgressCount", "openTaskIds":[...]}`, or `{"quiet":true}` when the Node
-///   hook would end silently (a JSON `null` entry makes it throw), or `{"unreadable":true}` when the file cannot be read;
+///   hook would end silently, or `{"unreadable":true}` when the file cannot be read;
+/// - successful results include `skippedRows`: parsed non-conversation primary-tail rows; malformed JSON is not counted.
 /// - any variant: `{"unsure":true}` when a record or value only JavaScript could read exactly was met.
 pub fn transcript_tasks(path: &str, variant: &str, window: f64, wide: f64) -> String {
     let unsure = || json!({"unsure": true}).to_string();
@@ -87,6 +88,7 @@ pub fn transcript_tasks(path: &str, variant: &str, window: f64, wide: f64) -> St
             Err(_) => unsure(),
             Ok(None) => json!({"quiet": true}).to_string(),
             Ok(Some(s)) => json!({
+                "skippedRows": s.skipped_rows,
                 "sawTaskActivity": s.saw_task_activity,
                 "taskStoreReset": s.task_store_reset,
                 "inProgressCount": s.in_progress_count,
@@ -104,6 +106,7 @@ pub fn transcript_tasks(path: &str, variant: &str, window: f64, wide: f64) -> St
     }
     json!({
         "tasks": facts.tasks.values().map(task_json).collect::<Vec<_>>(),
+        "skippedRows": facts.skipped_rows,
         "windowReset": facts.window_reset,
         "firstCreated": if facts.first_created.is_finite() { json!(facts.first_created) } else { Value::Null },
         "truncated": truncated,

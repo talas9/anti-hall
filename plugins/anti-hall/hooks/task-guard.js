@@ -752,7 +752,9 @@ function unblockedOpen(openTasks, taskMap, runningRows) {
 function parseTasksFromFile(filePath) {
   const tail = readTranscriptTail(filePath);
   if (!tail) {
-    return new Map();
+    const empty = new Map();
+    Object.defineProperty(empty, 'skippedRows', { value: 0 });
+    return empty;
   }
   const lines = tail.data.split(/\r?\n/);
   // The first line of a mid-file window may be a truncated partial JSON line;
@@ -761,6 +763,7 @@ function parseTasksFromFile(filePath) {
     lines.shift();
   }
 
+  let skippedRows = 0; // Parsed non-conversation rows; malformed JSON is excluded.
   // provisional storage: tool_use_id -> task record
   const provisionalMap = new Map(); // tool_use_id -> { toolUseId, content, status }
   // final task map: numeric-or-fallback id -> task record
@@ -792,6 +795,8 @@ function parseTasksFromFile(filePath) {
     } catch (_) {
       continue;
     }
+
+    if (!require('./lib/task-state.js').isConversationRow(entry)) { skippedRows++; continue; }
 
     // Collect TaskCreate tool_results from user messages.
     // Shape: { type:"user", message:{ content:[ { type:"tool_result",
@@ -1038,6 +1043,7 @@ function parseTasksFromFile(filePath) {
     require('./lib/task-subject-backfill.js').backfillSubjects(taskMap, filePath, { windowReset, firstCreated });
   }
 
+  Object.defineProperty(taskMap, 'skippedRows', { value: skippedRows });
   return taskMap;
 }
 

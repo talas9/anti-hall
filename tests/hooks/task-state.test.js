@@ -73,3 +73,42 @@ test('reconstructTasks: a real TaskCreate result whose id is HIGHER than any see
   assert.ok(taskMap.has('3'), 'task #3 must stay tracked when the new id (#4) extends the numbering, not restarts it');
   assert.ok(taskMap.has('4'), 'the new task #4 must be tracked');
 });
+
+
+test('#438: only conversation rows contribute task state; count parsed excluded rows', () => {
+  const live = taskCreateCall('live', { subject: 'real' });
+  const replay = { type: 'api-request-blob', messages: [live,
+    taskCreateCall('ghost', { subject: 'ghost' }),
+    taskUpdateEntry('done', { taskId: '8', status: 'completed' }),
+    taskUpdateEntry('stale', { taskId: '1', status: 'completed' }),
+    taskUpdateEntry('delete', { taskId: '1', status: 'deleted' }),
+  ] };
+  const tail = tailOf([live, toolResult('live', 'Task #1 created successfully: real'), replay,
+    { message: live.message }, { type: 'future-row', message: live.message }, null]);
+  tail.data += '\nmalformed JSON';
+  const state = reconstructTasks(tail);
+  assert.equal(state.skippedRows, 4);
+  assert.deepEqual([...state.taskMap.keys()], ['1']);
+  assert.equal(state.taskMap.get('1').status, 'pending');
+  assert.equal(state.taskMap.get('1').content, 'real');
+  const completed = reconstructTasks(tailOf([live, toolResult('live', 'Task #1 created successfully: real'),
+    taskUpdateEntry('real_done', { taskId: '1', status: 'completed' }), replay]));
+  assert.equal(completed.open.length, 0);
+  assert.equal(completed.taskMap.get('1').status, 'completed');
+});
+
+test('#438: Node conversation row types mirror the editable engine default and pristine', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const { isConversationRow } = require('../../plugins/anti-hall/hooks/lib/task-state.js');
+  for (const dir of ['defaults', 'defaults.pristine']) {
+    const text = fs.readFileSync(path.join(__dirname, '../../plugins/anti-hall/engine', dir, 'task_guards.toml'), 'utf8');
+    const block = text.match(/\[taskstate\.conversation_row_types\]([\s\S]*?)(?=\n\[)/)[1];
+    const types = JSON.parse(block.match(/value = (\[[^\n]+\])/)[1]);
+    assert.deepEqual(types, ['user', 'assistant']);
+    for (const type of [...types, 'api-request-blob', 'system', 'future-row', undefined]) {
+      assert.equal(isConversationRow({ type }), types.includes(type));
+    }
+    assert.equal(isConversationRow(null), false);
+  }
+});

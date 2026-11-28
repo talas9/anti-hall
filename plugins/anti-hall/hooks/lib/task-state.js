@@ -12,7 +12,14 @@ const DD = require('./dispatch-demand.js');
 // resolution can see completed tasks). Each task carries owner + blockedBy so the
 // ACTIONABLE-NOW classification below matches task-guard exactly. Tolerant +
 // best-effort; a status-only TaskUpdate must NOT clear owner/blockedBy.
+// Mirrors taskstate.conversation_row_types in engine/defaults/task_guards.toml.
+// Apply only at transcript boundaries; nested tool_use blocks have other types.
+function isConversationRow(entry) {
+  return !!entry && (entry.type === 'user' || entry.type === 'assistant');
+}
+
 function reconstructTasks(tail) {
+  let skippedRows = 0;
   const lines = tail.data.split(/\r?\n/);
   if (tail.truncated && lines.length > 0) lines.shift();
   const provisional = new Map();
@@ -33,11 +40,9 @@ function reconstructTasks(tail) {
   for (const line of lines) {
     const t = line.trim();
     if (!t) continue;
-    // Cheap pre-filter: only task-tool lines (and their "Task #N created"
-    // results) matter here.
-    if (t.indexOf('Task') === -1 && t.indexOf('TodoWrite') === -1) continue;
     let entry;
     try { entry = JSON.parse(t); } catch (_) { continue; }
+    if (!isConversationRow(entry)) { skippedRows++; continue; }
     if (entry.type === 'user') {
       const c = entry.message && Array.isArray(entry.message.content) ? entry.message.content : [];
       for (const it of c) {
@@ -179,7 +184,7 @@ function reconstructTasks(tail) {
     });
   }
   // NOTE: callers that run the backfill AFTER this must recompute with openOf().
-  return { open: openOf(taskMap), taskMap, windowReset, firstCreated };
+  return { open: openOf(taskMap), taskMap, windowReset, firstCreated, skippedRows };
 }
 
 // ---- the ONE open / unknown view of a task map (every consumer uses these) ----
@@ -330,4 +335,4 @@ function collectTU(node) {
 }
 
 
-module.exports = { reconstructTasks, classifyOpen, normOwner, normBlockedBy, collectTU, unseenTask, gapsAfterUpdate, fillFromCreate, isOpenTask, isIdleCandidate, openOf, unknownOf, unknownNote };
+module.exports = { isConversationRow, reconstructTasks, classifyOpen, normOwner, normBlockedBy, collectTU, unseenTask, gapsAfterUpdate, fillFromCreate, isOpenTask, isIdleCandidate, openOf, unknownOf, unknownNote };

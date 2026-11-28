@@ -1,10 +1,9 @@
 //! Reconstruct the task list from the lines of a transcript tail.
 //!
 //! Mirrors `task-guard.js` `parseTasksFromFile` (variant [`Variant::Guard`]) and `lib/task-state.js` `reconstructTasks`
-//! (variant [`Variant::State`]). The two differ in: the State variant skips lines that do not contain `Task` or `TodoWrite`
-//! before parsing them, keeps and updates a task's description and subject, and builds its end-of-scan records differently;
-//! the Guard variant parses every line. Both keep a list epoch (a numbering restart, a `TaskList` that says "No tasks
-//! found", a TodoWrite) and drop a single id the harness reports as not found.
+//! (variant [`Variant::State`]). Both accept only configured conversation row types; replay and metadata rows are counted
+//! and skipped before descending into tool blocks. State keeps descriptions and subject updates; Guard keeps priority and time.
+//! Both keep list epochs (numbering restarts, an empty TaskList or TodoWrite) and drop ids reported as not found.
 use super::{
     Since, Task, TaskMap, Unknown, Variant, blocked_by_after_update, create_blocked_on, has_blocked_on_update, has_priority_update, norm_blocked_by,
     norm_owner, norm_priority, number_of_digits, priority_field, truthy_status,
@@ -22,6 +21,8 @@ use std::collections::HashMap;
 pub struct Facts {
     /// The tasks, in the order JavaScript's `Map` would hold them.
     pub tasks: TaskMap,
+    /// Parsed non-conversation rows excluded (malformed JSON is not counted).
+    pub skipped_rows: u64,
     /// A real list reset happened inside the window (no recovery from before it is possible).
     pub window_reset: bool,
     /// The lowest task number created inside the window (`Infinity` when none).
@@ -75,6 +76,11 @@ pub fn collect_tool_uses<'a>(node: &'a Value, out: &mut Vec<&'a Value>) {
             _ => {}
         }
     }
+}
+
+/// Gate transcript rows before recursively collecting nested tool blocks.
+pub fn is_conversation_row(entry: &Value) -> bool {
+    get(entry, "type").and_then(Value::as_str).is_some_and(|t| defaults::list("taskstate.conversation_row_types").contains(&t))
 }
 
 /// What the tool use `id` was: its name, the task id it named and its message id.
@@ -163,6 +169,7 @@ pub fn reconstruct(lines: &[&str], variant: Variant) -> R<Facts> {
     let mut group_base = 0f64;
     let mut window_reset = false;
     let mut first_created = f64::INFINITY;
+    let mut skipped_rows = 0;
     let mut calls: HashMap<String, Call> = HashMap::new();
 
     for line in lines {
@@ -170,17 +177,14 @@ pub fn reconstruct(lines: &[&str], variant: Variant) -> R<Facts> {
         if t.is_empty() {
             continue;
         }
-        if variant == Variant::State && !t.contains("Task") && !t.contains("TodoWrite") {
-            continue;
-        }
         let entry: Value = match serde_json::from_str(t) {
             Ok(v) => v,
             Err(_) if maybe_valid_for_js(t) => return Err(Unsure),
             Err(_) => continue,
         };
-        // `entry.type` on a JSON `null` throws in JavaScript.
-        if entry.is_null() {
-            return Err(Unsure);
+        if !is_conversation_row(&entry) {
+            skipped_rows += 1;
+            continue;
         }
         if get(&entry, "type").and_then(Value::as_str) == Some("user") {
             let content = get(&entry, "message").and_then(|m| get(m, "content")).and_then(Value::as_array);
@@ -367,7 +371,7 @@ pub fn reconstruct(lines: &[&str], variant: Variant) -> R<Facts> {
         }
     }
     resolve_provisional(&mut tasks, &prov, &result_ids, variant);
-    Ok(Facts { tasks, window_reset, first_created })
+    Ok(Facts { tasks, window_reset, first_created, skipped_rows })
 }
 
 /// `todo.blockedOn` as the TodoWrite record reads it: `todo.metadata.blockedOn` when not null, else `todo.blockedOn`.

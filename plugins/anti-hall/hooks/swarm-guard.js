@@ -218,7 +218,7 @@ function main() {
         'anti-hall swarm-guard: memory pressure critical (' + availMb + ' MB available of ' +
         totalMb + ' MB total, < 4%). Blocking new agent spawn to protect OS stability. ' +
         'Let running agents finish and free memory before spawning more.';
-      process.stdout.write(JSON.stringify({ decision: 'block', reason }) + '\n');
+      fs.writeSync(1, JSON.stringify({ decision: 'block', reason }) + '\n');
       process.exit(2);
     }
   } catch (_) {
@@ -277,7 +277,7 @@ function main() {
     // but must never feed the rate window (LOG_FILE) or extend
     // the critical section that guards it.
     logTrip(tripCount, toolLabel);
-    process.stdout.write(JSON.stringify({ decision: 'block', reason: blockReason }) + '\n');
+    fs.writeSync(1, JSON.stringify({ decision: 'block', reason: blockReason }) + '\n');
     process.exit(2);
   }
 

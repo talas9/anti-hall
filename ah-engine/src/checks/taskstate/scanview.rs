@@ -4,7 +4,7 @@
 //! number, a TodoWrite replaces the list), so it has its own pass. The work counting of the same hook pass is a rule and lives in
 //! the plugin's script, not here.
 use super::backfill::backfill;
-use super::parse::{Facts, collect_tool_uses, is_not_found, maybe_valid_for_js};
+use super::parse::{Facts, collect_tool_uses, is_conversation_row, is_not_found, maybe_valid_for_js};
 use super::tail::{lines_of, read_tail};
 use super::{Task, TaskMap, Unknown, norm_priority, number_of_digits, priority_field, truthy_status};
 use crate::checks::guardkit::jsre;
@@ -23,6 +23,8 @@ type CreateRec = (String, String, Option<String>);
 pub struct ScanTasks {
     /// A TaskCreate, TaskUpdate or TodoWrite was seen (also anywhere in the wide window when the tail held none).
     pub saw_task_activity: bool,
+    /// Parsed non-conversation rows excluded from the primary tail (not the widened scan).
+    pub skipped_rows: u64,
     /// A TaskGet or TaskUpdate came back "not found".
     pub task_store_reset: bool,
     /// Tasks in progress at an actionable priority.
@@ -87,6 +89,9 @@ fn has_task_activity_in_file(path: &str, window: u64) -> Option<R<bool>> {
             Err(_) if maybe_valid_for_js(t) => return Some(Err(Unsure)),
             Err(_) => continue,
         };
+        if !is_conversation_row(&entry) {
+            continue;
+        }
         let mut uses = Vec::new();
         collect_tool_uses(&entry, &mut uses);
         if uses.iter().any(|tu| get(tu, "name").and_then(Value::as_str).is_some_and(|n| names.contains(&n))) {
@@ -95,7 +100,7 @@ fn has_task_activity_in_file(path: &str, window: u64) -> Option<R<bool>> {
     }
 }
 
-/// The pass. `Ok(None)` is the quiet end (a JSON `null` entry makes the Node hook throw, so it decides nothing). `window` is
+/// The pass. Parsed non-conversation rows (including JSON null) are skipped and counted. `window` is
 /// the tail read, `wide` the widened window searched for task activity when a cut tail holds none.
 pub fn scan_tasks(path: &str, window: u64, wide: u64) -> R<Option<ScanTasks>> {
     let Some((data, truncated)) = read_tail(path, window) else { return Ok(Some(ScanTasks::default())) };
@@ -120,8 +125,9 @@ pub fn scan_tasks(path: &str, window: u64, wide: u64) -> R<Option<ScanTasks>> {
             Err(_) if maybe_valid_for_js(t) => return Err(Unsure),
             Err(_) => continue,
         };
-        if entry.is_null() {
-            return Ok(None);
+        if !is_conversation_row(&entry) {
+            s.skipped_rows += 1;
+            continue;
         }
         if get(&entry, "type").and_then(Value::as_str) == Some("user") {
             let content = get(&entry, "message").and_then(|m| get(m, "content")).and_then(Value::as_array);
@@ -277,7 +283,7 @@ pub fn scan_tasks(path: &str, window: u64, wide: u64) -> R<Option<ScanTasks>> {
             }
         }
     }
-    let mut facts = Facts { tasks, window_reset, first_created };
+    let mut facts = Facts { tasks, window_reset, first_created, skipped_rows: s.skipped_rows };
     if truncated {
         backfill(&mut facts, path, window)?;
     }

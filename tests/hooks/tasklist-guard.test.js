@@ -1797,3 +1797,30 @@ test('BLOCK: one request but writes land outside the named output, or a second r
     assert.ok(isBlock(r), `two requests: no exemption; stdout: ${r.stdout}`);
   } finally { h.cleanup(); }
 });
+
+
+test('#438: replayed task tools do not count as task tracking', () => {
+  const h = makeHome();
+  try {
+    const replay = { type: 'api-request-blob', messages: taskCreate('1', 'ghost', 'in_progress') };
+    const tp = h.writeTranscript([...edits(4), replay]);
+    const r = testHook(HOOK, stopPayload(tp, h.home), { home: h.home });
+    assert.equal(r.status, 0);
+    assert.equal(r.json && r.json.decision, 'block', r.stdout);
+    assert.match(r.json.reason, /NO tasks tracked/);
+  } finally { h.cleanup(); }
+});
+
+
+test('#438: widened activity scan ignores request replay outside primary tail', () => {
+  const h = makeHome();
+  try {
+    const replay = { type: 'api-request-blob', messages: taskCreate('1', 'ghost', 'in_progress') };
+    const padding = { type: 'assistant', message: { content: 'x'.repeat(2 * 1024 * 1024) } };
+    const tp = h.writeTranscript([replay, padding, ...edits(4)]);
+    const r = testHook(HOOK, stopPayload(tp, h.home), { home: h.home });
+    assert.equal(r.status, 0);
+    assert.equal(r.json && r.json.decision, 'block', r.stdout);
+    assert.match(r.json.reason, /NO tasks tracked/);
+  } finally { h.cleanup(); }
+});

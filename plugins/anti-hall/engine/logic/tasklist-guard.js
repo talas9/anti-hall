@@ -69,8 +69,7 @@ function tlToolUses(node, out) {
   }
 }
 
-// The work counting of the transcript pass: {work, lastWork, lastProgressWrite}, 'quiet' (a JSON null entry makes the Node hook
-// throw, so it decides nothing) or 'defer'.
+// The work counting of conversation rows: {work, lastWork, lastProgressWrite} or 'defer'.
 function tlScanWork(path, progressAbs, cx) {
   var out = { work: 0, lastWork: 0, lastProgressWrite: 0 };
   var lines = rp.lines(path, tlN('window_bytes'));
@@ -88,7 +87,7 @@ function tlScanWork(path, progressAbs, cx) {
     if (r.unsure) return 'defer';
     if (r.invalid) continue;
     var entry = r.v;
-    if (entry === null) return 'quiet';
+    if (!entry || ah.cfg('taskstate.conversation_row_types').indexOf(entry.type) < 0) continue;
     var ts = null;
     if (entry !== undefined && typeof entry.timestamp === 'string') {
       var ms = jx.isoMs(entry.timestamp);

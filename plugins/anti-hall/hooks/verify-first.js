@@ -158,7 +158,7 @@ function main() {
     },
   };
 
-  process.stdout.write(JSON.stringify(out) + '\n');
+  fs.writeSync(1, JSON.stringify(out) + '\n');
 }
 
 try {
