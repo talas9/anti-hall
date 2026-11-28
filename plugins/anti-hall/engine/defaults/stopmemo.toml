@@ -36,8 +36,8 @@ doc = "The environment variable that names the home directory the stamp paths st
 value = "HOME"
 
 [stopmemo.stamp_paths]
-doc = "Paths whose state is part of the key ({home}, {session_id}). A directory is stamped by the name, size and modification time of each entry in it, a file by its size and modification time; a missing path stamps as absent. Task lists and anti-hall settings."
-value = ["{home}/.claude/tasks/{session_id}", "{home}/.claude/tasks/session-{session_id}", "{home}/.anti-hall/settings.json", "{home}/.claude/settings.json"]
+doc = "Paths whose state is part of the key ({home}, {session_id}). A directory is stamped by the name, size and modification time of each entry in it, a file by its size and modification time; a missing path stamps as absent. Task lists, anti-hall settings, and the state the Stop checks that can block read outside the transcript: the runtime escalations and the runtime block counts (silent-agent-nudge), the devswarm summaries and parent-gate replies (devswarm-parent-gate)."
+value = ["{home}/.claude/tasks/{session_id}", "{home}/.claude/tasks/session-{session_id}", "{home}/.anti-hall/settings.json", "{home}/.claude/settings.json", "{home}/.anti-hall/agent-tracker/runtime-escalations.json", "{home}/.anti-hall/ah-engine/runtime-block-stops.json", "{home}/.anti-hall/devswarm/summaries", "{home}/.anti-hall/devswarm/parent-gate"]
 
 [stopmemo.outcome_hit]
 doc = "Metric stopmemo outcome label: a Stop was answered from the memo."

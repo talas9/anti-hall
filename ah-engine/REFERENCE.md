@@ -8495,6 +8495,11 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_write.op_sibling` | `sibling` |  |  | The `k` of a read-receipt op that moves a sibling partition's cursor (Node's). |
 | `mesh_write.origin_ndjson` | `ndjson` |  |  | The `origin` of a row that came from the NDJSON inbox. |
 | `mesh_write.origin_store` | `store` |  |  | The `origin` of a store row in a union read. |
+| `mesh_write.owner_chat_body_max` | `1200` |  |  | Most characters of an owner chat row the summary carries for its order. |
+| `mesh_write.owner_chat_cap` | `5` |  |  | Most owner chat rows (the owner's broadcasts and directs, GH #862) a summary hands a Primary as orders; the newest are kept. |
+| `mesh_write.owner_chat_flag` | `owner` |  |  | The member of a pendingQuestions entry that marks it as an owner chat row (an order, answered by a reply to the owner's mailbox). |
+| `mesh_write.owner_chat_max_age_ms` | `86400000` |  |  | An owner chat row older than this (ms) is no longer handed out as an order (a day); the owner is not left holding a Stop forever. |
+| `mesh_write.owner_chat_scan_rows` | `200` |  |  | How many of the newest rows of the broadcast partition and of the Primary's own partition a summary scans for owner chat rows. |
 | `mesh_write.pid_reuse_margin_ms` | `1000` |  |  | A process whose start time is later than the recorded one by more than this is a reused pid (PID_REUSE_MARGIN_MS). |
 | `mesh_write.plan_activity_keep` | `5` |  |  | How many recent activity signatures a plan keeps (ACTIVITY_KEEP). |
 | `mesh_write.plan_bad_status_text` | `--status must be one of {list}` |  |  | The error of `heartbeat --status S` when S is not an allowed status; `{list}` is the allowed statuses. |
@@ -14870,6 +14875,51 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `overload.what_shed_mode` | `shed_mode` |  |  | Label of metric overload (what): a request served in shed mode because the adaptive limit was at its floor. |
 | `overload.what_timed_out` | `timed_out` |  |  | Label of metric overload (what): a request served in shed mode because it waited in the queue past its class bound (overload.shed_wait_ms_by_class). |
 
+### prefilter.toml / prefilter
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `prefilter.auto_disable` | `1` |  |  | 1 = a shadow disagreement latches the prefilter off for good: it writes prefilter.latch_file in the engine's state directory, read at every start (delete that file to re-arm it). 0 = a disagreement is only logged and counted. |
+| `prefilter.deny_by_check` | `1 entries` |  |  | Per check: a case-insensitive pattern whose match anywhere in the raw command runs that check. git: a push, an alias, eval or exec (its literal-call, push pre-pass and alias scans read them in any word, quoted or not); an assignment of a variable that changes what git or the shell runs or where home is (GIT_*, *PAGER, *EDITOR, PATH, IFS, BASH_ENV, ENV, LD_*, DYLD_*, PS4, PROMPT_COMMAND, HOME, ZDOTDIR, SHELLOPTS, BASHOPTS; any other assignment is left to the shell-word reader, which refuses one in front of a command and every one of dispatch.capacity_hold parsed.assign_deny); a git `-c` value, which it scans as a command; the git options that write a file or run a program (--output, --upload-pack, --exec, --ext-diff, --config-env); the reader options that run a program (`rg --pre`, `sort --compress-program`) or write a file (sort -o, tree -o). |
+| `prefilter.deny_chars` | `` |  |  | Characters whose presence anywhere in the raw command (after prefilter.inert_redirs) runs every check, before the command is parsed. Empty by default: a substitution, a subshell, a process substitution, a backtick or an unquoted ( ) < > is refused by the shell-word reader itself (dispatch.capacity_hold parsed, the reading of the capacity hold's read exemption), and a redirection by prefilter.redirect_chars. |
+| `prefilter.enabled` | `1` |  |  | 1 = a provably read-only Bash call skips the checks listed in prefilter.safe_cmds_by_check (answered allow, counted as metric prefilter outcome skip); 0 = every check runs on every call, as before. |
+| `prefilter.engine_ok_by_check` | `1 entries` |  |  | Per check: 1 = the engine's own program (dispatch.capacity_hold parsed.programs, any verb) counts as a listed command word for that check. The git guard reads nothing in an engine call that prefilter.deny_by_check does not already send to it (a push, a commit, a git -c value in a message). |
+| `prefilter.events` | `PreToolUse` |  |  | The events the prefilter applies to. |
+| `prefilter.field` | `command` |  |  | The tool_input field that holds the command. |
+| `prefilter.inert_redirs` | `(^\|[ \t])(?:[0-9]?>&[0-9]-?\|&>[ \t]*/dev/null\|[0-9]?>>?[ \t]*/dev/null\|[0-9]?...` |  |  | A redirection that writes nothing (fd duplication, /dev/null), as a pattern with the text before it as group 1 and after it as group 2: it is read as a space, so the rest of the command is judged without it. Anything else that redirects runs the checks (prefilter.deny_chars). Empty = no redirection passes. |
+| `prefilter.latch_file` | `prefilter-latched` |  |  | The marker file (in the engine's state directory) whose presence keeps the prefilter off; it holds the check whose shadow run disagreed. |
+| `prefilter.lead_only_words_by_check` | `1 entries` |  |  | Per check: words that may stand in the raw command only as the command word of an element (counted as whole words, see prefilter.word_chars). git: a `git` or `gh` inside a quoted string or an argument (`echo "x; git tag -m .."`) can be read by the git guard's quote-blind backstop as a command of its own, so it runs the check. |
+| `prefilter.log_command_chars` | `200` |  |  | How many characters of the command a disagreement's log line shows. |
+| `prefilter.log_kind` | `prefilter_disagree` |  |  | The health-log kind of a shadow disagreement. |
+| `prefilter.msg_disagree` | `prefilter: the {check} check spoke on a call the prefilter passed as read-onl...` |  |  | The health-log line of a shadow disagreement: the full check said something on a call the prefilter would have allowed. {check}, {command}. |
+| `prefilter.outcome_agree` | `agree` |  |  | Metric prefilter outcome label: a shadow run of the full check allowed quietly, as the prefilter would have. |
+| `prefilter.outcome_disagree` | `disagree` |  |  | Metric prefilter outcome label: a shadow run of the full check blocked or advised where the prefilter would have allowed. |
+| `prefilter.outcome_run` | `run` |  |  | Metric prefilter outcome label: the prefilter was on for the check but could not vouch for the call, so the full check ran. |
+| `prefilter.outcome_skip` | `skip` |  |  | Metric prefilter outcome label: the check was skipped. |
+| `prefilter.redirect_chars` | `<>` |  |  | Characters that, in the words the shell-word reader kept for a part (quotes removed), mark a redirection the prefilter cannot vouch for (`> file`, `< file`, or the same character quoted inside an argument): the checks run. An engine-local verb with any redirection left after prefilter.inert_redirs runs them too. |
+| `prefilter.safe_cmds_by_check` | `1 entries` |  |  | Per check: the POSITIVE list of command words a call may consist of for that check to be skipped. A word off the list (or spelled with a path other than a dispatch.capacity_hold parsed.bin_dirs directory) runs the check. git: readers and formatters that run no other program, write no file without a redirection (denied by prefilter.deny_chars) and are none of git.copy_verbs, git.wrappers, git.shell_verbs, tee, truncate, dd, sed, perl, rm, awk, xargs, find or env, so the git guard has nothing to scan. A check with no row is never skipped. |
+| `prefilter.shadow_permille` | `20` |  |  | Per mille of the calls the prefilter passes that run the full check anyway (its answer is the one given) and are compared: any block or advisory there is a disagreement. 0 = no shadow sample. |
+| `prefilter.sub_cmds_by_check` | `1 entries` |  |  | Per check, per command word: the subcommands (one or more words) that make a call of that command a plain read for the check (gh: the reads, none of which publishes text the git guard scans for credit; git: the read-only builtins, none of which an alias can shadow, none of git.backstop_commit_subs or git.commit_creating, and none whose options run a program or a pager the git guard reads: no config, fetch, ls-remote, grep, push). The command word itself must not be on prefilter.safe_cmds_by_check. |
+| `prefilter.sub_flag_opts_by_check` | `1 entries` |  |  | Per check, per command word of prefilter.sub_cmds_by_check: the options in front of the subcommand that take no value. |
+| `prefilter.sub_value_opts_by_check` | `1 entries` |  |  | Per check, per command word of prefilter.sub_cmds_by_check: the options in front of the subcommand that take the next word as their value (git -C <dir>). |
+| `prefilter.tools` | `Bash` |  |  | The tools the prefilter applies to. |
+| `prefilter.word_chars` | `_-./~` |  |  | Besides ASCII letters and digits, the characters that belong to a word when prefilter.lead_only_words_by_check counts words in the raw command (`.git` and `git-x` are other words than `git`). |
+
+### stopmemo.toml / stopmemo
+
+| Key | Default | Env override | Unit | What it is |
+|---|---|---|---|---|
+| `stopmemo.enabled` | `1` |  |  | 1 = a repeated Stop whose key is unchanged and whose last answer was quiet is answered from the memo; 0 = every Stop runs its checks. |
+| `stopmemo.events` | `Stop` |  |  | The events the memo applies to. |
+| `stopmemo.home_env` | `HOME` |  |  | The environment variable that names the home directory the stamp paths start from. |
+| `stopmemo.max_sessions` | `64` |  |  | How many sessions the memo keeps (the oldest is dropped past it). |
+| `stopmemo.outcome_hit` | `hit` |  |  | Metric stopmemo outcome label: a Stop was answered from the memo. |
+| `stopmemo.outcome_miss` | `miss` |  |  | Metric stopmemo outcome label: a Stop ran its checks (no memo, or its key changed). |
+| `stopmemo.outcome_stored` | `stored` |  |  | Metric stopmemo outcome label: a quiet Stop answer was remembered. |
+| `stopmemo.stamp_paths` | `8 items` |  |  | Paths whose state is part of the key ({home}, {session_id}). A directory is stamped by the name, size and modification time of each entry in it, a file by its size and modification time; a missing path stamps as absent. Task lists, anti-hall settings, and the state the Stop checks that can block read outside the transcript: the runtime escalations and the runtime block counts (silent-agent-nudge), the devswarm summaries and parent-gate replies (devswarm-parent-gate). |
+| `stopmemo.tail_bytes` | `65536` |  |  | How many bytes at the end of the transcript are hashed into the key (its length is always part of it). |
+| `stopmemo.ttl_ms` | `30000` |  |  | How long one remembered answer stays valid, in milliseconds (state no stamp covers, such as time passing, cannot outlive this). |
+
 ### mem.toml / mem
 
 | Key | Default | Env override | Unit | What it is |
@@ -15201,6 +15251,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `devswarm_parent.own_read_unanswered` | `{prefix}you have already read your parent/peer messages, but {n} remain UNANS...` |  |  | The own-inbox segment when everything is read but questions remain. Placeholders: {prefix}, {n}, {askers}, {extra}, {cli}. |
 | `devswarm_parent.own_reply_clause` | ` READING IS NOT SUFFICIENT: {text} from {askers}{extra} — you must DECIDE fro...` |  |  | The question clause of the own-inbox segment. Placeholders: {text}, {askers}, {extra}, {cli}. |
 | `devswarm_parent.own_unread` | `{prefix}you have {count} unread parent/peer message(s) addressed to YOU (the ...` |  |  | The Primary's own-inbox segment when unread mail is waiting. Placeholders: {prefix}, {count}, {cli}, {id}. |
+| `devswarm_parent.owner_chat_rank` | `5` |  |  | The rank (segment order, low first) of the owner chat order among the prompt's segments: before every roster segment. |
+| `devswarm_parent.owner_chat_row` | `⚠️ Do now: the owner wrote in the chat: {body}. Reply in the chat with `{cli}...` |  |  | The order for one owner chat row (GH #862), shown every prompt until the Primary answers it in the chat. Placeholders: {body} (the owner's text), {cli} (the engine CLI path), {seq} (the store seq to reply to). |
 | `devswarm_parent.parked_hide_signals` | `stall` |  |  | Straying signals hidden on parked rows. Burn remains visible until windowed activity can prove it stale. |
 | `devswarm_parent.parked_max_wait_min` | `5 entries` |  | min | Maximum human wait without activity, minutes. Maximum human-wait age in minutes since transcript activity before stale-status and not-draining signals return. Done and held facts remain authoritative; missing or invalid transcript state never proves a wait. Shared by Claude/OMC and Codex/OMX. |
 | `devswarm_parent.parked_metric_source` | `parked_roster` |  |  | Source label of the stale_flag_on_parked waste event. No token saving is estimated. |
@@ -16748,6 +16800,8 @@ Text lives in `messages.toml` (and `git.toml` for the git check's block messages
 | `compact_advice_deferred_omc` | counter | checks |  | Compact recommendations compact-advice-guard let through because OMC's context guard orders /compact (guards.compactAdviceDeferToOmc). |
 | `edit_guard_handover_redirected` | counter | blocks | tool | New handovers outside anti-hall's handover folder that edit-guard blocked with the session handover path (guards.handoverRedirect), by tool. |
 | `usage_snapshot_stale` | counter | readings | reader | Usage readings ignored because the snapshot was older than ctxbudget.usage_max_stale_ms (GH #981), by reader. |
+| `prefilter` | counter | calls | check, outcome | PreToolUse prefilter outcomes (#969 R1, defaults/prefilter.toml), by check and outcome (skip, run, agree, disagree). |
+| `stopmemo` | counter | calls | event, outcome | Stop memo outcomes (#857 R5/R6, defaults/stopmemo.toml), by event and outcome (hit, miss, stored). |
 | `devswarm_archived_child_kept` | counter | workspaces | reason | Marker-archived children still named by a nudge because the marker is no proof (devswarm.skipArchivedChildren on), by reason (descriptor_newer: both without a session id and the descriptor was written after the marker; session_unknown: the session ids differ or only one side has one). |
 | `devswarm_archived_child_skipped` | counter | workspaces | check, reason | Children left out of a DevSwarm nudge because they are explicitly archived (devswarm.skipArchivedChildren), by check (attention, archive_ready, stale_registry) and reason (app, marker). |
 | `devswarm_inbox_advisory_suppressed` | counter | advisories | kind | Unread-inbox advisories not repeated, by kind (child, own): the unread set was unchanged within the cooldown (#709). |

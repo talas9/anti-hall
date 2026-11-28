@@ -48,6 +48,39 @@ fn a_repeat_with_unchanged_state_hits_and_a_new_transcript_row_misses() {
     assert!(recall(&m, &p, key(&m, &p)).is_none(), "a new row misses");
 }
 
+/// Review P1-1: the state the blocking Stop checks read outside the transcript is part of the key, so a change to any of it is a miss.
+#[test]
+fn a_change_to_blocking_check_state_misses() {
+    let (_t, p) = setup("blockstate");
+    let home = crate::testtmp::path(format!("ah-stopmemo-blockhome-{}", std::process::id()));
+    crate::discard::harmless(std::fs::remove_dir_all(&home)); // keep: this test's own scratch dir, named by pid
+    let old = std::env::var_os("HOME");
+    // SAFETY: test-only env mutation. Only the stamp below reads HOME, on this thread, inside this window; no lock serialises other
+    // tests' reads of HOME (the same open gap as the crate's other test-only env mutations).
+    unsafe { std::env::set_var("HOME", &home) };
+    let m = meta();
+    let mut seen = vec![key(&m, &p)];
+    for rel in [
+        ".anti-hall/agent-tracker/runtime-escalations.json",
+        ".anti-hall/ah-engine/runtime-block-stops.json",
+        ".anti-hall/devswarm/summaries/k.json",
+        ".anti-hall/devswarm/parent-gate/k.json",
+    ] {
+        let f = home.join(rel);
+        std::fs::create_dir_all(f.parent().unwrap()).unwrap();
+        std::fs::write(&f, "{}").unwrap();
+        let k = key(&m, &p);
+        assert_ne!(seen.last(), Some(&k), "{rel} appearing changes the key");
+        seen.push(k);
+    }
+    match old {
+        // SAFETY: restores the value set above, under the same single-reader condition.
+        Some(o) => unsafe { std::env::set_var("HOME", o) },
+        // SAFETY: as above.
+        None => unsafe { std::env::remove_var("HOME") },
+    }
+}
+
 #[test]
 fn a_task_change_misses() {
     let (_t, p) = setup("task");
