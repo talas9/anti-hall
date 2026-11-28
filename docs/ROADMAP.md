@@ -14,37 +14,34 @@ Releases are listed in the order they ship: **R1 → v0.301 → v0.302 → v1.0 
 
 ## Status
 
-Engine **0.3.0** and plugin **0.303.0** are the next release; engine 0.2.1 and plugin 0.301.1 are the last tagged ones. Version authority is `plugins/anti-hall/.claude-plugin/plugin.json`. The R0 milestone (engine back online) is done and superseded by these releases. The effectiveness investigation ([#307](https://github.com/talas9/anti-hall/issues/307)) is the active plan for guard quality.
+Updated 2026-11-28. Last releases: plugin **0.303.0** with engine **0.3.32** (both on `main`). Next: plugin **0.304.0** with engine **0.3.33**. Version authority is `plugins/anti-hall/.claude-plugin/plugin.json`.
 
-**Shipped to `dev` since the audit:** #372 (hardening bar: parent binding only for a hand-started serve), #373 (flip-parity and fail-closed bars follow the no-Node fail-open contract; closed guards proven to block by mutation), #374 (breaker and corrupt-socket bars rewritten for the down-marker contract; stronger prune wording), #375 (capped prune Stop-block and a P0-P3 priority tag check in the task-list guard; first instance of [#377](https://github.com/talas9/anti-hall/issues/377)).
+**Shipped in 0.303.0 / engine 0.3.32** (details in [CHANGELOG](../CHANGELOG.md)):
 
-**Open PRs:** #380 (strict broken-engine notice matrix for [#183](https://github.com/talas9/anti-hall/issues/183); bounded defaults-reload retention for [#171](https://github.com/talas9/anti-hall/issues/171)), #381 (claim-evidence guard precision, [#376](https://github.com/talas9/anti-hall/issues/376) and [#336](https://github.com/talas9/anti-hall/issues/336)), #382 (regression test for stale or swapped defaults in the deploy routine). CI pending on all three.
+- Mesh wakes only the addressee: a broadcast or a mention wakes only the workspaces it names, and read and ack use an exact delivered boundary.
+- Sender identities: the owner (`admin`) and the engine acting for the owner (`ah-engine`) rank above the Primary, and no agent can impersonate either.
+- Overload: a priority queue with adaptive limits on the daemon request path, so control verbs and guards keep answering under load ([#969](https://github.com/talas9/anti-hall/issues/969)).
+- Crash-latch fixes: an exit under load no longer latches the crash-loop cooldown, and a fresh cooldown holds risky calls.
+- Fewer false "too busy" holds: under load the capacity fallback passes read-only and local commands ([#969](https://github.com/talas9/anti-hall/issues/969), [#971](https://github.com/talas9/anti-hall/issues/971)).
+- Workspace child duties and Stop-gate loops ([#983](https://github.com/talas9/anti-hall/issues/983)), the task list window ([#982](https://github.com/talas9/anti-hall/issues/982)), recurring-misfire tracking ([#972](https://github.com/talas9/anti-hall/issues/972)), OMC coexistence ([#981](https://github.com/talas9/anti-hall/issues/981)).
+- Memory: kept transcript walks no longer clone ([#173](https://github.com/talas9/anti-hall/issues/173)), SQLite allocates through jemalloc ([#637](https://github.com/talas9/anti-hall/issues/637)), and the leak sentinel no longer reads interpreter bursts as a leak ([#854](https://github.com/talas9/anti-hall/issues/854)). An invalid settings regex no longer aborts the daemon ([#957](https://github.com/talas9/anti-hall/issues/957)).
 
-**Completed on `dev`** (PR numbers):
+**In flight: 0.304.0 / engine 0.3.33:**
 
-- [#308](https://github.com/talas9/anti-hall/issues/308) Codex hook launchers rewritten to `ah-hook` (PR #320); [#309](https://github.com/talas9/anti-hall/issues/309) block caps reset per owner turn (PR #319); [#317](https://github.com/talas9/anti-hall/issues/317) false blocks on read-only remote commands and owner-wait tasks (PR #321).
-- Token waste ([#338](https://github.com/talas9/anti-hall/issues/338)): PRs #342, #343, #345, #348, #358, #359. Guard false positives ([#336](https://github.com/talas9/anti-hall/issues/336)): PRs #321, #342, #343, #348. Delivery counts and priority-ordered output ([#312](https://github.com/talas9/anti-hall/issues/312), [#311](https://github.com/talas9/anti-hall/issues/311)): PR #337. Rules for uncovered classes 1 and 4, Claude port only ([#313](https://github.com/talas9/anti-hall/issues/313)): PR #339.
-- CI hygiene ([#328](https://github.com/talas9/anti-hall/issues/328)): fuzz build triple fix (#205), #189, and the `dev` short gate (#346) is green. Memory sentinel fix for [#21](https://github.com/talas9/anti-hall/issues/21): PR #356. Dependabot fix PR #298.
+- Mesh phase 2: rooms, the owner's admin mailbox, a coalesce window for wake bursts, faster mid-read wakes, and the parent-gate phantom-unread fix.
+- Field fixes from 0.3.32 ([#1003](https://github.com/talas9/anti-hall/issues/1003)): defect CLI, the stalled-workspace false positive, the task window, guard texts.
 
-**R1 exit-gate status: not met.** Counted from the 2026-10-28 audit of the open P0/P1 issues (33 issues: 4 P0, 29 P1):
+**Next, in order:**
 
-| Audit verdict | Count |
-|---|---|
-| Resolved (fix merged, issue open until the release train reaches `main`; two held open for a test pass) | 3 |
-| Partial | 17 |
-| Still open | 8 |
-| Cannot tell (no linked commit or PR found) | 5 |
-| Total | 33 |
+1. Crate split of the engine into a Cargo workspace ([#1010](https://github.com/talas9/anti-hall/issues/1010)).
+2. Faster checks: prefilter hooks and an incremental Stop ([#1011](https://github.com/talas9/anti-hall/issues/1011)), together with late replies under load ([#22](https://github.com/talas9/anti-hall/issues/22), [#628](https://github.com/talas9/anti-hall/issues/628)).
+3. Doctor warnings ([#862](https://github.com/talas9/anti-hall/issues/862), [#741](https://github.com/talas9/anti-hall/issues/741), [#883](https://github.com/talas9/anti-hall/issues/883)).
+4. Mesh follow-ups after phase 2 (group [#327](https://github.com/talas9/anti-hall/issues/327): [#796](https://github.com/talas9/anti-hall/issues/796), [#942](https://github.com/talas9/anti-hall/issues/942), [#950](https://github.com/talas9/anti-hall/issues/950)).
+5. Default-off switches that shipped and wait to be measured and turned on: Stop additionalContext ([#540](https://github.com/talas9/anti-hall/issues/540)), notice-turn skip ([#588](https://github.com/talas9/anti-hall/issues/588)), drop-by-priority context ([#592](https://github.com/talas9/anti-hall/issues/592)).
 
-So 33 of 33 P0/P1 issues are still open; none meets the "0 open P0/P1" gate. GitHub closes issues only from the default branch, so issues whose fix is on `dev` stay open until the release train reaches `main`.
+**Open issues:** 268, none waiting for triage. P0/P1: 113 (23 P0, 90 P1). The R1 exit gate (0 open P0/P1) is not met. Code-scanning alerts are tracked one issue per alert under [#329](https://github.com/talas9/anti-hall/issues/329); two are critical ([#1005](https://github.com/talas9/anti-hall/issues/1005), [#1006](https://github.com/talas9/anti-hall/issues/1006)).
 
-**Still open at the head of the list:** runaway token burn ([#270](https://github.com/talas9/anti-hall/issues/270), guards shipped, effect not yet measured); guards that fail open ([#201](https://github.com/talas9/anti-hall/issues/201)); no/broken engine passes through ([#183](https://github.com/talas9/anti-hall/issues/183)); code-scanning alerts ([#224](https://github.com/talas9/anti-hall/issues/224), [#329](https://github.com/talas9/anti-hall/issues/329)); Codex parity gaps ([#314](https://github.com/talas9/anti-hall/issues/314)); work-method review ([#341](https://github.com/talas9/anti-hall/issues/341)); late hook replies ([#22](https://github.com/talas9/anti-hall/issues/22)); memory growth ([#21](https://github.com/talas9/anti-hall/issues/21)); runtime cutover ([#76](https://github.com/talas9/anti-hall/issues/76)).
-
-**CI:** `main` is 159 commits behind `dev`, so the scheduled nightly and fuzz runs on `main` are still red; the fixes (such as #205) are on `dev` only. This is expected to clear when the release train (dev to main) lands. Pending before or with that train: a release version mismatch fix and a timing fix for the `check_mem` test. Nightly failures are tracked in [#360](https://github.com/talas9/anti-hall/issues/360) and [#163](https://github.com/talas9/anti-hall/issues/163). On [#360](https://github.com/talas9/anti-hall/issues/360): the hardening-bar root cause and the stale oracles are fixed (#372, #373, #374); remaining are the script-latency timing flake and parallel flakiness in the task e2e and DevSwarm wire tests.
-
-**Release gate:** the full test pack runs on the dev-to-main PR; the release does not ship on a partial run.
-
-**P0 list (in order):** (1) finish the merge wave (#380, #381, #382); (2) clear the release-gate reds ([#360](https://github.com/talas9/anti-hall/issues/360) items above); (3) live rebuild of the engine; (4) close-out evidence for [#270](https://github.com/talas9/anti-hall/issues/270), [#201](https://github.com/talas9/anti-hall/issues/201), [#191](https://github.com/talas9/anti-hall/issues/191) and [#183](https://github.com/talas9/anti-hall/issues/183).
+**Board:** the Now view is `status:in-progress`, Next is `status:accepted` and Backlog is `status:triage`. `Target` holds the release.
 
 ### Priority scale
 
@@ -57,8 +54,8 @@ So 33 of 33 P0/P1 issues are still open; none meets the "0 open P0/P1" gate. Git
 
 ### Current order
 
-1. Run the release train from `dev` to `main`, then confirm the scheduled CI turns green and the live checks pass.
-2. [#310](https://github.com/talas9/anti-hall/issues/310) → [#312](https://github.com/talas9/anti-hall/issues/312) → [#311](https://github.com/talas9/anti-hall/issues/311) → [#313](https://github.com/talas9/anti-hall/issues/313) → [#314](https://github.com/talas9/anti-hall/issues/314) → [#316](https://github.com/talas9/anti-hall/issues/316) → [#225](https://github.com/talas9/anti-hall/issues/225) → [#315](https://github.com/talas9/anti-hall/issues/315)
+1. Ship 0.304.0 / engine 0.3.33 (`dev` to `main`), then check the field data for the in-progress issues.
+2. The "Next" list above.
 3. The issue groups below, highest priority first.
 
 ### Issue groups (children are tracked in each parent issue)
