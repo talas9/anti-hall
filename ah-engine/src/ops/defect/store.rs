@@ -505,6 +505,14 @@ fn outcome_only(word: &str) -> J {
     J::Obj(obj(vec![(defaults::text("defect.key_outcome"), J::Str(word.into()))]))
 }
 
+/// An outcome word that also names the values the field accepts, so a rejected report says what to type instead.
+fn outcome_listing(word: &str, key: &str, valid: Vec<&str>) -> J {
+    J::Obj(obj(vec![
+        (defaults::text("defect.key_outcome"), J::Str(word.into())),
+        (key, J::Arr(valid.into_iter().map(|v| J::Str(v.into())).collect())),
+    ]))
+}
+
 fn now_iso() -> String {
     date::to_iso(date::now_ms()).unwrap_or_default()
 }
@@ -512,10 +520,10 @@ fn now_iso() -> String {
 /// `report(input)`
 pub fn report(input: &ReportInput, home: &str) -> Result<J, Defer> {
     let Some(cls) = input.class.as_deref().filter(|c| defaults::list("defect.class_enum").contains(c)) else {
-        return Ok(outcome_only(defaults::text("defect.out_invalid_class")));
+        return Ok(outcome_listing(defaults::text("defect.out_invalid_class"), defaults::text("defect.key_valid_classes"), defaults::list("defect.class_enum")));
     };
     let Some(sev) = input.sev.as_deref().filter(|c| defaults::list("defect.severity_enum").contains(c)) else {
-        return Ok(outcome_only(defaults::text("defect.out_invalid_severity")));
+        return Ok(outcome_listing(defaults::text("defect.out_invalid_severity"), defaults::text("defect.key_valid_severities"), defaults::list("defect.severity_enum")));
     };
     let mut tr = Collector::default();
     let opt = match optional_fields(input.component.as_deref(), input.cause.as_deref(), input.regression_of.as_deref(), &mut tr)? {

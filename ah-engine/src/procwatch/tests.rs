@@ -670,6 +670,37 @@ fn growth_is_named_in_the_advisory_when_a_volume_is_low() {
 }
 
 #[test]
+fn reclaim_locations_expand_wildcard_segments_and_the_scan_deletes_nothing() {
+    let h = scratch("reclaim");
+    for d in [".cargo/registry/cache", ".devswarm/scheduled-for-deletion/a", "Library/Developer/Xcode/DerivedData/App-xyz"] {
+        std::fs::create_dir_all(h.join(d)).expect("dirs");
+    }
+    std::fs::write(h.join(".cargo/registry/cache/x.crate"), vec![1u8; 1 << 20]).expect("file");
+    assert!(disk::wild("App-*", "App-xyz") && disk::wild("*-wt", "ws-wt") && disk::wild("a*c*e", "abcde") && !disk::wild("App-*", "Other") && !disk::wild("a*c", "ab"));
+    let got = disk::expand(&h, "Library/Developer/Xcode/DerivedData/*");
+    assert_eq!(got, vec![h.join("Library/Developer/Xcode/DerivedData/App-xyz")]);
+    assert!(disk::expand(&h, ".cargo/registry/nope").is_empty());
+    // the shipped minimum is 500 MB: a 1 MB cache is not named, and nothing is touched
+    assert!(disk::reclaim(&h).is_empty());
+    assert!(h.join(".cargo/registry/cache/x.crate").exists(), "nothing was deleted");
+}
+
+#[test]
+fn reclaimable_locations_are_named_in_the_advisory_with_their_commands() {
+    let h = scratch("reclaim-adv");
+    let dir = h.join(".anti-hall/ah-engine");
+    std::fs::create_dir_all(&dir).expect("dir");
+    let report = json!({"ts_s": NOW, "orphans": {"count": 0, "listed": []}, "kills": [], "resource": [],
+        "disk": {"volumes": [{"path": "/proj", "dev": 7, "free": "2.5 GB", "pct": "1", "level": "critical"}], "growth": [],
+        "reclaim": [{"path": "/h/Library/Developer/Xcode/DerivedData", "size": "41.0 GB", "cmd": "rm -rf /h/Library/Developer/Xcode/DerivedData"},
+                    {"path": "/h/.devswarm/scheduled-for-deletion", "size": "12.0 GB", "cmd": null}]}});
+    std::fs::write(dir.join("procwatch-report.json"), report.to_string()).expect("report");
+    let t = text_of(&h, &advise(&script_env(&h, None), "UserPromptSubmit", &json!({"session_id": "s1"})));
+    assert!(t.contains("DerivedData (41.0 GB): `rm -rf /h/Library/Developer/Xcode/DerivedData`"), "{t}");
+    assert!(t.contains("/h/.devswarm/scheduled-for-deletion (12.0 GB)") && !t.contains("scheduled-for-deletion (12.0 GB):"), "no command is invented for a location without one: {t}");
+}
+
+#[test]
 fn the_report_resource_warnings_reach_the_right_session_once() {
     let h = scratch("report-adv");
     let mut f = Fake { rows: session_tree(1.0, 7000), ..Fake::default() };

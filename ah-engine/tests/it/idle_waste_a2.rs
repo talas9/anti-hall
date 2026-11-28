@@ -84,32 +84,33 @@ fn ups() -> serde_json::Value {
 fn the_low_disk_warning_fires_on_a_state_change_not_on_every_cooldown() {
     let h = Home::new("disk");
     let cd = ("ANTIHALL_DISK_WATCH_COOLDOWN", "60");
+    let nq = ("ANTIHALL_DISK_WATCH_QUIET_S", "0");
     disk_report(&h, "40.0 GB", "warn");
-    assert!(h.check("procwatch-advisory", &ups(), &[cd]).contains("/vol"), "the first warning");
+    assert!(h.check("procwatch-advisory", &ups(), &[cd, nq]).contains("/vol"), "the first warning");
     // same level, same space, the cooldown (60 s) long past: quiet
     age_disk_state(&h, 600);
-    assert_eq!(h.check("procwatch-advisory", &ups(), &[cd]), "", "unchanged state: no repeat");
+    assert_eq!(h.check("procwatch-advisory", &ups(), &[cd, nq]), "", "unchanged state: no repeat");
     // a fall of less than the drop (5 GB): quiet; a fall of more: warns
     disk_report(&h, "37.0 GB", "warn");
-    assert_eq!(h.check("procwatch-advisory", &ups(), &[cd]), "", "3 GB lost is under the drop");
+    assert_eq!(h.check("procwatch-advisory", &ups(), &[cd, nq]), "", "3 GB lost is under the drop");
     disk_report(&h, "34.0 GB", "warn");
-    assert!(h.check("procwatch-advisory", &ups(), &[cd]).contains("34.0 GB"), "6 GB lost since the last warning");
+    assert!(h.check("procwatch-advisory", &ups(), &[cd, nq]).contains("34.0 GB"), "6 GB lost since the last warning");
     // a worse level warns at once, even inside the cooldown
     disk_report(&h, "4.0 GB", "critical");
-    assert!(h.check("procwatch-advisory", &ups(), &[("ANTIHALL_DISK_WATCH_COOLDOWN", "99999")]).contains("critical"), "a level change is never held back");
+    assert!(h.check("procwatch-advisory", &ups(), &[("ANTIHALL_DISK_WATCH_COOLDOWN", "99999"), nq]).contains("critical"), "a level change is never held back");
     // the reminder floor (6 h) re-sends an unchanged one
-    assert_eq!(h.check("procwatch-advisory", &ups(), &[cd]), "");
+    assert_eq!(h.check("procwatch-advisory", &ups(), &[cd, nq]), "");
     age_disk_state(&h, 7 * 3600);
-    assert!(h.check("procwatch-advisory", &ups(), &[cd]).contains("critical"), "the reminder floor");
+    assert!(h.check("procwatch-advisory", &ups(), &[cd, nq]).contains("critical"), "the reminder floor");
     // the volume recovers, then runs low again: that is a change
     let ok = serde_json::json!({"ts_s": now_s(), "orphans": {"count": 0, "listed": []}, "kills": [], "resource": [], "disk": {"volumes": [], "growth": []}});
     std::fs::write(h.home().join(".anti-hall/ah-engine/procwatch-report.json"), ok.to_string()).unwrap();
-    assert_eq!(h.check("procwatch-advisory", &ups(), &[cd]), "");
+    assert_eq!(h.check("procwatch-advisory", &ups(), &[cd, nq]), "");
     disk_report(&h, "40.0 GB", "warn");
-    assert!(h.check("procwatch-advisory", &ups(), &[cd]).contains("/vol"), "a relapse warns at once");
+    assert!(h.check("procwatch-advisory", &ups(), &[cd, nq]).contains("/vol"), "a relapse warns at once");
     // the switch off restores one warning per cooldown at an unchanged level
     let h2 = Home::new("disk-off");
-    let off = [cd, ("ANTIHALL_DISK_WATCH_REPEAT_ON_CHANGE_ONLY", "0")];
+    let off = [cd, nq, ("ANTIHALL_DISK_WATCH_REPEAT_ON_CHANGE_ONLY", "0")];
     disk_report(&h2, "40.0 GB", "warn");
     assert!(h2.check("procwatch-advisory", &ups(), &off).contains("/vol"));
     let p = h2.home().join(".anti-hall/ah-engine/procwatch-state.json");
@@ -119,6 +120,44 @@ fn the_low_disk_warning_fires_on_a_state_change_not_on_every_cooldown() {
     }
     std::fs::write(&p, st.to_string()).unwrap();
     assert!(h2.check("procwatch-advisory", &ups(), &off).contains("/vol"), "switch off: the old cooldown rule");
+}
+
+/// Field report 0.3.32: a volume hovering at a floor (warn, recover, warn again) warned on every turn. After a warning was shown the
+/// quiet window (`diskWatch.quietSeconds`) holds back everything except a worse level.
+#[test]
+fn a_volume_hovering_at_a_floor_is_quiet_for_the_window_and_a_worse_level_still_warns() {
+    let h = Home::new("disk-quiet");
+    let cd = ("ANTIHALL_DISK_WATCH_COOLDOWN", "1");
+    let ok = serde_json::json!({"ts_s": now_s(), "orphans": {"count": 0, "listed": []}, "kills": [], "resource": [], "disk": {"volumes": [], "growth": []}});
+    let recover = |h: &Home| std::fs::write(h.home().join(".anti-hall/ah-engine/procwatch-report.json"), ok.to_string()).unwrap();
+    disk_report(&h, "19.0 GB", "warn");
+    assert!(h.check("procwatch-advisory", &ups(), &[cd]).contains("/vol"), "shown once");
+    for _ in 0..3 {
+        recover(&h);
+        assert_eq!(h.check("procwatch-advisory", &ups(), &[cd]), "");
+        disk_report(&h, "19.5 GB", "warn");
+        assert_eq!(h.check("procwatch-advisory", &ups(), &[cd]), "", "the relapse inside the quiet window is the same episode");
+    }
+    // a worse level warns at once; back to warn inside the window is quiet again
+    disk_report(&h, "4.0 GB", "critical");
+    assert!(h.check("procwatch-advisory", &ups(), &[cd]).contains("critical"));
+    disk_report(&h, "19.0 GB", "warn");
+    assert_eq!(h.check("procwatch-advisory", &ups(), &[cd]), "", "an improvement inside the window is quiet");
+    // the window over (and the volume forgotten): the next low reading warns
+    age_disk_state(&h, 2 * 3600);
+    recover(&h);
+    assert_eq!(h.check("procwatch-advisory", &ups(), &[cd]), "");
+    disk_report(&h, "19.0 GB", "warn");
+    assert!(h.check("procwatch-advisory", &ups(), &[cd]).contains("/vol"), "after the window");
+    // no quiet window: the old behaviour (a relapse warns at once)
+    let h2 = Home::new("disk-noquiet");
+    let nq = [cd, ("ANTIHALL_DISK_WATCH_QUIET_S", "0")];
+    disk_report(&h2, "19.0 GB", "warn");
+    assert!(h2.check("procwatch-advisory", &ups(), &nq).contains("/vol"));
+    recover(&h2);
+    assert_eq!(h2.check("procwatch-advisory", &ups(), &nq), "");
+    disk_report(&h2, "19.0 GB", "warn");
+    assert!(h2.check("procwatch-advisory", &ups(), &nq).contains("/vol"), "quietSeconds=0: a relapse warns at once");
 }
 
 fn state_path(h: &Home) -> PathBuf {
@@ -141,6 +180,8 @@ fn disk_recovered(h: &Home) {
 }
 
 const CD: (&str, &str) = ("ANTIHALL_DISK_WATCH_COOLDOWN", "60");
+/// No quiet window: the tests that pin the recovery / relapse mechanics themselves (the window has its own test).
+const NQ: (&str, &str) = ("ANTIHALL_DISK_WATCH_QUIET_S", "0");
 
 fn ups_of(session: &str) -> serde_json::Value {
     serde_json::json!({"hook_event_name": "UserPromptSubmit", "session_id": session, "cwd": "/tmp"})
@@ -152,14 +193,14 @@ fn ups_of(session: &str) -> serde_json::Value {
 fn a_relapse_at_the_same_level_after_a_recovery_warns_again() {
     let h = Home::new("relapse");
     disk_report(&h, "40.0 GB", "warn");
-    assert!(h.check("procwatch-advisory", &ups(), &[CD]).contains("/vol"), "the first warning");
-    assert_eq!(h.check("procwatch-advisory", &ups(), &[CD]), "", "unchanged: quiet");
+    assert!(h.check("procwatch-advisory", &ups(), &[CD, NQ]).contains("/vol"), "the first warning");
+    assert_eq!(h.check("procwatch-advisory", &ups(), &[CD, NQ]), "", "unchanged: quiet");
     disk_recovered(&h);
-    assert_eq!(h.check("procwatch-advisory", &ups(), &[CD]), "", "recovered: nothing to say");
+    assert_eq!(h.check("procwatch-advisory", &ups(), &[CD, NQ]), "", "recovered: nothing to say");
     let st: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(state_path(&h)).unwrap()).unwrap();
     assert!(st["disk"].as_object().unwrap().is_empty(), "the recovery cleared the record: {st}");
     disk_report(&h, "40.0 GB", "warn");
-    assert!(h.check("procwatch-advisory", &ups(), &[CD]).contains("/vol"), "the same warning after a recovery is a relapse and fires");
+    assert!(h.check("procwatch-advisory", &ups(), &[CD, NQ]).contains("/vol"), "the same warning after a recovery is a relapse and fires");
 }
 
 /// A warning of one session says nothing about another: each session has its own record, and a recovery clears only its own.
@@ -167,16 +208,16 @@ fn a_relapse_at_the_same_level_after_a_recovery_warns_again() {
 fn the_disk_warning_state_is_per_session() {
     let h = Home::new("sessions");
     disk_report(&h, "40.0 GB", "warn");
-    assert!(h.check("procwatch-advisory", &ups_of("s1"), &[CD]).contains("/vol"));
-    assert!(h.check("procwatch-advisory", &ups_of("s2"), &[CD]).contains("/vol"), "another session is warned on its own");
-    assert_eq!(h.check("procwatch-advisory", &ups_of("s1"), &[CD]), "");
-    assert_eq!(h.check("procwatch-advisory", &ups_of("s2"), &[CD]), "");
+    assert!(h.check("procwatch-advisory", &ups_of("s1"), &[CD, NQ]).contains("/vol"));
+    assert!(h.check("procwatch-advisory", &ups_of("s2"), &[CD, NQ]).contains("/vol"), "another session is warned on its own");
+    assert_eq!(h.check("procwatch-advisory", &ups_of("s1"), &[CD, NQ]), "");
+    assert_eq!(h.check("procwatch-advisory", &ups_of("s2"), &[CD, NQ]), "");
     // s1 sees the recovery; s2's record is untouched by it only in that s2 has its own: both clear on their own next report
     disk_recovered(&h);
-    assert_eq!(h.check("procwatch-advisory", &ups_of("s1"), &[CD]), "");
+    assert_eq!(h.check("procwatch-advisory", &ups_of("s1"), &[CD, NQ]), "");
     disk_report(&h, "40.0 GB", "warn");
-    assert!(h.check("procwatch-advisory", &ups_of("s1"), &[CD]).contains("/vol"), "s1 relapses and is warned");
-    assert_eq!(h.check("procwatch-advisory", &ups_of("s2"), &[CD]), "", "s2 saw no recovery: its unchanged state stays quiet");
+    assert!(h.check("procwatch-advisory", &ups_of("s1"), &[CD, NQ]).contains("/vol"), "s1 relapses and is warned");
+    assert_eq!(h.check("procwatch-advisory", &ups_of("s2"), &[CD, NQ]), "", "s2 saw no recovery: its unchanged state stays quiet");
 }
 
 /// The thresholds are inclusive: a fall of exactly `repeatDropGb` (5 GB) warns, a hair under does not; the reminder floor (6 h) warns at

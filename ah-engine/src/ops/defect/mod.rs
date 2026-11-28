@@ -315,8 +315,24 @@ fn cmd_report(run: &Run, a: &Args) -> Result<i32, Defer> {
         }
         read_file_field(a.string(file_k)).filter(|s| !s.is_empty()).unwrap_or_default()
     };
-    let sym = pick("sym", "sym-file");
-    let repro = pick("repro", "repro-file");
+    // an alias flag (config `defect.flag_aliases`, `alias target`) fills its target when the target itself is absent
+    let aliased = |target: &str, own: String| -> String {
+        if !own.is_empty() {
+            return own;
+        }
+        for line in defaults::list("defect.flag_aliases") {
+            if let Some((alias, t)) = line.split_once(' ')
+                && t == target
+                && a.truthy(alias)
+            {
+                return a.text(alias).unwrap_or_default();
+            }
+        }
+        String::new()
+    };
+    let repro = aliased("repro", pick("repro", "repro-file"));
+    // a report with only a long body still needs its symptom line: the body is that line
+    let sym = Some(aliased("sym", pick("sym", "sym-file"))).filter(|s| !s.is_empty()).unwrap_or_else(|| repro.clone());
     let claimed = if a.truthy("claimed") { a.text("claimed").unwrap_or_default() } else { String::new() };
     let observed = if a.truthy("observed") { a.text("observed").unwrap_or_default() } else { String::new() };
     let proj = reporter_identity(run, a)?;
@@ -328,7 +344,7 @@ fn cmd_report(run: &Run, a: &Args) -> Result<i32, Defer> {
     };
     let v = if a.truthy("v") { a.text("v").unwrap_or_default() } else { read_version(run) };
     let input = store::ReportInput {
-        class: a.text("class"),
+        class: a.text("class").or_else(|| Some(defaults::text("defect.default_class").to_string())),
         sev: a.text("sev"),
         sym,
         repro,
@@ -489,6 +505,26 @@ fn cmd_similar(run: &Run, a: &Args) -> Result<i32, Defer> {
     Ok(0)
 }
 
+/// `defect <verb> --help`: the verb's flags, and for `report` the classes and severities it accepts (config `defect.help_*`).
+fn help_text(cmd: &str) -> Option<String> {
+    let flags: Vec<String> = valid_flags().iter().find(|(c, _)| *c == cmd)?.1.iter().map(|x| format!("--{x}")).collect();
+    let sep = defaults::text("defect.list_sep");
+    let mut text = defaults::render("defect.valid_flags_line", &[("cmd", &cmd), ("list", &flags.join(sep))]);
+    if cmd == defaults::text("defect.help_values_cmd") {
+        text.push('\n');
+        text.push_str(&defaults::render(
+            "defect.help_values",
+            &[
+                ("classes", &defaults::list("defect.class_enum").join(sep)),
+                ("default_class", &defaults::text("defect.default_class")),
+                ("severities", &defaults::list("defect.severity_enum").join(sep)),
+                ("aliases", &defaults::list("defect.flag_aliases").join(sep)),
+            ],
+        ));
+    }
+    Some(text)
+}
+
 /// `defect <verb> [flags]`
 pub fn run(p: &Parsed) -> i32 {
     run_inner(p)
@@ -497,6 +533,12 @@ pub fn run(p: &Parsed) -> i32 {
 fn run_inner(p: &Parsed) -> i32 {
     let cmd = p.raw.first().map(String::as_str).unwrap_or("");
     let a = parse_args(p.raw.get(1..).unwrap_or(&[]));
+    if a.get(defaults::text("defect.help_flag")).is_some()
+        && let Some(help) = help_text(cmd)
+    {
+        out(&(help + "\n"));
+        return 0;
+    }
     if valid_flags().iter().any(|(c, _)| *c == cmd)
         && let Some(errors) = check_flags(cmd, &a)
     {

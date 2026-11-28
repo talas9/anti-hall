@@ -484,6 +484,34 @@ value = ".jsonl"
 doc = "The defect classes a report may name."
 value = ["guard-false-positive", "guard-miss", "hook-crash", "state-leak", "messaging", "doc", "install", "other"]
 
+[defect.default_class]
+doc = "The class a report gets when --class is omitted."
+value = "other"
+
+[defect.flag_aliases]
+doc = "Alias flags of `defect report`, each `alias target`: the alias fills the target flag when the target itself is not given."
+value = ["title sym", "body repro"]
+
+[defect.help_flag]
+doc = "The bare flag that prints a subcommand's help."
+value = "help"
+
+[defect.help_values_cmd]
+doc = "The subcommand whose help also lists the accepted values."
+value = "report"
+
+[defect.help_values]
+doc = "The value lists printed under `defect report --help`. Placeholders: classes, default_class, severities, aliases."
+value = "classes (--class, default {default_class}): {classes}\nseverities (--sev): {severities}\naliases (alias target): {aliases}"
+
+[defect.key_valid_classes]
+doc = "The result key naming the classes a rejected report may use."
+value = "validClasses"
+
+[defect.key_valid_severities]
+doc = "The result key naming the severities a rejected report may use."
+value = "validSeverities"
+
 [defect.severity_enum]
 doc = "The severities a report may name."
 value = ["p0", "p1", "p2"]
@@ -622,7 +650,7 @@ value = ["component", "cause", "regressionOf", "fixedIn", "fixCommit", "source",
 
 [defect.valid_flags]
 doc = "The closed set of flags of each subcommand (the first word is the subcommand)."
-value = ["report class sev sym repro sym-file repro-file claimed observed proj sid v component cause regression-of json", "list mine open unfinished json", "show json", "rule status fixed-in commit note superseded-by component cause regression-of json", "archive json", "backfill repo dry-run json", "recurring since top json", "similar component top json"]
+value = ["report class sev sym title body repro sym-file repro-file claimed observed proj sid v component cause regression-of json", "list mine open unfinished json", "show json", "rule status fixed-in commit note superseded-by component cause regression-of json", "archive json", "backfill repo dry-run json", "recurring since top json", "similar component top json"]
 
 [defect.component_steps]
 doc = "The steps that reduce a path to its module, each `regex => replacement` in order: separators, leading ./, the plugin directory, lib segments, the file extension."
