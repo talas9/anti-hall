@@ -15756,6 +15756,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `mesh_identity.key_on_behalf_of` | `onBehalfOf` |  |  | Listed-row key: the identity a proxy sender acts for. |
 | `mesh_identity.kind_agent` | `agent` |  |  | The kind of a workspace sender (stored in `sender_kind`); never a declared identity's kind. |
 | `mesh_identity.msg_agent_refused` | `an agent cannot send as {name}: declared identities are the owner's (and the ...` |  |  | The refusal text of a send whose caller is an agent but declares an identity; `{name}` is filled in. |
+| `mesh_identity.msg_no_engine_identity` | `no engine identity is declared` |  |  | Error of the in-process engine send helper when no identity of mesh_identity.identities is declared as the engine (nothing is written). |
 | `mesh_identity.msg_unknown_sender` | `unknown mesh sender {name}: declare one of {known} (--as or the sender variab...` |  |  | The refusal text of a send that declares an identity `identities` does not have; `{name}` and `{known}` are filled in. |
 | `mesh_identity.privileged_rank` | `50` |  |  | A sender at or above this rank may wake every reader (an `@all`, a question or an urgent broadcast), as the Primary may. |
 | `mesh_identity.rank_child` | `10` |  |  | The rank of a child workspace (and of any sender that is not declared or a Primary). |

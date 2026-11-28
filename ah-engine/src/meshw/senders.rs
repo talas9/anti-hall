@@ -104,7 +104,7 @@ pub fn append_as_engine(
     ts: i64,
 ) -> Result<crate::meshw::store::Appended, String> {
     use crate::meshw::store::{mesh_message_hash, mesh_message_row};
-    let me = engine_identity().ok_or_else(|| "no engine identity is declared".to_string())?;
+    let me = engine_identity().ok_or_else(|| defaults::text("mesh_identity.msg_no_engine_identity").to_string())?;
     let mtype = defaults::text(if to.is_some() { "mesh_write.mtype_direct" } else { "mesh_write.mtype_broadcast" });
     let hash = mesh_message_hash(Some(me.id), to, mtype, urgency, body, &ts.to_string(), false);
     let row = mesh_message_row(Some(me.id), to, to.is_none(), body, ts, urgency, &hash, false, None);

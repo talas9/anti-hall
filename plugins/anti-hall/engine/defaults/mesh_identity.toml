@@ -75,3 +75,7 @@ value = "fromDisplay"
 [mesh_identity.key_on_behalf_of]
 doc = "Listed-row key: the identity a proxy sender acts for."
 value = "onBehalfOf"
+
+[mesh_identity.msg_no_engine_identity]
+doc = "Error of the in-process engine send helper when no identity of mesh_identity.identities is declared as the engine (nothing is written)."
+value = "no engine identity is declared"

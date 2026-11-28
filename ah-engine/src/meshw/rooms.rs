@@ -84,7 +84,7 @@ pub fn run(inv: &Inv, a: &Args) -> R<Answer> {
     if defaults::num("mesh_room.enabled") != 1 {
         return Ok(refuse(op, defaults::text("mesh_room.msg_disabled"), None));
     }
-    let subs = ["mesh_room.sub_create", "mesh_room.sub_join", "mesh_room.sub_leave", "mesh_room.sub_list"].map(defaults::text);
+    let subs = [defaults::text("mesh_room.sub_create"), defaults::text("mesh_room.sub_join"), defaults::text("mesh_room.sub_leave"), defaults::text("mesh_room.sub_list")];
     let list = op == subs[3];
     if !subs.contains(&op) || (!list && name.is_none()) {
         return Ok(refuse(op, defaults::text("mesh_room.msg_usage"), None));
