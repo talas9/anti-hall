@@ -276,7 +276,9 @@ pub fn run(args: &[String]) -> i32 {
         return 64;
     };
     // #160: `<command> --help` (or -h) prints the usage and nothing else, for every command, before anything is dispatched
-    if !hook && asks_for_help(&p.rest) {
+    // a command in `cli.help_delegate` answers `<command> <subcommand> --help` itself (it lists values the registry cannot know)
+    let delegated = defaults::list("cli.help_delegate").contains(&p.command.as_str()) && p.rest.iter().any(|a| !a.starts_with('-'));
+    if !hook && !delegated && asks_for_help(&p.rest) {
         let text = defaults::render("msg.cli_help", &[("command", &info.name), ("args", &info.args), ("doc", &info.doc)]);
         emit(&p, text.clone(), json!({"command": info.name, "args": info.args, "doc": info.doc, "usage": text}));
         return 0;
