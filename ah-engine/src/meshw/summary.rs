@@ -1077,7 +1077,8 @@ pub fn compute(st: &MeshStore, inv: &Inv, _touched: Option<&str>) -> R<OVal> {
     let (mut orphans, mut stranded, mut held_out): (Vec<OVal>, Vec<OVal>, Vec<OVal>) = (Vec::new(), Vec::new(), Vec::new());
     let mut sorter = crate::meshw::orphan::Classifier::new(home, rows.iter().filter_map(|r| r.worktree_path.clone()).filter(|w| !w.is_empty()).collect());
     for id in &candidates {
-        if id == bpart || registry_ids.contains(id) || !is_safe_id(id) {
+        // a declared human identity (the owner's `admin` mailbox) is read in the owner's room, never by a workspace
+        if id == bpart || registry_ids.contains(id) || !is_safe_id(id) || crate::meshw::senders::declared(id).is_some_and(|d| d.kind == defaults::text("mesh_identity.kind_human")) {
             continue;
         }
         let total = st.reader().message_count(id).unwrap_or_else(|e| soft("count", e)) as f64;
@@ -1283,6 +1284,25 @@ mod tests {
             _ => panic!("{k} is no number"),
         };
         assert_eq!((num("unread"), num("directUnread")), (3, 2));
+        crate::discard::harmless(std::fs::remove_dir_all(dir)); // keep: test cleanup; an absent directory is the goal state
+    }
+
+    /// A declared human identity (the owner's `admin` mailbox) is read in the owner's room, never by a workspace: unread mail there is
+    /// no orphan, while an unread partition of an unknown id still is.
+    #[test]
+    fn a_declared_human_mailbox_is_not_an_orphan() {
+        defaults::init().unwrap();
+        let dir = scratch("orphan-admin");
+        let st = MeshStore::open(&dir.join(defaults::text("mesh_write.store_file"))).unwrap();
+        for part in ["admin", "ghost-ws"] {
+            st.append_message_from(part, 1_700_000_000_000, Some(&format!("h-{part}")), "hello", Some("other")).unwrap();
+        }
+        let sum = compute(&st, &inv_in(&dir), None).unwrap();
+        let ids: Vec<String> = match sum.get("orphans") {
+            Some(OVal::Arr(a)) => a.iter().filter_map(|e| e.get("id").and_then(|i| if let OVal::Str(x) = i { Some(x.clone()) } else { None })).collect(),
+            other => panic!("no orphans array: {other:?}"),
+        };
+        assert_eq!(ids, vec!["ghost-ws".to_string()], "only the unknown partition is an orphan");
         crate::discard::harmless(std::fs::remove_dir_all(dir)); // keep: test cleanup; an absent directory is the goal state
     }
 

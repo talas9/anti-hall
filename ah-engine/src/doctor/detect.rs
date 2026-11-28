@@ -402,6 +402,8 @@ pub fn foreign_section(doc: &mut Doc, ctx: &Ctx, root: Option<&Path>) {
                 let shown = matcher.clone().unwrap_or_else(|| "*".into());
                 if (event == defaults::text("doctor.foreign_pre") || event == defaults::text("doctor.foreign_stop")) && defaults::list("doctor.foreign_observers").contains(&base.as_str()) {
                     results.push((false, defaults::render("doctor_msg.foreign_observer", &[("event", &event), ("plugin", &name), ("script", &base)])));
+                } else if event == defaults::text("doctor.foreign_stop") && defaults::list("doctor.foreign_stop_gated").contains(&base.as_str()) {
+                    results.push((false, defaults::render("doctor_msg.foreign_stop_gated", &[("event", &event), ("plugin", &name), ("script", &base)])));
                 } else if event == defaults::text("doctor.foreign_pre") && matches_bash(&matcher) {
                     results.push((true, defaults::render("doctor_msg.foreign_pre", &[("plugin", &name), ("script", &base), ("matcher", &shown)])));
                 } else if event == defaults::text("doctor.foreign_stop") {

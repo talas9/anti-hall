@@ -731,6 +731,26 @@ value = 8
 min = 1
 max = 100
 
+[devswarm_parent.part_read_not_acked_through]
+doc = "A workspace part when the child read its backlog and never acked it, and the read kept its boundary: the exact command the child runs. Placeholders: {cli}, {id}, {through} (the ackThrough token the read printed)."
+value = "read, not acked — child must run `{cli} inbox ack {id} --through {through}`"
+
+[devswarm_parent.part_read_not_acked_seen]
+doc = "The same part on the turns after the command was shown (within ack_nag_window_ms): a constant text, so the repeat is held by the emit dedupe."
+value = "read, not acked (ack command already given)"
+
+[devswarm_parent.ack_nag_window_ms]
+doc = "How long the exact ack command of a read-not-acked child is not repeated once shown (a newer receipt shows it again)."
+value = 1800000
+
+[devswarm_parent.dir_ack_nag_seen]
+doc = "The directory (under the devswarm state dir) of the per-child records of when the ack command was last shown."
+value = "ack-nag-seen"
+
+[devswarm_parent.ack_through_safe_re]
+doc = "A kept ackThrough token that may be put in a command (Rust syntax): letters, digits, colon, comma, dot, dash and underscore only."
+value = '^[A-Za-z0-9_.:,-]{1,300}$'
+
 [devswarm_parent.part_read_not_acked]
 doc = "A workspace part: the child ran `inbox read` on its backlog (a recent read receipt, not acked), so the mail stays unread until the child acks it. Placeholders: {cli}, {id}, {rid} (the receipt)."
 value = "read, not acked — child must run `{cli} inbox ack-primary {id} --receipt {rid}`"
@@ -744,7 +764,7 @@ doc = "The urgent-segment text when every listed child read its URGENT/HIGH mail
 value = "⚠️ anti-hall · devswarm-urgent-inbox: {count} workspace(s) have an URGENT/HIGH-priority direct message that was read but NOT ACKED — {shown}{extra}. The child must run the ack command named for it; STOP and tell it to (`{cli} send --to <id> --message-file <path>`), and escalate if it keeps re-reading without acking — before continuing."
 
 [metric.devswarm_unread_read_seen]
-doc = "Unread backlogs relabelled 'read, not acked' in the nudge because the child ran `inbox read` on them since the oldest arrived (a read without its ack), by reason (receipt)."
+doc = "Unread backlogs relabelled 'read, not acked' in the nudge because the child ran `inbox read` on them since the oldest arrived (a read without its ack), by reason (receipt; ack_shown and ack_suppressed count the exact ack command being named, and being held back inside ack_nag_window_ms)."
 value = { kind = "counter", unit = "workspaces", labels = ["reason"] }
 
 [metric.devswarm_archived_child_skipped]

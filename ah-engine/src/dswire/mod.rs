@@ -417,12 +417,12 @@ impl Wire {
     }
 
     fn after_nudge(&self, r: &crate::dsact::exec::Report, now: i64) {
-        if r.word != Word::Done {
+        if r.word != Word::Done && !(r.kind == "poke" && nudges::consumed_attempt(r).is_some()) {
             return;
         }
         match r.kind.as_str() {
             "poke" => {
-                let attempt = r.key.rsplit(':').next().and_then(|n| n.parse().ok());
+                let attempt = nudges::consumed_attempt(r);
                 nudges::record(&self.state_dir, &r.id, attempt, now);
                 if let Some(n) = attempt {
                     crate::dssup::verdict::mirror_poke(&self.home, &r.id, n, now);

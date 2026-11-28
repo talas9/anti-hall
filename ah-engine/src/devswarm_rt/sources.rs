@@ -34,6 +34,8 @@ pub struct AppBuilder {
     pub builder_type: Option<String>,
     /// The linked `pull_requests.id`.
     pub pr_id: Option<String>,
+    /// The parent workspace's builder id (None: a top-level workspace, or the column is missing).
+    pub parent: Option<String>,
 }
 
 /// One `builder_terminals` row.
@@ -208,6 +210,7 @@ pub fn read_app(file: &Path) -> Option<AppRead> {
         c("devswarm_rt.col_repo"),
         c("devswarm_rt.col_label"),
         c("devswarm_rt.col_pr"),
+        c("devswarm_rt.col_parent"),
     ];
     let (cols, brows) = rows(&conn, c("mesh_write.app_table_builders"), &bcols)?;
     if !cols.iter().any(|x| x == c("mesh_write.app_col_id")) || !cols.iter().any(|x| x == c("mesh_write.app_col_active")) {
@@ -227,6 +230,7 @@ pub fn read_app(file: &Path) -> Option<AppRead> {
             label: get("devswarm_rt.col_label").and_then(text),
             builder_type: get("mesh_write.app_col_builder_type").and_then(text),
             pr_id: get("devswarm_rt.col_pr").and_then(text),
+            parent: get("devswarm_rt.col_parent").and_then(text).filter(|s| !s.is_empty()),
         });
     }
     let tcols = [c("devswarm_rt.col_term_builder"), c("devswarm_rt.col_term_panel"), c("devswarm_rt.col_term_active")];

@@ -330,6 +330,30 @@ function piTier(w) {
   return 'normal';
 }
 
+// GH #1013 item 7: the exact command a child that read its backlog must run to ack it, and how often it is spoken. The read keeps the boundary it
+// delivered (`ackThrough`) for the child; the nag names `inbox ack <id> --through <that token>` instead of a receipt verb. Shown once per receipt
+// within devswarm_parent.ack_nag_window_ms: later turns say the command was already given (a constant text, so the dedupe holds it), until the window
+// ends or a newer receipt is made. Without a kept boundary the older receipt wording stays.
+var piAckWrites = [];
+function piAckThrough(home, id) {
+  var j = piJson(piDevswarmDir(home) + '/' + ah.cfg('mesh_wake.dir_ack_through') + '/' + id + ah.cfg('mesh_write.json_suffix'));
+  var t = j && typeof j[ah.cfg('mesh_wake.key_ack_through')] === 'string' ? j[ah.cfg('mesh_wake.key_ack_through')] : '';
+  return t !== '' && ah.re.test(ah.cfg('devswarm_parent.ack_through_safe_re'), '', t) ? t : '';
+}
+function piAckPart(w, cli, home, now) {
+  var through = piAckThrough(home, w.id);
+  if (through === '') return text.render(ah.cfg('devswarm_parent.part_read_not_acked'), { cli: cli, id: w.id, rid: w.readUnacked });
+  var rel = piRel(ah.cfg('devswarm_parent.dir_ack_nag_seen') + '/' + w.id + '.json'), raw = ah.state.readText(rel), rec = null;
+  if (raw !== null) { try { rec = JSON.parse(raw); } catch (e) { rec = null; } }
+  if (rec && rec.receipt === w.readUnacked && piFinite(rec.at) && now - rec.at >= 0 && now - rec.at < ah.cfgNum('devswarm_parent.ack_nag_window_ms')) {
+    ah.metric('devswarm_unread_read_seen', ['reason', 'ack_suppressed']);
+    return ah.cfg('devswarm_parent.part_read_not_acked_seen');
+  }
+  if (!piAckWrites.some(function (x) { return x.rel === rel; })) piAckWrites.push({ rel: rel, rec: { receipt: w.readUnacked, at: now } });
+  ah.metric('devswarm_unread_read_seen', ['reason', 'ack_shown']);
+  return text.render(ah.cfg('devswarm_parent.part_read_not_acked_through'), { cli: cli, id: w.id, through: through });
+}
+
 // `buildUnreadSegment(list, home)`.
 function piUnreadSegment(list, home, cli, now) {
   var parkedRows = list.filter(function (w) { return w.parked; });
@@ -342,7 +366,7 @@ function piUnreadSegment(list, home, cli, now) {
     if (w.unread > 0) parts.push(text.render(ah.cfg('devswarm_parent.part_unread'), { n: w.unread }));
     if (piStuck(w.status)) parts.push(w.status);
     if (w.staleAntiHallMessage) parts.push(w.staleAntiHallMessage);
-    else if (w.readUnacked) parts.push(text.render(ah.cfg('devswarm_parent.part_read_not_acked'), { cli: cli, id: w.id, rid: w.readUnacked }));
+    else if (w.readUnacked) parts.push(piAckPart(w, cli, home, now));
     else if (w.notDraining) parts.push(ah.cfg('devswarm_parent.part_not_draining'));
     if (piFinite(w.oldestUnreadTs)) parts.push(text.render(ah.cfg('devswarm_parent.part_oldest'), { age: piRelative(w.oldestUnreadTs, now) }));
     var trend = piTrend(home, w.id, w.unread);
@@ -371,7 +395,7 @@ function piUrgentSegment(list, home, cli) {
     var parts = [text.render(ah.cfg('devswarm_parent.part_unread'), { n: w.unread })];
     if (piStuck(w.status)) parts.push(w.status);
     if (w.staleAntiHallMessage) parts.push(w.staleAntiHallMessage);
-    else if (w.readUnacked) parts.push(text.render(ah.cfg('devswarm_parent.part_read_not_acked'), { cli: cli, id: w.id, rid: w.readUnacked }));
+    else if (w.readUnacked) parts.push(piAckPart(w, cli, home, ah.clock.now()));
     else if (w.notDraining) parts.push(ah.cfg('devswarm_parent.part_not_draining'));
     var trend = piTrend(home, w.id, w.unread);
     if (trend) parts.push(trend);
@@ -1605,6 +1629,7 @@ function piOwnSegment(count, id, urgency, unanswered, informational, titleFor, p
 // The cause of a deferral for everything the hook would show or do that the engine does not reproduce yet, or null. Everything it reads is
 // read before the first write of the turn.
 function piDecide(p, opts) {
+  piAckWrites = [];
   if (devswarmGate.silent(false, 'devswarm_prompt.parent_setting')) return 'allow';
   // An active Primary. With a working directory the hook resolves the checkout around it; with none it has no project identity either.
   var cwd = jx.isObj(p) && typeof p.cwd === 'string' && p.cwd !== '' ? p.cwd : null;
@@ -1842,6 +1867,7 @@ function piDecide(p, opts) {
     dwCronCtlWrite(sid, cronCtl.rec);
     if (cronCtl.text !== null) ah.metric('devswarm_cron_ctl', ['action', 'delete_ordered']);
   }
+  piAckWrites.forEach(function (w) { ah.state.writeAtomic(w.rel, JSON.stringify(w.rec)); }); // the ack command was shown: not again within its window
   if (orphansSig !== null) ah.state.writeAtomic(piOrphansSeenRel(jx.isObj(p) ? p.session_id : undefined), JSON.stringify({ sig: orphansSig, at: now })); // shown once per id set per session
   if (noticeSeg !== null) ah.state.writeAtomic(piRel(ah.cfg('devswarm_parent.dir_notice_cursor') + '/' + key + '.json'), JSON.stringify({ lastSeenId: noticeSeg.lastId })); // shown once, marked seen
   var emitted = [];
