@@ -48,6 +48,16 @@ impl Scratch {
         }
     }
 
+    /// Everything the guard saved as block details (the visible line is cut; the rest is kept here).
+    fn details(&self) -> String {
+        let dir = self.home().join(".anti-hall/block-details");
+        let mut all = String::new();
+        for f in std::fs::read_dir(dir).into_iter().flatten().flatten() {
+            all.push_str(&std::fs::read_to_string(f.path()).unwrap_or_default());
+        }
+        all
+    }
+
     fn store_path(&self, sid: &str) -> PathBuf {
         self.proj().join(format!(".anti-hall/tasks/store/{sid}.json"))
     }
@@ -165,7 +175,9 @@ fn a_resumed_markdown_snapshot_blocks_creates_until_reconciled() {
     let dir = s.resumed_from(OLD);
     std::fs::write(dir.join("state.md"), "# State\n\n## Task list snapshot\n| id | subject | status | priority | blocked-by |\n|---|---|---|---|---|\n| 1 | Ship it | pending | P0 | |\n\n## Commands\n").unwrap();
     let out = s.create("T-1 [P0] Ship it");
-    assert!(blocked(&out) && out.contains("tasks-reconcile"), "import ordered: {out}");
+    assert!(blocked(&out) && out.contains("tasks-reconcile") && out.contains("TaskCreate its window tasks yourself"), "import ordered, with a path that needs no skill: {out}");
+    let d = s.details();
+    assert!(d.contains("TaskCreate each window task") && d.contains("state.md"), "the details name the snapshot and the by-hand path: {d}");
     assert!(!s.store_path(SID).exists(), "nothing written before the import");
     // once the session has its own store (the reconcile wrote it), the snapshot no longer blocks
     s.seed_store(SID, &[(1, 0, "Ship it", "window")]);
@@ -228,18 +240,44 @@ fn an_in_progress_task_needs_an_owner() {
 }
 
 #[test]
-fn a_blocked_task_is_saved_to_the_backlog_and_ordered_out_of_the_window() {
+fn a_blocked_task_stays_visible_up_to_the_cap_and_is_ordered_out_past_it() {
     let s = Scratch::new("blocked");
-    s.live(&[("1", "T-1 [P1] One", "pending", ""), ("2", "T-2 [P0] Two", "pending", "")]);
-    let out = s.update(json!({"taskId": "1", "metadata": {"blockedOn": "owner decision on the API"}}));
-    assert!(blocked(&out) && out.contains("taskId=1 status=deleted"), "{out}");
+    s.live(&[("1", "T-1 [P1] One", "pending", ""), ("2", "T-2 [P0] Two", "pending", ""), ("3", "T-3 [P2] Three", "pending", "")]);
+    // within the cap (guards.taskWindowBlockedKeep = 1): saved as blocked and left in the window, no delete order
+    let keep1 = [("ANTIHALL_TASK_WINDOW_BLOCKED_KEEP", "1")];
+    let upd = |s: &Scratch, id: &str, why: &str| s.run(&s.payload("PreToolUse", "TaskUpdate", json!({"taskId": id, "metadata": {"blockedOn": why}})), &keep1);
+    let out = upd(&s, "1", "owner decision on the API");
+    assert!(!blocked(&out), "within the cap the blocked task stays visible: {out}");
     let it = item(&s.store(), 1);
     assert_eq!(it["state"], "blocked");
     assert_eq!(it["blockedOn"], "owner decision on the API");
+    // past the cap: saved, and ordered out of the window
+    let out = upd(&s, "2", "waiting on the vendor");
+    assert!(blocked(&out) && out.contains("taskId=2 status=deleted"), "{out}");
+    assert_eq!(item(&s.store(), 2)["state"], "blocked");
     // the delete it orders is never refused, and keeps the saved task in the backlog
-    assert!(!blocked(&s.update(json!({"taskId": "1", "status": "deleted"}))));
-    s.post_update(json!({"taskId": "1", "status": "deleted"}));
-    assert_eq!(item(&s.store(), 1)["state"], "blocked");
+    assert!(!blocked(&s.update(json!({"taskId": "2", "status": "deleted"}))));
+    s.post_update(json!({"taskId": "2", "status": "deleted"}));
+    assert_eq!(item(&s.store(), 2)["state"], "blocked");
+    // cap 0 restores the old answer for every blocked task
+    let out = s.run(&s.payload("PreToolUse", "TaskUpdate", json!({"taskId": "3", "metadata": {"blockedOn": "waiting on legal"}})), &[("ANTIHALL_TASK_WINDOW_BLOCKED_KEEP", "0")]);
+    assert!(blocked(&out) && out.contains("taskId=3 status=deleted"), "{out}");
+}
+
+#[test]
+fn kept_blocked_tasks_take_no_active_slot_and_show_in_the_backlog_line() {
+    let s = Scratch::new("blockedslot");
+    // five live tasks, one of them kept blocked: a sixth create still fits (the blocked one takes no active slot)
+    five_live(&s);
+    assert!(!blocked(&s.update(json!({"taskId": "5", "metadata": {"blockedOn": "owner decision"}}))));
+    let out = s.create("T-6 [P2] One more");
+    assert!(!blocked(&out), "a kept blocked task takes no active slot: {out}");
+    // and the backlog line counts it
+    let out = s.create("T-7 [P2] And another");
+    assert!(blocked(&out) && s.details().contains("1 blocked"), "the backlog line names the blocked count: {out}");
+    // worked again: it is a window task once more
+    s.post_update(json!({"taskId": "5", "status": "in_progress", "owner": "main"}));
+    assert_eq!(item(&s.store(), 5)["state"], "window");
 }
 
 /// An existing list (legacy subjects, over the window) never deadlocks: finishing, deleting and status changes pass; only creates

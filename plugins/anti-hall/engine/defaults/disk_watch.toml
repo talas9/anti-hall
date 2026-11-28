@@ -42,6 +42,14 @@ value = { section = "diskWatch", key = "repeatDropGb", env = "ANTIHALL_DISK_WATC
 doc = "Reminder floor (diskWatch.repeatSeconds): an unchanged low-space warning is shown again after this many seconds; 0 = never repeat an unchanged one (used while diskWatch.repeatOnChangeOnly is on)."
 value = { section = "diskWatch", key = "repeatSeconds", env = "ANTIHALL_DISK_WATCH_REPEAT_S", aliases = [], option = "", default = 21600, min = 0 }
 
+[disk_watch.num_quiet_s]
+doc = "Quiet window (diskWatch.quietSeconds) after a low-space warning was shown: no warning again inside it unless the level got worse (warn to critical), whatever the volume does in between (a volume hovering at a floor, or a recovery and relapse, no longer warns every turn). 0 = no quiet window. Used while diskWatch.repeatOnChangeOnly is on."
+value = { section = "diskWatch", key = "quietSeconds", env = "ANTIHALL_DISK_WATCH_QUIET_S", aliases = [], option = "", default = 3600, min = 0 }
+
+[disk_watch.level_rank]
+doc = "The levels of a volume, mildest first: a level later in the list is worse (it is never held back by the quiet window)."
+value = ["warn", "critical"]
+
 [disk_watch.block_at_critical]
 doc = "Opt-in (default off): at the critical level, block heavy commands instead of only warning (diskWatch.blockAtCritical)."
 value = { section = "diskWatch", key = "blockAtCritical", env = "ANTIHALL_DISK_WATCH_BLOCK", aliases = [], option = "", default = false }
@@ -66,6 +74,24 @@ value = 30000
 doc = "The growth scan stops after this long."
 value = 400
 unit = "ms"
+
+[disk_watch.reclaim_locations]
+doc = "Known-reclaimable locations the low-space advisory names with their sizes (scanned only while a volume is low, within the growth scan's entry and time budget, reused for growth_every_s). Each row: path = relative to the home directory, a segment may use `*`; cmd = the command that frees it, `{path}` the directory (omitted: the owner's own tool clears it, so none is named). Regenerable caches and build output, and the host's pile of archived worktrees awaiting deletion. Nothing is deleted by the watch; empty = none."
+value = [
+  { path = "Library/Developer/Xcode/DerivedData", cmd = "rm -rf {path}" },
+  { path = "Library/Developer/CoreSimulator/Caches", cmd = "rm -rf {path}" },
+  { path = "Library/Caches/Homebrew", cmd = "rm -rf {path}" },
+  { path = ".cargo/registry/cache", cmd = "rm -rf {path}" },
+  { path = ".cargo/git/checkouts", cmd = "rm -rf {path}" },
+  { path = ".npm/_cacache", cmd = "rm -rf {path}" },
+  { path = ".gradle/caches", cmd = "rm -rf {path}" },
+  { path = ".cache/pip", cmd = "rm -rf {path}" },
+  { path = ".devswarm/scheduled-for-deletion" },
+]
+
+[disk_watch.reclaim_top]
+doc = "The most reclaimable locations an advisory names."
+value = 4
 
 [disk_watch.growth_top]
 doc = "The most growth directories an advisory names."
@@ -92,12 +118,28 @@ doc = "Why it matters."
 value = "A full disk fails builds and writes, and a machine with almost no space left can panic or lose unsaved work."
 
 [disk_watch.msg_instead]
-doc = "What to do; {growth} names the biggest growth or is empty."
-value = "Free space before starting more builds, clones or worktrees; nothing was deleted.{growth}"
+doc = "What to do; {growth} names the biggest growth or is empty, {reclaim} the known-reclaimable locations (msg_reclaim) or is empty."
+value = "Free space before starting more builds, clones or worktrees; nothing was deleted.{growth}{reclaim}"
 
 [disk_watch.msg_growth]
 doc = "Growth suggestion; {list} the directories with sizes."
 value = " Biggest build or cache directories under the watched paths: {list} (suggestion only)."
+
+[disk_watch.msg_reclaim]
+doc = "Reclaimable locations; {list} the items joined by msg_reclaim_sep."
+value = " Reclaimable, biggest first: {list} (the commands are yours to run, nothing runs by itself)."
+
+[disk_watch.msg_reclaim_item]
+doc = "One reclaimable location; {path}, {size}, {cmd} (msg_reclaim_cmd, or empty when none)."
+value = "{path} ({size}){cmd}"
+
+[disk_watch.msg_reclaim_cmd]
+doc = "The command of a reclaimable location; {cmd} the command."
+value = ": `{cmd}`"
+
+[disk_watch.msg_reclaim_sep]
+doc = "Between reclaimable locations."
+value = "; "
 
 [disk_watch.msg_heavy]
 doc = "Line added at the critical level before a heavy command."

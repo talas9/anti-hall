@@ -793,6 +793,10 @@ value = " Merged and idle, archive now: {list} (`{cli} archive {id}`; it refuses
 doc = "Where the on/off switch of the stalled-delivery orders is read from (guards.stallOrder, default on). A workspace that reports working but has made no commit for guards.stallOrderAfterMin minutes is named to the Primary on the idle-order schedule (idle_order.steps_min, idle_order.max_orders): the first time as a status check, then as an order to converge or be archived. Off: no stalled-delivery order."
 value = { section = "guards", key = "stallOrder", env = "ANTIHALL_STALL_ORDER", default = true }
 
+[idle_order.sw_stall_pushed]
+doc = "Where the switch that exempts a delivered workspace from the stalled-delivery order is read from (guards.stallSkipPushed, default on). A workspace whose own newest commit (one made after its checkout was created) is pushed, nothing ahead of its upstream, has delivered: it waits on review or CI, not on itself. Off: only a new commit restarts the stall clock."
+value = { section = "guards", key = "stallSkipPushed", env = "ANTIHALL_STALL_SKIP_PUSHED", default = true }
+
 [idle_order.num_stall_after_min]
 doc = "Where the minutes without a commit before a working workspace counts as stalled are read from (guards.stallOrderAfterMin, default 60). Progress is the later of the worktree's newest commit and the worktree's creation, so a fresh workspace cut from an old commit is not stalled. A commit restarts the schedule."
 value = { section = "guards", key = "stallOrderAfterMin", env = "ANTIHALL_STALL_ORDER_AFTER_MIN", default = 60, min = 1 }

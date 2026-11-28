@@ -978,7 +978,7 @@ fn is_wake_message(m: &OVal, registry: &[(String, String)], fallback_sender: Opt
     };
     let sender = resolved.or_else(|| fallback_sender.map(str::to_string));
     body.starts_with(defaults::text("agent_tracker.wake_prefix"))
-        && (!provenance || sender.is_none_or(|s| s.starts_with(defaults::text("mesh_write.primary_prefix"))))
+        && (!provenance || sender.is_none_or(|s| s.starts_with(defaults::text("mesh_write.primary_prefix")) || union::is_engine_sender(&s)))
 }
 
 /// What ingesting `raws` in order (the open batches, then the new one) would make of the LAST one: its imported and duplicate

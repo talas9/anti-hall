@@ -53,6 +53,7 @@ pub mod read;
 pub mod readprimary;
 pub mod reconcileverb;
 pub mod reportverbs;
+pub mod rooms;
 pub mod roster;
 pub mod rosterrows;
 pub mod rostertail;
@@ -202,6 +203,8 @@ pub enum Verb {
     InboxDrain,
     /// `inbox <anything else> ...`: devswarm.js refuses it (`unknown inbox subcommand`, exit 2).
     InboxUnknown,
+    /// `room create|join|leave|list` (GH #845 phase 2a, see [`rooms`]).
+    Room,
     /// `reconcile`: drain every worktree registered in the project's store (see [`reconcileverb`]).
     Reconcile,
     /// A verb that needs no store: `help` and the unknown-command answer, `skip`, `archive-ignore`, `archive-unignore`,
@@ -316,6 +319,9 @@ pub fn verb_of(a: &args::Args) -> Option<Verb> {
     if p0 == defaults::text("mesh_write.verb_inbox") {
         return Some(Verb::InboxUnknown);
     }
+    if p0 == defaults::text("mesh_room.verb_room") {
+        return Some(Verb::Room);
+    }
     if p0 == defaults::text("mesh_write.verb_reconcile") {
         return Some(Verb::Reconcile);
     }
@@ -342,6 +348,7 @@ pub fn run_native(inv: &Inv, a: &args::Args) -> R<Answer> {
         Some(Verb::InboxDrain) => readprimary::run(inv, a),
         Some(Verb::InboxUnknown) => Ok(inbox_unknown(a)),
         Some(Verb::Reconcile) => reconcileverb::run(inv, a),
+        Some(Verb::Room) => rooms::run(inv, a),
         Some(Verb::Simple(v)) => simple::run(inv, a, v),
         Some(Verb::Migrate) => Ok(run_migrate(inv)),
         Some(Verb::Plan) => planverbs::run_plan(inv, a),

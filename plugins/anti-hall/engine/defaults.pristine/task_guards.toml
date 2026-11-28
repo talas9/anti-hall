@@ -2050,6 +2050,10 @@ value = { section = "guards", key = "taskWindowOwner", env = "ANTIHALL_TASK_WIND
 doc = "Switch guards.taskWindowBlocked (default on): a task update that marks a task blocked (metadata.blockedOn with a reason, or addBlockedBy) saves it to the backlog and is refused with the order to delete it from the window."
 value = { section = "guards", key = "taskWindowBlocked", env = "ANTIHALL_TASK_WINDOW_BLOCKED", aliases = [], default = true }
 
+[task_window.blocked_keep_setting]
+doc = "guards.taskWindowBlockedKeep: most blocked tasks (metadata.blockedOn with a reason, or blockedBy) that stay visible in the live list. They are saved to the backlog store as blocked and counted in the backlog line, and they do not take an active slot of guards.taskWindowSize. A blocked task past this count is refused with the order to delete it from the window (it stays saved). 0: every blocked task is ordered out."
+value = { section = "guards", key = "taskWindowBlockedKeep", env = "ANTIHALL_TASK_WINDOW_BLOCKED_KEEP", aliases = [], min = 0, default = 2 }
+
 [task_window.resume_setting]
 doc = "Switch guards.taskWindowResume (default on): in a session resumed from a handover, task creates are checked against the predecessor's task store (adopted into this session's store) or, when it has none, its markdown task snapshot, so the list is rebuilt from the saved one and not from memory."
 value = { section = "guards", key = "taskWindowResume", env = "ANTIHALL_TASK_WINDOW_RESUME", aliases = [], default = true }
@@ -2063,8 +2067,12 @@ doc = "JavaScript (and Rust) regex source of the backlog line's subject (slot N+
 value = '^T-∞ Backlog:'
 
 [task_window.backlog_line]
-doc = "The backlog line's subject as the guard renders it: `{n}` tasks in the backlog, `{counts}` the per-priority counts, `{next}` the top backlog task, `{skill}` task_window.reconcile_skill."
-value = "T-∞ Backlog: {n} more ({counts}) · next: {next} · run {skill}"
+doc = "The backlog line's subject as the guard renders it: `{n}` tasks in the backlog, `{counts}` the per-priority counts, `{blocked}` task_window.backlog_blocked when some of them are blocked (else empty), `{next}` the top backlog task, `{skill}` task_window.reconcile_skill."
+value = "T-∞ Backlog: {n} more ({counts}){blocked} · next: {next} · run {skill}"
+
+[task_window.backlog_blocked]
+doc = "The blocked part of the backlog line when some backlog tasks are blocked; `{b}` how many."
+value = " · {b} blocked"
 
 [task_window.backlog_count]
 doc = "One priority's count in the backlog line; `{n}` the count, `{p}` the priority digit."
@@ -2205,8 +2213,8 @@ doc = "Do instead; `{id}` the task id, `{owner}` task_window.owner_hint."
 value = "TaskUpdate taskId={id} status=in_progress owner=\"{owner}\""
 
 [task_window.what_blocked]
-doc = "Block: a blocked task belongs in the backlog; `{n}` its number. It is already saved there as blocked."
-value = "blocked tasks leave the window: T-{n} saved to the backlog store as blocked."
+doc = "Block: a blocked task past the visible cap leaves the window; `{n}` its number, `{keep}` the cap (task_window.blocked_keep_setting). It is already saved in the backlog store as blocked."
+value = "{keep} blocked tasks are already visible in the window: T-{n} saved to the backlog store as blocked and leaves it."
 
 [task_window.instead_blocked]
 doc = "Do now when a blocked task was saved; `{id}` the task id."
@@ -2233,8 +2241,12 @@ doc = "Block: a resumed session has only a markdown task snapshot; `{path}` the 
 value = "resumed list not imported from {path}."
 
 [task_window.instead_import]
-doc = "Do now: import the snapshot; `{skill}` the reconcile skill."
-value = "run {skill} (it imports the snapshot into the store)"
+doc = "Do now: import the snapshot by hand; `{skill}` the reconcile skill (an option only: a session started before it was installed does not have it loaded). Kept short: the visible line is cut near 115 units."
+value = "TaskCreate its window tasks yourself, or run {skill} if loaded"
+
+[task_window.import_detail]
+doc = "Details line of the import block: how to load the snapshot without the skill; `{path}` the handover state file, `{skill}` the reconcile skill."
+value = "Snapshot: {path}. TaskCreate each window task in its order as `T-<n> [P<0-3>] title`, then the backlog line; {skill} does the same when that skill is loaded."
 
 [task_window.what_backlog_dup]
 doc = "Block: a second backlog line; `{id}` the existing one's task id."
@@ -2246,7 +2258,7 @@ value = "TaskUpdate taskId={id} with the new backlog subject"
 
 [task_window.slot_free]
 doc = "Order after a window task was finished or deleted while the backlog holds tasks; `{skill}` the reconcile skill, `{next}` the top backlog task."
-value = "a window slot is free: run {skill} (next: {next})."
+value = "a window slot is free: TaskCreate the next backlog task ({next}), or run {skill} when it is loaded."
 
 [task_window.slot_free_then]
 doc = "The slot-free order folded into the done order of the same call (one order per message); same placeholders as task_window.slot_free."
@@ -2254,8 +2266,8 @@ value = " Then run {skill}: a window slot is free (next: {next})."
 
 [task_window.skill_rules]
 doc = "The task-list rules as the skills state them (tasks-reconcile and handover, Claude and Codex). A test checks that each of those skills holds this text exactly, so the guard and the skills cannot drift. `{size}` is not filled: the skills name the setting."
-value = "Task list rules (enforced at TaskCreate/TaskUpdate by tasklist-hygiene): at most `guards.taskWindowSize` (default 5) active tasks, all top priority, plus one backlog line `T-∞ Backlog: …` as the last slot; subjects are `T-<n> [P<0-3>] title` with `n` a stable task number (never renumbered); an in-progress task names its owner; blocked tasks and tasks waiting on the owner live in the backlog store, not in the window; the full list lives in `.anti-hall/tasks/store/<session>.json`."
+value = "Task list rules (enforced at TaskCreate/TaskUpdate by tasklist-hygiene): at most `guards.taskWindowSize` (default 5) active tasks, all top priority, plus one backlog line `T-∞ Backlog: …` as the last slot; subjects are `T-<n> [P<0-3>] title` with `n` a stable task number (never renumbered); an in-progress task names its owner; blocked tasks and tasks waiting on the owner are saved in the backlog store, and up to `guards.taskWindowBlockedKeep` (default 2) of them stay visible in the window without taking an active slot, the rest leave it; the full list lives in `.anti-hall/tasks/store/<session>.json`."
 
 [metric.task_window]
-doc = "Task-window actions at TaskCreate/TaskUpdate, by action (block_format, block_dup, block_full, block_order, block_owner, block_blocked, block_drift, block_import, block_backlog_dup, saved_backlog, reserved, adopted, slot_free, store_write_failed, store_unreadable, lock_busy)."
+doc = "Task-window actions at TaskCreate/TaskUpdate, by action (block_format, block_dup, block_full, block_order, block_owner, block_blocked, blocked_kept, block_drift, block_import, block_backlog_dup, saved_backlog, reserved, adopted, slot_free, store_write_failed, store_unreadable, lock_busy)."
 value = { kind = "counter", unit = "events", labels = ["action"] }

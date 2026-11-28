@@ -32,6 +32,7 @@ mod daemon_guard;
 mod ctx_keep_e2e;
 mod ctxbudget_e2e;
 mod defaults_failover;
+mod defect_report_ux;
 mod defaults_keys;
 mod dep_budget;
 mod devswarm_rt;

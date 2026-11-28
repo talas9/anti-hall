@@ -5,7 +5,7 @@ description: Reconcile the session task list with its task store (log finished t
 
 # tasks-reconcile
 
-Task list rules (enforced at TaskCreate/TaskUpdate by tasklist-hygiene): at most `guards.taskWindowSize` (default 5) active tasks, all top priority, plus one backlog line `T-∞ Backlog: …` as the last slot; subjects are `T-<n> [P<0-3>] title` with `n` a stable task number (never renumbered); an in-progress task names its owner; blocked tasks and tasks waiting on the owner live in the backlog store, not in the window; the full list lives in `.anti-hall/tasks/store/<session>.json`.
+Task list rules (enforced at TaskCreate/TaskUpdate by tasklist-hygiene): at most `guards.taskWindowSize` (default 5) active tasks, all top priority, plus one backlog line `T-∞ Backlog: …` as the last slot; subjects are `T-<n> [P<0-3>] title` with `n` a stable task number (never renumbered); an in-progress task names its owner; blocked tasks and tasks waiting on the owner are saved in the backlog store, and up to `guards.taskWindowBlockedKeep` (default 2) of them stay visible in the window without taking an active slot, the rest leave it; the full list lives in `.anti-hall/tasks/store/<session>.json`.
 
 ## The store
 

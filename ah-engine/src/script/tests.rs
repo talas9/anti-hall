@@ -3525,6 +3525,66 @@ mod claim_evidence_guard {
 
     const ALLOW: Option<Option<Verdict>> = Some(Some(Verdict::Allow));
 
+    /// Field report 0.3.32: "merges once the check passes" is a future condition, not a result report.
+    #[test]
+    fn a_check_passing_named_as_a_future_condition_is_no_claim() {
+        let held = |tag: &str, reply: &str| {
+            let lines = [json!({"type": "user", "message": {"role": "user", "content": "go"}}), assistant("m1", reply, &[])];
+            blocked(&stop(tag, &lines, reply, &[], json!({})).0).is_some()
+        };
+        for (i, reply) in [
+            "The PR merges once the check passes.",
+            "It merges as soon as the check passes.",
+            "The release goes out after the check passes.",
+            "We wait until the check passes.",
+            "It merges when the checks pass.",
+            "If the check passes the change merges.",
+            "The deploy starts when CI is green.",
+            "The PR merges automatically once the required CI check passes.",
+            "The PR merges once the new CI check passes on main.",
+            "It merges once all of the required checks pass.",
+            "Auto-merge fires when the last required check passes.",
+            "The branch merges as soon as the GitHub check passes.",
+            "It will be merged once the check passes, then released.",
+            "Merge happens after the full test suite passes on every platform.",
+        ]
+        .iter()
+        .enumerate()
+        {
+            assert!(!held(&format!("ce-future-{i}"), reply), "a future condition is no claim: {reply}");
+        }
+        // controls: the same words as a report of a result are still held
+        for (i, reply) in ["The check passes.", "All checks pass and it is merged.", "CI is green."].iter().enumerate() {
+            assert!(held(&format!("ce-report-{i}"), reply), "a reported result is still held: {reply}");
+        }
+    }
+
+    /// Field report 0.3.32: a result word inside a sentence that already hedges it ("likely") is no flat claim.
+    #[test]
+    fn a_result_word_inside_a_hedged_sentence_is_no_claim() {
+        let held = |tag: &str, reply: &str| {
+            let lines = [json!({"type": "user", "message": {"role": "user", "content": "go"}}), assistant("m1", reply, &[])];
+            blocked(&stop(tag, &lines, reply, &[], json!({})).0).is_some()
+        };
+        for (i, reply) in [
+            "The check likely passes.",
+            "CI is likely green by now.",
+            "The change is probably merged.",
+            "It is likely that the tests pass.",
+            "The PR has most likely been deployed.",
+            "Tests might pass.",
+            "Possibly the suite passes.",
+        ]
+        .iter()
+        .enumerate()
+        {
+            assert!(!held(&format!("ce-hedged-{i}"), reply), "a hedged sentence is no flat claim: {reply}");
+        }
+        // control: unhedged, and a hedge in another sentence, are still claims
+        assert!(held("ce-flat", "The check passes."));
+        assert!(held("ce-other-sentence", "It is likely a cache issue. The check passes."), "a hedge elsewhere covers nothing");
+    }
+
     #[test]
     fn a_result_claim_with_no_tool_call_this_turn_is_held_once_and_the_message_is_short() {
         let reply = "All tests pass and the change is done.";

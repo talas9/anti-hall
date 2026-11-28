@@ -141,20 +141,29 @@ function pwFreeGb(text0) {
 // free space fell by `diskWatch.repeatDropGb` since the last warning, or `diskWatch.repeatSeconds` passed (the reminder floor);
 // the drop and the floor also wait out the cooldown. A volume that is no longer low is forgotten, so a relapse warns at once.
 function pwDiskDue(st, sid, low, nowS, cooldown) {
-  var drop = ah.settings.num('disk_watch.num_repeat_drop_gb'), floorS = ah.settings.num('disk_watch.num_repeat_s');
+  var drop = ah.settings.num('disk_watch.num_repeat_drop_gb'), floorS = ah.settings.num('disk_watch.num_repeat_s'), quiet = ah.settings.num('disk_watch.num_quiet_s');
   var prefix = sid + ':', seen = {}, due = false;
   low.forEach(function (v) {
     var key = prefix + v.path, prev = pwObj(st.disk[key]), free = pwFreeGb(v.free);
     seen[key] = true;
-    if (prev.level !== v.level) { due = true; return; }
     var idle = typeof prev.at === 'number' ? nowS - prev.at : Infinity;
+    if (prev.level !== v.level) {
+      // inside the quiet window only a worse level warns: a volume hovering at a floor must not warn at every crossing
+      if (quiet > 0 && idle >= 0 && idle < quiet && ah.cfg('disk_watch.level_rank').indexOf(v.level) <= ah.cfg('disk_watch.level_rank').indexOf(prev.level)) return;
+      due = true;
+      return;
+    }
     // a record from the future (the clock was set back) cannot be trusted to hold anything back: warn
     if (idle < 0) { due = true; return; }
     if (idle < cooldown) return;
     if (isFinite(free) && typeof prev.free === 'number' && prev.free - free >= drop) due = true;
     else if (floorS > 0 && idle >= floorS) due = true;
   });
-  Object.keys(st.disk).forEach(function (k) { if (k.indexOf(prefix) === 0 && !seen[k]) { delete st.disk[k]; st.dirty = true; } });
+  // a volume no longer low is forgotten, except inside the quiet window: its relapse is the same episode
+  Object.keys(st.disk).forEach(function (k) {
+    var e = pwObj(st.disk[k]);
+    if (k.indexOf(prefix) === 0 && !seen[k] && !(quiet > 0 && typeof e.at === 'number' && nowS - e.at >= 0 && nowS - e.at < quiet)) { delete st.disk[k]; st.dirty = true; }
+  });
   if (!due) {
     if (low.length === 0) return false; // nothing is low: only the recovery above ran
     // the old rule (one warning per cooldown at an unchanged level) would have warned again here: a saved repeat
@@ -181,7 +190,13 @@ function pwDiskLines(low) {
 function pwDiskInstead(disk) {
   var g = Array.isArray(disk.growth) ? disk.growth : [], growth = '';
   if (g.length > 0) growth = text.render(ah.cfg('disk_watch.msg_growth'), { list: g.map(function (e) { return e.path + ' (' + e.size + ')'; }).join(', ') });
-  return text.render(ah.cfg('disk_watch.msg_instead'), { growth: growth });
+  var rc = Array.isArray(disk.reclaim) ? disk.reclaim : [], reclaim = '';
+  if (rc.length > 0) {
+    reclaim = text.render(ah.cfg('disk_watch.msg_reclaim'), { list: rc.map(function (e) {
+      return text.render(ah.cfg('disk_watch.msg_reclaim_item'), { path: e.path, size: e.size, cmd: typeof e.cmd === 'string' && e.cmd !== '' ? text.render(ah.cfg('disk_watch.msg_reclaim_cmd'), { cmd: e.cmd }) : '' });
+    }).join(ah.cfg('disk_watch.msg_reclaim_sep')) });
+  }
+  return text.render(ah.cfg('disk_watch.msg_instead'), { growth: growth, reclaim: reclaim });
 }
 
 function decide(p) {

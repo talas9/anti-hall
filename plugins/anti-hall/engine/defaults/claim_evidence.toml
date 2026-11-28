@@ -45,7 +45,7 @@ doc = "Claims the claim-evidence guard let pass because a tool of this turn (cla
 value = { kind = "counter", unit = "claims", labels = ["claim"] }
 
 [metric.claim_evidence_suppressed]
-doc = "Claim hits the claim-evidence guard let pass, by reason (nonsoftware, featurename, negated, future, condition, reported, criterion, purpose, instruction, planned, labelled, quoted)."
+doc = "Claim hits the claim-evidence guard let pass, by reason (nonsoftware, featurename, negated, future, hedged, condition, reported, criterion, purpose, instruction, planned, labelled, quoted)."
 value = { kind = "counter", unit = "claims", labels = ["reason"] }
 
 [claim_evidence.guard_name]
@@ -165,6 +165,10 @@ value = '\b(?:not|never|no|n.t)\s+$'
 doc = "Text that starts right after an honest-label word and shows it is no label (strict mode): 'unverified is false', 'unverified meaning not', 'unchecked boxes remain', 'unverified claims aside'. A noun ('boxes', 'files') only counts right after the word with nothing but spaces between, so an explicit label with punctuation keeps its effect: 'Unverified: files are deployed', 'Unverified - files ...', '(Unverified) files ...'. Rust regular expression, case-insensitive, matched against the text after the label."
 value = '^(?:\W*(?:(?:is|are|was|were)\s+(?:false|untrue|wrong|incorrect|not)\b|meaning\s+not\b|(?:\w+\s+)?aside\b)|\s+(?:boxes|checkboxes|items?|tasks?|files?)\b)'
 
+[claim_evidence.hedge_res]
+doc = "An adverb hedge that opens the claim's own clause (rule 1): 'it is likely that the tests pass', 'probably CI is green'. The sentence already says it is unconfirmed, so it is no flat claim ('I think ...' still is one: it asserts the claim); the speculation guard judges the hedge itself. Reach claim_evidence.reach_clause. A hedge in another sentence or clause covers nothing. Regular expressions, case-insensitive, matched against the clause before the claim."
+value = ['\b(?:likely|probably|possibly|perhaps|maybe|presumably|plausibly|apparently|supposedly|conceivably)\b']
+
 [claim_evidence.reported_res]
 doc = "A reporting verb, or 'according to' a named source, that opens the claim's own clause (rule 1): 'the bot reported that tests pass', 'the old comment said it is fixed', 'according to the PR body the change is merged' ('according to plan' names no source). Quoted text is a claim like any other unless one of these opens its clause. Reach claim_evidence.reach_clause. Regular expressions, case-insensitive, matched against the clause before the claim."
 value = [
@@ -270,6 +274,7 @@ value = [
   { reason = "negated", list = "claim_evidence.neg_subject_res", reach = "claim_evidence.reach_subject", idiom = "claim_evidence.no_idiom_re" },
   { reason = "future", list = "claim_evidence.modal_res", reach = "claim_evidence.reach_verb" },
   { reason = "future", list = "claim_evidence.future_res", reach = "claim_evidence.reach_clause", idiom = "claim_evidence.opener_idiom_re", idiom_strict = "claim_evidence.opener_filler_re", chain = true },
+  { reason = "hedged", list = "claim_evidence.hedge_res", reach = "claim_evidence.reach_clause" },
   { reason = "reported", list = "claim_evidence.reported_res", reach = "claim_evidence.reach_clause", noun_before = "claim_evidence.noun_before_re", compound = "claim_evidence.compound_after_re" },
   { reason = "criterion", list = "claim_evidence.criterion_res", reach = "claim_evidence.reach_clause" },
   { reason = "purpose", list = "claim_evidence.purpose_res", reach = "claim_evidence.reach_clause" },

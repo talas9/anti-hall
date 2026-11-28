@@ -6,6 +6,14 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.304.0
+
+Ships engine 0.3.33. Highlights:
+
+- Mesh phase 2: rooms (`mesh room create|join|leave|list`, `mesh send --room`; a room message wakes only its members), the owner's admin mailbox (`mesh send --to admin` from any agent, `--reply-to <seq>`), a coalesce window that merges a burst of wake lines into one, faster mid-read wakes (a held wake whose workspace read part of its mail wakes at the next window close, not after 10 minutes), and faster mesh reads (cursor-bounded broadcast reads: the summary read dropped from 129 ms to 8 ms on a 17.9k-row partition).
+- Field fixes from production use: the defect CLI lists valid classes and severities on rejection and accepts `--title`/`--body`; a pushed workspace with its own commits is no longer reported stalled; blocked tasks stay visible in the task window; the edit guard lets the main agent write new `CLAUDE.<variant>.md` files in the host config folder; an adverb-hedged result word is no longer read as a flat claim; the disk warning stays quiet after it was shown and names reclaimable locations with their commands.
+- Phantom unread fix: the parent gate counts the summary's direct unread, not the positional unread, so a parent is no longer blocked on mail it has already read.
+
 ## 0.303.0
 
 First release since v0.301.1: it carries everything merged since then (the notes below and the Engine 0.3.x integration sections). Highlights of the last two engine builds (0.3.31, 0.3.32):
@@ -32,6 +40,14 @@ First release since v0.301.1: it carries everything merged since then (the notes
 - The subagent WORKER line and the queued-wait-guard remedies now ask for waits of 240 s or less (one key, `cache_wait.split_s`) instead of 540 s; the queued-wait block limit is unchanged.
 - Token waste (#884, items 2 to 4; #894): one wake per state change. A child workspace's wake-watch holds a new-mail line while the workspace has read none of its mail since its previous wake; held mail still unread after `devswarm.wakeWatchRewakeMs` (10 min) wakes it once more (`devswarm.wakeWatchCoalesce`, default on; counter `wake_watch_coalesced`). A tool-less woken turn is counted against its sender (`poke_turns_by_sender`). The post-handover new-work gate is sent on a state change and every `guards.handoverGateOnChangeRepeatS` (30 min) instead of on every prompt (`guards.handoverGateOnChange`, default on). A DevSwarm workspace past `autoHandover.workspaceMaxTokens` (150K) is ordered to start its next PR in a fresh session. Claude and Codex.
 - Telemetry: a hook reply whose `additionalContext` is empty now counts as an allow, not as an advisory decided and delivered. limit-conserve-inject and auto-handover print that empty line on every quiet prompt, which the delivery funnel had counted as about 12k deliveries a window (and as ignored rules).
+
+## Engine 0.3.33 (local integration build, #845 mesh phase 2)
+
+- Wake-watch coalesce window (`devswarm.wakeWatchWindowMs`, default 4000, 0 = off, child watchers only): the first new-mail edge opens it and ONE line covers the direct and broadcast mail due when it closes; mail read inside the window prints nothing. A direct mail that lands between a drain's scan and its ack wakes at the next window close instead of after the 600 s re-wake.
+- Store reset below the saved broadcast watermark reconciles (summary `broadcastWakeHead`); rows that become eligible under the watermark wake. The drain, the Codex `inbox tick` and the summary read only the rows past the cursor (indexes on `(workspace_id, seq)`, the newest heartbeat per sender and the partition): drain 142 -> 0.1 ms, summary 129 -> 8 ms on a 17.9k-row partition.
+- A wake prompt the engine sends under its own declared identity is never counted as mail; an in-process helper writes rows as the engine identity (never selectable from the CLI).
+- Mesh rooms: `mesh room create|join|leave <name>`, `mesh room list`, `mesh send --room <name>`. A room message is one broadcast row whose stored audience names the room, its members and the members it wakes (every member but the sender; @mentions narrow it). The summary the wake-watch reads, the drain verbs and the Codex `inbox tick` obey it, so it wakes only subscribers on both ports, never a Primary that is not a member; a non-member does not list or count it. Settings in `mesh_room.toml` (on by default); counters `mesh_room_ops`, `mesh_room_sends`. A watcher or reader older than 0.3.33 reads a room row as a plain broadcast until it hands off to the new build.
+- Field fixes (#1003, fix/field-0332): `defect report` lists valid classes and severities on rejection, defaults the class to `other`, accepts `--title`/`--body` and `--help` lists the values; a pushed workspace with its own commits is not stalled and an inherited commit is not its unpushed work; blocked tasks stay visible up to `guards.taskWindowBlockedKeep` without an active slot and the resume order names a path that needs no skill; the main agent may write new `CLAUDE.<variant>.md` files in the host config folder (`command.eg_home_allow`); an adverb-hedged result word is no flat claim (claim-evidence); disk-watch has a quiet window after a shown warning and its advisory names known-reclaimable locations with their commands.
 
 ## Engine 0.3.32 (local integration build, wave A)
 

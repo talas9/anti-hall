@@ -95,7 +95,10 @@ function pgReadOwn(home, idn, selfKey) {
   var raw = 0;
   if (jx.isObj(e)) {
     // a Jev-confirmed question candidate is folded in through jev-assist's trust math and its log: Node's
-    raw = piFinite(e.unread) && e.unread > 0 ? e.unread : 0;
+    // #845 (a): the summary's `directUnread` (the reader's own-family sends and explicit acks left out), the count the read verbs
+    // and the parent inbox use; the positional `unread` counted a Primary's own reply in its own partition as mail nobody could read
+    var cnt = piFinite(e.directUnread) ? e.directUnread : e.unread;
+    raw = piFinite(cnt) && cnt > 0 ? cnt : 0;
     // the Jev trust math of these candidates is not run here: each counts as unread (the stricter reading)
     if (Array.isArray(e.jevQuestionCandidates) && e.jevQuestionCandidates.length > 0) { ah.unable('devswarm-parent-gate:jev_question_candidates'); raw += e.jevQuestionCandidates.length; }
   }

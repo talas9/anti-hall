@@ -335,6 +335,7 @@ fn run_armed(p: &Proc, a: Armed, start_ppid: i32) -> i32 {
         recheck: archived_recheck(p),
         bin: (defaults::num("wake_watch.rebin_enabled") != 0).then(rebin::watched_path).flatten().and_then(|path| rebin::ident(&path).map(|i| (path, i))),
         coalesce: p.coalesce_ms(a.id.role()),
+        window: p.window_ms(a.id.role()),
         quiet_arm: defaults::num("wake_watch.rebin_quiet") != 0 && p.env.contains_key(text("wake_watch.env_rebin")),
     };
     let code = run.run_loop(&watcher);
@@ -385,6 +386,8 @@ struct Run<'a> {
     bin: Option<(PathBuf, rebin::Ident)>,
     /// Wake coalescing for this watcher (GH #884), read once at arm: see [`Proc::coalesce_ms`].
     coalesce: Option<f64>,
+    /// The coalesce window of this watcher (GH #845 phase 2), read once at arm: see [`Proc::window_ms`].
+    window: Option<f64>,
     /// #968: this process is the successor a binary replace started (`wake_watch.env_rebin` set) and `wake_watch.rebin_quiet` is on:
     /// its arm line goes to the engine log, not the stream, so a redeploy wakes no idle session.
     quiet_arm: bool,
@@ -404,8 +407,16 @@ impl Run<'_> {
                 Flow::Next => {}
             }
             // wait out the poll interval, or wake early on a change of the files read while the reads are healthy
-            let healthy = locked(self.cell).state.consec_errors == 0.0;
-            let deadline = Instant::now() + self.poll;
+            let (healthy, opened) = {
+                let s = locked(self.cell);
+                (s.state.consec_errors == 0.0, s.state.win_open_ms)
+            };
+            // an open coalesce window closes on time, not on the next poll
+            let wait = match (self.window, opened) {
+                (Some(w), Some(o)) => self.poll.min(Duration::from_millis((o + w - now_ms()).max(1.0) as u64)),
+                _ => self.poll,
+            };
+            let deadline = Instant::now() + wait;
             loop {
                 let left = deadline.saturating_duration_since(Instant::now());
                 if left.is_zero() {
@@ -483,6 +494,7 @@ impl Run<'_> {
         snap.id = a.id.id.clone();
         snap.now_ms = now_ms();
         snap.coalesce_ms = self.coalesce;
+        snap.window_ms = self.window;
         let snap = read::attach_broadcast(snap, &p.home, a.hashes.as_ref(), &a.id.id);
         let (before, (state, lines), arming) = {
             let s = locked(self.cell);
