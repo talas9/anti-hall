@@ -1571,7 +1571,9 @@ fn wrapper_restart_loop_fails_open_under_one_second() {
     // the first exec of a freshly linked binary is slow on macOS (~0.4 s, measured: 0.9-1.0 s on the first run after a rebuild, 0.52 s on
     // every later one, identical before and after the slow-wait change); that is the OS, not the call, so it is paid before the timing
     let _ = e.ctl("ping");
-    let (out, code, dt) = e.wrapper_hook(DENY_IN);
+    // R0 (#969 hardening): a fresh crash-loop cooldown holds a risky call (a_fresh_crash_loop_cooldown_holds_a_force_push...), so the
+    // fail-open timing is measured on a call that is not held
+    let (out, code, dt) = e.wrapper_hook(READ_IN);
     println!("TIMING wrapper restart-loop wall_ms={:.1}", dt.as_secs_f64() * 1000.0);
     assert_eq!((out.as_str(), code), ("", 0));
     assert!(dt < common::scaled(Duration::from_secs(1)), "wrapper took {dt:?}");
