@@ -63,7 +63,7 @@ pub struct Report {
 }
 
 impl Report {
-    fn new(kind: &str, id: &str, key: &str, word: Word, detail: Value) -> Report {
+    pub(crate) fn new(kind: &str, id: &str, key: &str, word: Word, detail: Value) -> Report {
         Report { kind: kind.into(), id: id.into(), key: key.into(), word, detail, inputs: Value::Null, latency_ms: 0 }
     }
 

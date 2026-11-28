@@ -8,8 +8,8 @@ Four components, each with its own semver. Versions read from `origin/dev`.
 
 | Component | What it is | Single file that sets the version | Current | Tag / release |
 |---|---|---|---|---|
-| plugin | The Claude plugin and its Codex port (hooks config, skills, docs, engine defaults) | `plugins/anti-hall/.claude-plugin/plugin.json`; the Codex manifest `plugins/anti-hall/.codex-plugin/plugin.json`, root `package.json` and both fields in `package-lock.json` track it | 0.304.0 (all four files) | `v<ver>` (latest pushed tag: `v0.304.0`) |
-| engine (`ah-engine`) | The Rust daemon that decides every hook | `ah-engine/Cargo.toml` (the binary reads `CARGO_PKG_VERSION`) | 0.3.33 | `ah-engine-v<ver>` (latest pushed tag: `ah-engine-v0.3.33`); pinned by `ah-engine.lock` |
+| plugin | The Claude plugin and its Codex port (hooks config, skills, docs, engine defaults) | `plugins/anti-hall/.claude-plugin/plugin.json`; the Codex manifest `plugins/anti-hall/.codex-plugin/plugin.json`, root `package.json` and both fields in `package-lock.json` track it | 0.305.0 (all four files) | `v<ver>` (latest pushed tag: `v0.305.0`) |
+| engine (`ah-engine`) | The Rust daemon that decides every hook | `ah-engine/Cargo.toml` (the binary reads `CARGO_PKG_VERSION`) | 0.3.34 | `ah-engine-v<ver>` (latest pushed tag: `ah-engine-v0.3.34`); pinned by `ah-engine.lock` |
 | hook client (`ah-hook`) | The thin client every hook entry runs | `ah-launcher/Cargo.toml` | 0.3.1 | no tag of its own; ships inside the engine release archive |
 | dashboard (`ah-web`) | The local web dashboard | `ah-web/Cargo.toml` | 0.2.0 | no tag of its own; ships inside the engine release archive |
 

@@ -690,7 +690,7 @@ fn tool_use(a: &mut Agent, b: &Value, ts: u64, cwd: &str) {
             // any other closed status (nudges.idle_wake.closed_statuses, the list the task-list readers use) ends the declared step the
             // same way (GH #964: a deleted step stayed the step, still open, and idle_open_task kept naming a task gone from the list);
             // it is no progress, and closing another task leaves the step alone. Completion above never depends on this list.
-            s if closed_statuses().iter().any(|c| *c == s) => {
+            s if closed_statuses().contains(&s) => {
                 if end_step(a, &task) {
                     a.open = false;
                 }

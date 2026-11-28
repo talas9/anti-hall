@@ -208,6 +208,7 @@ fn registry() -> &'static Registry {
                     // then the pid is free for reuse by an unrelated process. WNOWAIT leaves a zombie for the guard's own wait.
                     // SAFETY: a zeroed siginfo_t is a valid out-buffer; `waitid` and `kill` take plain integers otherwise.
                     let mut info: libc::siginfo_t = unsafe { std::mem::zeroed() };
+                    // SAFETY: as above; `info` is the zeroed out-buffer, the pid and options are plain integers.
                     let ours = unsafe { libc::waitid(libc::P_PID, *pid as libc::id_t, &mut info, libc::WEXITED | libc::WNOHANG | libc::WNOWAIT) } == 0;
                     if ours {
                         // SAFETY: see above; the pid is still this process's unreaped child, so it cannot name another process.

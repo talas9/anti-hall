@@ -1882,19 +1882,21 @@ fn foreign_observer_hooks_are_info_and_a_blocking_gate_still_warns() {
             r#"{{"hooks":{{"PreToolUse":[{{"matcher":"*","hooks":[{{"type":"command","command":"{cmd}"}}]}}],"Stop":[{{"hooks":[{{"type":"command","command":"{cmd}"}}]}}]}}}}"#
         )
     };
-    let (obs, gate) = (sc.root.join("observer"), sc.root.join("gate"));
-    for (dir, script) in [(&obs, "emit-event.cjs"), (&gate, "stop-review-gate-hook.mjs")] {
+    let (obs, gate, rival) = (sc.root.join("observer"), sc.root.join("gate"), sc.root.join("rival"));
+    for (dir, script) in [(&obs, "emit-event.cjs"), (&gate, "stop-review-gate-hook.mjs"), (&rival, "rival-stop-guard.mjs")] {
         fs::create_dir_all(dir.join("hooks")).unwrap();
         fs::write(dir.join("hooks/hooks.json"), hooks(script)).unwrap();
     }
     let p = sc.plugin.clone();
     let v = plugin_version(&sc);
-    registry(&sc, &[("anti-hall@anti-hall", &p, &v), ("claude-session-driver@m", &obs, "1.0.0"), ("codex@m", &gate, "1.0.0")]);
-    enabled(&sc, &[("anti-hall@anti-hall", true), ("claude-session-driver@m", true), ("codex@m", true)]);
+    registry(&sc, &[("anti-hall@anti-hall", &p, &v), ("claude-session-driver@m", &obs, "1.0.0"), ("codex@m", &gate, "1.0.0"), ("rival@m", &rival, "1.0.0")]);
+    enabled(&sc, &[("anti-hall@anti-hall", true), ("claude-session-driver@m", true), ("codex@m", true), ("rival@m", true)]);
     let d = sc.doctor(&[]);
     d.has("info", &["PreToolUse observer", "claude-session-driver", "emit-event.cjs", "never blocks"]);
     d.has("info", &["Stop observer", "claude-session-driver", "emit-event.cjs"]);
-    d.has("warn", &["foreign Stop hook", "codex", "stop-review-gate-hook.mjs"]);
+    d.has("info", &["Stop gate", "codex", "stop-review-gate-hook.mjs", "only while its own review gate"]);
+    d.has("warn", &["foreign Stop hook", "rival", "rival-stop-guard.mjs"]);
+    assert!(!d.text.lines().any(|l| l.starts_with("  ⚠️ ") && l.contains("foreign Stop hook") && l.contains("stop-review-gate-hook.mjs")), "a gate that is off by default is information\n{}", d.text);
     d.has("warn", &["foreign PreToolUse hook on Bash", "codex", "stop-review-gate-hook.mjs"]);
     assert!(!d.text.lines().any(|l| l.starts_with("  ⚠️ ") && l.contains("emit-event.cjs")), "the observer is never a warning\n{}", d.text);
 }

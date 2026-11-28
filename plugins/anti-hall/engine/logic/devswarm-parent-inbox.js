@@ -330,6 +330,30 @@ function piTier(w) {
   return 'normal';
 }
 
+// GH #1013 item 7: the exact command a child that read its backlog must run to ack it, and how often it is spoken. The read keeps the boundary it
+// delivered (`ackThrough`) for the child; the nag names `inbox ack <id> --through <that token>` instead of a receipt verb. Shown once per receipt
+// within devswarm_parent.ack_nag_window_ms: later turns say the command was already given (a constant text, so the dedupe holds it), until the window
+// ends or a newer receipt is made. Without a kept boundary the older receipt wording stays.
+var piAckWrites = [];
+function piAckThrough(home, id) {
+  var j = piJson(piDevswarmDir(home) + '/' + ah.cfg('mesh_wake.dir_ack_through') + '/' + id + ah.cfg('mesh_write.json_suffix'));
+  var t = j && typeof j[ah.cfg('mesh_wake.key_ack_through')] === 'string' ? j[ah.cfg('mesh_wake.key_ack_through')] : '';
+  return t !== '' && ah.re.test(ah.cfg('devswarm_parent.ack_through_safe_re'), '', t) ? t : '';
+}
+function piAckPart(w, cli, home, now) {
+  var through = piAckThrough(home, w.id);
+  if (through === '') return text.render(ah.cfg('devswarm_parent.part_read_not_acked'), { cli: cli, id: w.id, rid: w.readUnacked });
+  var rel = piRel(ah.cfg('devswarm_parent.dir_ack_nag_seen') + '/' + w.id + '.json'), raw = ah.state.readText(rel), rec = null;
+  if (raw !== null) { try { rec = JSON.parse(raw); } catch (e) { rec = null; } }
+  if (rec && rec.receipt === w.readUnacked && piFinite(rec.at) && now - rec.at >= 0 && now - rec.at < ah.cfgNum('devswarm_parent.ack_nag_window_ms')) {
+    ah.metric('devswarm_unread_read_seen', ['reason', 'ack_suppressed']);
+    return ah.cfg('devswarm_parent.part_read_not_acked_seen');
+  }
+  if (!piAckWrites.some(function (x) { return x.rel === rel; })) piAckWrites.push({ rel: rel, rec: { receipt: w.readUnacked, at: now } });
+  ah.metric('devswarm_unread_read_seen', ['reason', 'ack_shown']);
+  return text.render(ah.cfg('devswarm_parent.part_read_not_acked_through'), { cli: cli, id: w.id, through: through });
+}
+
 // `buildUnreadSegment(list, home)`.
 function piUnreadSegment(list, home, cli, now) {
   var parkedRows = list.filter(function (w) { return w.parked; });
@@ -342,7 +366,7 @@ function piUnreadSegment(list, home, cli, now) {
     if (w.unread > 0) parts.push(text.render(ah.cfg('devswarm_parent.part_unread'), { n: w.unread }));
     if (piStuck(w.status)) parts.push(w.status);
     if (w.staleAntiHallMessage) parts.push(w.staleAntiHallMessage);
-    else if (w.readUnacked) parts.push(text.render(ah.cfg('devswarm_parent.part_read_not_acked'), { cli: cli, id: w.id, rid: w.readUnacked }));
+    else if (w.readUnacked) parts.push(piAckPart(w, cli, home, now));
     else if (w.notDraining) parts.push(ah.cfg('devswarm_parent.part_not_draining'));
     if (piFinite(w.oldestUnreadTs)) parts.push(text.render(ah.cfg('devswarm_parent.part_oldest'), { age: piRelative(w.oldestUnreadTs, now) }));
     var trend = piTrend(home, w.id, w.unread);
@@ -371,7 +395,7 @@ function piUrgentSegment(list, home, cli) {
     var parts = [text.render(ah.cfg('devswarm_parent.part_unread'), { n: w.unread })];
     if (piStuck(w.status)) parts.push(w.status);
     if (w.staleAntiHallMessage) parts.push(w.staleAntiHallMessage);
-    else if (w.readUnacked) parts.push(text.render(ah.cfg('devswarm_parent.part_read_not_acked'), { cli: cli, id: w.id, rid: w.readUnacked }));
+    else if (w.readUnacked) parts.push(piAckPart(w, cli, home, ah.clock.now()));
     else if (w.notDraining) parts.push(ah.cfg('devswarm_parent.part_not_draining'));
     var trend = piTrend(home, w.id, w.unread);
     if (trend) parts.push(trend);
@@ -1121,6 +1145,18 @@ function piDriftNotice(home, top, primaryId, sid, tp) {
 
 // ---- orphaned partitions, stale registry rows and the broadcast feed ---------------------------------------------------------
 
+// GH #862: a pendingQuestions entry the summary flags as an owner chat row (an order, not a workspace's question).
+function piOwnerRow(q) { return !!q && typeof q === 'object' && q[ah.cfg('mesh_write.owner_chat_flag')] === true; }
+
+// GH #862: one order per unanswered owner chat row (the text as the owner wrote it, capped by the summary).
+function piOwnerSegment(rows, previews, cli) {
+  var max = ah.cfgNum('devswarm_parent.max_listed');
+  return rows.slice(-max).map(function (q) {
+    var body = previews && previews[String(q.seq)] != null ? String(previews[String(q.seq)]) : ah.cfg('devswarm_parent.broadcast_no_summary');
+    return text.render(ah.cfg('devswarm_parent.owner_chat_row'), { body: body, cli: cli, seq: q.seq });
+  }).join('\n');
+}
+
 // `buildOrphansSegment(list)` / `buildStaleRegistrySegment(list)`: partitions or rows named by id with their unread count, null for none.
 function piIssueSegment(list, headKey, cli) {
   var safe = list.filter(function (o) { return o && o.id != null && piSafeId(String(o.id)); });
@@ -1502,7 +1538,7 @@ function piQuestions(ctx, summary, pending) {
     blocking = []; informational = [];
     unanswered.forEach(function (q) {
       if (!q || q.from == null) { blocking.push(q); return; }
-      if (Object.prototype.hasOwnProperty.call(known, String(q.from).trim())) blocking.push(q); else informational.push(q);
+      if (piOwnerRow(q) || Object.prototype.hasOwnProperty.call(known, String(q.from).trim())) blocking.push(q); else informational.push(q);
     });
   }
   // filterLiveAskers
@@ -1512,6 +1548,7 @@ function piQuestions(ctx, summary, pending) {
   descriptors.forEach(add);
   var live = blocking.filter(function (q) {
     if (!q || q.from == null) return true;
+    if (piOwnerRow(q)) return true; // GH #862: the owner is no workspace: never archived, never held
     var from = String(q.from);
     var row = Object.prototype.hasOwnProperty.call(byId, from) ? byId[from] : null;
     if (!row) return !archivedKnown;
@@ -1605,6 +1642,7 @@ function piOwnSegment(count, id, urgency, unanswered, informational, titleFor, p
 // The cause of a deferral for everything the hook would show or do that the engine does not reproduce yet, or null. Everything it reads is
 // read before the first write of the turn.
 function piDecide(p, opts) {
+  piAckWrites = [];
   if (devswarmGate.silent(false, 'devswarm_prompt.parent_setting')) return 'allow';
   // An active Primary. With a working directory the hook resolves the checkout around it; with none it has no project identity either.
   var cwd = jx.isObj(p) && typeof p.cwd === 'string' && p.cwd !== '' ? p.cwd : null;
@@ -1630,7 +1668,7 @@ function piDecide(p, opts) {
   var now = ah.clock.now();
   var every = ah.settings.num('verify_first.num_repeat_every');
   var repeat = isFinite(every) && every > 0 ? every : 0;
-  var cronCtl = null, noticeSeg = null, summaryForTitle = null, ownUnanswered = [], ownInfo = [], ownPreviews = {}, syncNotes = null, ownUnread = 0, ownSigBase = '', ownUrgency = null, orphansSeg = null, orphansSig = null, staleRegSeg = null, broadcastRows = null, parked = null, roster = null, key = null, health = null, banner = null, wakeLine = null, driftNotice = null, derived = null;
+  var ownerRows = [], cronCtl = null, noticeSeg = null, summaryForTitle = null, ownUnanswered = [], ownInfo = [], ownPreviews = {}, syncNotes = null, ownUnread = 0, ownSigBase = '', ownUrgency = null, orphansSeg = null, orphansSig = null, staleRegSeg = null, broadcastRows = null, parked = null, roster = null, key = null, health = null, banner = null, wakeLine = null, driftNotice = null, derived = null;
   if (top !== null) {
     var cli = piCli(opts, home);
     if (cli === null) return piDefer('cli');
@@ -1669,7 +1707,8 @@ function piDecide(p, opts) {
           ownPreviews = own.pendingQuestionPreviews && typeof own.pendingQuestionPreviews === 'object' ? own.pendingQuestionPreviews : {};
           if (own.pendingQuestions.length) {
             var qs = piQuestions({ home: home, key: key, primaryId: primaryId, now: now }, summary, own.pendingQuestions);
-            ownUnanswered = qs.blocking;
+            ownerRows = qs.blocking.filter(piOwnerRow);
+            ownUnanswered = qs.blocking.filter(function (q) { return !piOwnerRow(q); });
             ownInfo = qs.informational;
           }
         }
@@ -1779,6 +1818,7 @@ function piDecide(p, opts) {
   if (staleRegSeg !== null) pending.push({ kind: 'dedupe', rank: 90, o: { sessionId: sid, key: ah.cfg('devswarm_parent.key_stale_registry'), content: staleRegSeg, transcriptPath: tp, keepaliveTurns: ah.cfgNum('devswarm_parent.mesh_issue_keepalive') }, text: staleRegSeg });
   if (broadcastRows !== null) pending.push({ kind: 'plain', rank: 100, text: piBroadcastSegment(broadcastRows.rows) });
   var cliPath = top !== null ? piCli(opts, home) : null;
+  if (ownerRows.length > 0) pending.push({ kind: 'plain', rank: ah.cfgNum('devswarm_parent.owner_chat_rank'), text: piOwnerSegment(ownerRows, ownPreviews, cliPath) });
   if ((ownUnread > 0 || ownUnanswered.length > 0 || ownInfo.length > 0) && primaryId) {
     var titleFor = function (wid) {
       var row = summaryForTitle && summaryForTitle.workspaces && summaryForTitle.workspaces[wid];
@@ -1842,6 +1882,7 @@ function piDecide(p, opts) {
     dwCronCtlWrite(sid, cronCtl.rec);
     if (cronCtl.text !== null) ah.metric('devswarm_cron_ctl', ['action', 'delete_ordered']);
   }
+  piAckWrites.forEach(function (w) { ah.state.writeAtomic(w.rel, JSON.stringify(w.rec)); }); // the ack command was shown: not again within its window
   if (orphansSig !== null) ah.state.writeAtomic(piOrphansSeenRel(jx.isObj(p) ? p.session_id : undefined), JSON.stringify({ sig: orphansSig, at: now })); // shown once per id set per session
   if (noticeSeg !== null) ah.state.writeAtomic(piRel(ah.cfg('devswarm_parent.dir_notice_cursor') + '/' + key + '.json'), JSON.stringify({ lastSeenId: noticeSeg.lastId })); // shown once, marked seen
   var emitted = [];

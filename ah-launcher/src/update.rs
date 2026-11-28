@@ -874,6 +874,11 @@ impl U<'_> {
             } else if self.c.words_on.contains(&setting.to_lowercase()) {
                 self.o.channel = Some(self.c.default_channel.clone());
             } else {
+                // a real automatic run stays silent (the session start runs it); a dry run says what it decided
+                if self.o.dry {
+                    let shown = if setting.is_empty() { "unset".to_string() } else { setting.clone() };
+                    self.say(&self.m("msg.updater_dry_auto_off", &[("setting", &shown)]));
+                }
                 return 0;
             }
             let now = epoch_s();
@@ -882,9 +887,15 @@ impl U<'_> {
                 .and_then(|t| t.trim().parse().ok())
                 .unwrap_or(0);
             if now > 0 && now.saturating_sub(last) < self.c.auto_interval_s {
-                return 0;
+                if !self.o.dry {
+                    return 0;
+                }
+                // a dry run checks anyway (it changes nothing, and it must show the decision), and leaves the timestamp alone
+                let age = now.saturating_sub(last).to_string();
+                self.say(&self.m("msg.updater_dry_auto_interval", &[("age", &age), ("limit", &self.c.auto_interval_s.to_string())]));
+            } else if !self.o.dry {
+                let _ = fs::write(self.dir.join(&self.c.checked_file), format!("{now}\n"));
             }
-            let _ = fs::write(self.dir.join(&self.c.checked_file), format!("{now}\n"));
             self.o.yes = true;
         }
         // ---- argument sanity

@@ -67,6 +67,10 @@ pub struct Nudge {
     pub ev_step: String,
     /// Evidence: its progress units.
     pub ev_outcomes: u64,
+    /// The agent's progress units when the nudge was raised or its last snooze was accepted: a snooze needs more than this (#862).
+    pub prog_mark: u64,
+    /// The agent's commits at the same moment: a new commit also counts as progress for a snooze (#862).
+    pub commit_mark: u64,
     /// Evidence, in the plain words the nudge carries.
     pub ev_text: String,
     /// The agentHealth verdict (empty when none).
@@ -165,6 +169,41 @@ pub struct Snooze {
     pub min: u64,
     /// Re-raises the snooze held back.
     pub held: u64,
+}
+
+/// A number of `agent_nudge.budget` (0 = off).
+fn budget_num(k: &str) -> u64 {
+    defaults::raw("agent_nudge.budget").get(k).and_then(V::as_integer).unwrap_or(0).max(0) as u64
+}
+
+/// Why a snooze or `other` hold for this nudge is refused (the suffix of its message key), or None when it stands (#862): the agent used
+/// all its snoozes (`capped`), or it produced no outcome and no commit since the nudge was raised or its last snooze (`no_progress`).
+fn snooze_refusal(st: &State, n: &Nudge, a: &Agent) -> Option<(&'static str, &'static str)> {
+    let max = budget_num("snooze_max");
+    if max > 0 && st.nudge_snooze_total.get(&n.child).copied().unwrap_or(0) >= max {
+        return Some(("capped", "msg.agent_nudge_snooze_capped"));
+    }
+    if a.progress <= n.prog_mark && a.commits <= n.commit_mark {
+        return Some(("no_progress", "msg.agent_nudge_snooze_no_progress"));
+    }
+    None
+}
+
+/// Whether the agent's spend is past the hard token threshold.
+fn over_hard(a: &Agent) -> bool {
+    let hard = budget_num("token_hard");
+    hard > 0 && super::signals::total_spent(a) >= hard
+}
+
+/// Whether this open nudge blocks the coordinator's Stop beyond the runtime block step (#862): its agent is past the hard token budget,
+/// or used all its snoozes and the last one ran out. A stop answer is the way out; nothing else releases it.
+fn hard_blocking(st: &State, n: &Nudge, now: u64) -> bool {
+    if n.answer_class == ans("stop") {
+        return false;
+    }
+    let max = budget_num("snooze_max");
+    let capped = max > 0 && st.nudge_snooze_total.get(&n.child).copied().unwrap_or(0) >= max && n.snooze_until <= now;
+    capped || st.agents.get(&n.child).is_some_and(over_hard)
 }
 
 fn snooze_key(child: &str, trigger: &str) -> String {
@@ -570,10 +609,20 @@ fn rt_reached(a: &Agent, now: u64, steps: &[Step]) -> u64 {
     let spent = super::signals::total_spent(a).saturating_sub(a.progress_spent);
     let budget = rt_cfg().get("budget_tokens").and_then(V::as_integer).unwrap_or(0).max(0) as u64;
     let pct = super::fmtn("pct").max(1);
-    steps
+    let by_steps = steps
         .iter()
         .rposition(|s| (s.min > 0 && mins >= s.min) || (s.budget_pct > 0 && budget > 0 && spent.saturating_mul(pct) >= budget.saturating_mul(s.budget_pct)))
-        .map_or(0, |i| i as u64 + 1)
+        .map_or(0, |i| i as u64 + 1);
+    // #862: the agent's total spend, outcomes or not: past the soft threshold the advisory step fires, past the hard one the last step
+    let total = super::signals::total_spent(a);
+    let (soft, hard) = (budget_num("token_soft"), budget_num("token_hard"));
+    if hard > 0 && total >= hard {
+        steps.len() as u64
+    } else if soft > 0 && total >= soft {
+        by_steps.max(1)
+    } else {
+        by_steps
+    }
 }
 
 /// When the agent's last outcome came, as the sampler saw it (its start when it was never sampled).
@@ -646,7 +695,7 @@ fn open_runtime(env: &Env, st: &mut State) {
             !escalate::primary(a)
                 && !a.dead
                 && !st.nudges.contains_key(&a.id)
-                && !snoozed(env, st, a, now)
+                && (!snoozed(env, st, a, now) || over_hard(a))
                 && state_of(a) == state_name("running")
                 && !done_held(env, st, a, now)
                 // a session its owner is steering is no runtime target, nor is a session row that is its own parent (a Primary the app
@@ -679,6 +728,8 @@ fn open_runtime(env: &Env, st: &mut State) {
             ev_dur_ms: now.saturating_sub(super::started_ms(&a)),
             ev_tokens: super::signals::total_spent(&a),
             ev_outcomes: a.progress,
+            prog_mark: a.progress,
+            commit_mark: a.commits,
             sent_at: now,
             reminders: 1,
             tokens_at_sent: super::signals::total_spent(&a),
@@ -870,6 +921,8 @@ fn open_new(env: &Env, st: &mut State, budget: &mut u64) {
             ev_idle_min: idle_min,
             ev_step: step,
             ev_outcomes: a.progress,
+            prog_mark: a.progress,
+            commit_mark: a.commits,
             ev_text,
             health,
             health_tier: tier,
@@ -998,6 +1051,7 @@ fn close(env: &Env, st: &mut State, child: &str, outcome: &str) {
     // runtime or health, must hold the nudge that reopens on its next turn; a kept snooze expires on its own (the forget pass below)
     if [out("child_died"), out("acted_stopped")].contains(&outcome) {
         st.nudge_snooze.retain(|k, _| k.split_once('|').is_none_or(|(c, _)| c != child));
+        st.nudge_snooze_total.remove(child); // stopped or dead: a re-dispatched agent starts with its snoozes back
     }
     st.nudge_log.push(n);
     let max = lim("log_max") as usize;
@@ -1013,8 +1067,11 @@ fn publish_escalations(env: &Env, st: &State) {
     let rows: Vec<Value> = st
         .nudges
         .values()
-        .filter(|n| n.runtime_escalated || rt_blocking(n, now))
-        .map(|n| json!({"session": n.parent, "child": n.child, "name": n.child_name, "dur_ms": n.ev_dur_ms + now.saturating_sub(n.sent_at), "reminders": n.reminders, "block": rt_blocking(n, now)}))
+        .filter(|n| n.runtime_escalated || rt_blocking(n, now) || hard_blocking(st, n, now))
+        .map(|n| {
+            let hard = hard_blocking(st, n, now);
+            json!({"session": n.parent, "child": n.child, "name": n.child_name, "dur_ms": n.ev_dur_ms + now.saturating_sub(n.sent_at), "reminders": n.reminders, "block": rt_blocking(n, now) || hard, "hard": hard})
+        })
         .collect();
     let path = env.dir().join(defaults::raw("agent_nudge.runtime_escalation").str_field("file"));
     let body = json!({"rows": rows}).to_string();
@@ -1300,6 +1357,26 @@ fn record(env: &Env, st: &mut State, key: &str, mut class: String, text: String,
         st.nudges.insert(key, n);
         return; // an unclassified reply counts as no answer
     }
+    if (class == ans("snooze") || class == ans("other"))
+        && let Some((why, msg_key)) = snooze_refusal(st, &n, &a)
+    {
+        // #862: a snooze is not free: no progress since the nudge (or the last snooze), or the agent's snoozes are used up
+        crate::metrics::bump("agent_nudge_snooze_refused", &[("why", why)]);
+        n.reason.clone_from(&text);
+        n.answer_class.clear();
+        let cmd = defaults::text("agent_nudge.cmd");
+        let said = defaults::render(
+            msg_key,
+            &[("kind", &n.child_kind), ("name", &n.child_name), ("child", &n.child), ("cmd", &cmd), ("max", &budget_num("snooze_max"))],
+        );
+        if live(st, &n.parent) {
+            let to = n.parent.clone();
+            n.path = send_to(env, &to, &n, said);
+        }
+        emit(env, word("ev_answered"), &n);
+        st.nudges.insert(key, n);
+        return;
+    }
     n.answer_class.clone_from(&class);
     n.answer_source = source.to_string();
     n.answer_at = now;
@@ -1351,6 +1428,8 @@ fn record(env: &Env, st: &mut State, key: &str, mut class: String, text: String,
         }
         n.snooze_min = min;
         n.snoozes += 1;
+        (n.prog_mark, n.commit_mark) = (a.progress, a.commits); // the next snooze needs progress after this one
+        *st.nudge_snooze_total.entry(n.child.clone()).or_default() += 1;
         n.snooze_until = now + min * super::fmtn("ms_per_s") * 60;
         if env.switch("agent_nudge.snooze_setting") && !n.trigger.is_empty() {
             let s = st.nudge_snooze.entry(snooze_key(&n.child, &n.trigger)).or_default();

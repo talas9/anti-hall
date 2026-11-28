@@ -1268,6 +1268,7 @@ mod tests {
         match &prev {
             // SAFETY: as above
             Some(v) => unsafe { std::env::set_var("AH_ENGINE_DIR", v) },
+            // SAFETY: as above
             None => unsafe { std::env::remove_var("AH_ENGINE_DIR") },
         }
         let hung = defaults::text("health.hung_kill_kind");
@@ -1302,6 +1303,7 @@ mod tests {
         match &prev {
             // SAFETY: as above
             Some(v) => unsafe { std::env::set_var("AH_ENGINE_DIR", v) },
+            // SAFETY: as above
             None => unsafe { std::env::remove_var("AH_ENGINE_DIR") },
         }
         let kind = defaults::text("health.rss_load_kind");

@@ -1309,7 +1309,7 @@ pub fn expand_now(s: &str, now_ms: f64) -> String {
 }
 
 #[cfg(test)]
-mod golden;
+pub(crate) mod golden;
 #[cfg(test)]
 #[path = "ladder_kinds/tests.rs"]
 mod ladder_kinds;

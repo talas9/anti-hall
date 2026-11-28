@@ -32,9 +32,11 @@ pub mod native;
 pub mod node;
 pub mod notice;
 pub mod plan;
+pub mod prefilter;
 pub mod shellwords;
 pub mod shrink;
 pub mod spill;
+pub mod stopmemo;
 pub mod stopchan;
 pub mod stoploop;
 pub mod table;
@@ -454,7 +456,7 @@ pub(crate) struct Decision {
 
 /// #907: the word lists of the shell-word normaliser, from `dispatch.capacity_hold` (`normalise` 0 or an absent `text`/`git` table
 /// switches that step off, the raw text alone is matched then).
-fn capacity_norm_cfg(cfg: &defaults::V) -> Option<shellwords::Cfg> {
+pub(crate) fn capacity_norm_cfg(cfg: &defaults::V) -> Option<shellwords::Cfg> {
     if cfg.get("normalise").and_then(|v| v.as_integer()) == Some(0) {
         return None;
     }
@@ -1880,7 +1882,7 @@ mod tests {
         let at = d("bash ah-engine/test.sh", repo);
         assert_eq!((at.rule, at.exempt), (None, vec!["trusted_script"]), "the seeded test script is trusted at its current hash");
         let tmp = std::env::temp_dir().join(format!("ah-928-trust-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&tmp); // keep: this test's own scratch dir, named by pid
+        crate::discard::harmless(std::fs::remove_dir_all(&tmp)); // keep: this test's own scratch dir, named by pid
         std::fs::create_dir_all(tmp.join("ah-engine")).unwrap();
         std::fs::create_dir_all(tmp.join("other")).unwrap();
         std::fs::write(tmp.join(".git"), "gitdir: x").unwrap();

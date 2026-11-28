@@ -71,6 +71,18 @@ impl RtLive<'_> {
             .and_then(|p| p.worktree.clone())
     }
 
+    /// Where a poke to `b` must run: the worktree of its parent workspace (`message-child` names the sender by the working directory
+    /// and refuses a target that is not its child), else the repository's primary worktree.
+    fn parent_cwd(app: &AppRead, b: &AppBuilder) -> Option<String> {
+        let exists = |w: &Option<String>| w.as_deref().is_some_and(|w| Path::new(w).exists());
+        b.parent
+            .as_deref()
+            .and_then(|pid| app.builders.iter().find(|p| p.id == pid))
+            .filter(|p| exists(&p.worktree))
+            .and_then(|p| p.worktree.clone())
+            .or_else(|| Self::primary_cwd(app, &b.repo))
+    }
+
     fn auto_archive_facts(&self, app: &AppRead, b: &AppBuilder, fresh: bool) -> Value {
         let _site = sources::at_site(if fresh { "facts_fresh" } else { "facts" });
         let descs = facts::descriptors(&self.home);
@@ -195,6 +207,7 @@ impl RtLive<'_> {
         Some(json!({
             "id": id, "status": if st.escalated { "escalated" } else if stale { "stale" } else { "alive" },
             "nudgeAttempts": st.attempts, "nudgedAt": st.at, "nudgeArgv": nudge, "escalateArgv": escalate,
+            "parentCwd": Self::parent_cwd(&app, b),
             "inputs": {
                 "lifecycle_active": active, "paused": !not_paused, "waiting_ci_or_done": waiting,
                 "heartbeat_ms": hb, "other_activity_ms": others, "last_activity_ms": silence.map(|(_, t)| t),

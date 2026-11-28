@@ -284,3 +284,19 @@ value = "agent_waste"
 [agent_nudge.outcome_source]
 doc = "The `source` of the Jev outcome rows a closed nudge writes."
 value = "nudge"
+
+[agent_nudge.budget]
+doc = "No free snoozes (#862). snooze_max: snoozes (or `other` holds) one agent may be given in all; past it the nudge stays a coordinator Stop block until the agent is stopped or re-dispatched, and a further snooze is refused (0 = no cap). token_soft: the agent's total spend (cache reads weighted as everywhere) from which the runtime advisory step fires even for an agent that keeps producing outcomes. token_hard: the spend from which the nudge is a coordinator Stop block that no snooze, extension or message releases (0 = off for either threshold). A snooze is accepted only with progress (an outcome or a commit) since the nudge was raised or the last snooze; the engine never kills the agent."
+value = { snooze_max = 2, token_soft = 1500000, token_hard = 4000000 }
+
+[msg.agent_nudge_snooze_no_progress]
+doc = "Said to the coordinator when a snooze or `other` hold is refused because the agent produced no outcome and no commit since the nudge was raised (or since the last snooze). Placeholders: {kind}, {name}, {child}, {cmd}."
+value = "⚠️ snooze refused for {kind} '{name}': no outcome and no commit since the nudge. Do now: narrow its task, re-dispatch it fresh, or stop it: {cmd} {child} stop."
+
+[msg.agent_nudge_snooze_capped]
+doc = "Said to the coordinator when a snooze or `other` hold is refused because the agent already used its snooze_max snoozes. Placeholders: {kind}, {name}, {child}, {cmd}, {max}."
+value = "⛔ snooze refused for {kind} '{name}': already snoozed {max} times. Your next Stop is blocked until it is stopped or re-dispatched. Do now: narrow its task, re-dispatch it fresh, or stop it: {cmd} {child} stop."
+
+[metric.agent_nudge_snooze_refused]
+doc = "Snoozes or `other` holds refused (#862), by why: no_progress (no outcome and no commit since the nudge or the last snooze) or capped (the agent already used agent_nudge.budget.snooze_max snoozes)."
+value = { kind = "counter", unit = "snoozes", labels = ["why"] }

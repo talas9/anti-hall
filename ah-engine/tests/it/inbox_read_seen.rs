@@ -85,3 +85,24 @@ fn a_read_older_than_the_window_is_not_labelled_but_a_fresh_one_is() {
     let fresh = turn_with("window-new", true, &[("rmx0001", 60_000, 1, false)]);
     assert!(fresh.contains(NUDGE) && fresh.contains(LABEL) && fresh.contains("--receipt rmx0001"), "got: {fresh}");
 }
+
+/// GH #1013 item 7: when the read kept its boundary, the nag names the exact `inbox ack <id> --through <token>` command, and says so ONCE per
+/// receipt within the window: the next turn does not repeat the command, and a newer receipt brings it back.
+#[test]
+fn the_nag_names_the_exact_ack_command_once_and_does_not_repeat_it_within_the_window() {
+    let e = Env::new("ack-through-once");
+    e.settings(true);
+    let wt = e.worktree(true);
+    e.summary(&wt, 3, "normal", false);
+    receipt(&e, &("rmx0001", e.real_clock() - 1000, 1, false));
+    e.put(&format!("ack-through/{CHILD}.json"), serde_json::json!({"ackThrough": "nd:0,store:3", "ts": 1}));
+    let first = e.turn();
+    let cmd = format!("inbox ack {CHILD} --through nd:0,store:3");
+    assert!(first.contains(NUDGE) && first.contains(&cmd), "the exact command is named, got: {first}");
+    assert!(!first.contains("ack-primary"), "not the receipt verb, got: {first}");
+    let second = e.turn();
+    assert!(second.contains(LABEL) && !second.contains("--through"), "the command is not repeated inside the window, got: {second}");
+    receipt(&e, &("rmx0002", e.real_clock(), 1, false));
+    let third = e.turn();
+    assert!(third.contains(&cmd), "a newer receipt names it again, got: {third}");
+}
