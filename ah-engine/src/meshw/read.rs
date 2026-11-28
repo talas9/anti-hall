@@ -125,9 +125,18 @@ fn run_inner(inv: &Inv, a: &Args, history: bool) -> R<Answer> {
     }
     let aliases = common::read_aliases(home, &inv.env);
     let mut unseen: Vec<serde_json::Value> = Vec::new();
+    // GH #845 phase 2a: a room message the caller was not a member of is not listed (a consuming read still moves past it)
+    let extras = st.reader().extras_of(defaults::text("mesh_write.broadcast_partition"), since_seq as i64).unwrap_or_default();
+    let room_of = |m: &serde_json::Value| {
+        let q = m["storeSeq"].as_f64()? as i64;
+        crate::meshw::wakepolicy::decode(extras.get(&q)?.1.as_deref())
+    };
     st.reader()
         .for_each_message(defaults::text("mesh_write.broadcast_partition"), 0, |m| {
-            if !m["isHeartbeat"].as_bool().unwrap_or(false) && m["storeSeq"].as_f64().is_some_and(|q| q > since_seq) {
+            if !m["isHeartbeat"].as_bool().unwrap_or(false)
+                && m["storeSeq"].as_f64().is_some_and(|q| q > since_seq)
+                && !crate::meshw::wakepolicy::hidden(room_of(&m).as_ref(), &cursor_key)
+            {
                 unseen.push(m);
             }
             true
@@ -277,6 +286,10 @@ fn scan_broadcasts(r: &crate::mesh::MeshReader, inv: &Inv, reader: &str, list: b
         let needs_reply = m["needsReply"].as_bool().unwrap_or(false);
         let (kind, stored) = extras.get(&q).map_or((None, None), |(k, a)| (k.as_deref(), a.as_deref()));
         let stored = crate::meshw::wakepolicy::decode(stored);
+        // GH #845 phase 2a: a room message the reader was not a member of is passed over (an ack moves through it)
+        if crate::meshw::wakepolicy::hidden(stored.as_ref(), reader) {
+            return true;
+        }
         let legacy = || {
             let kind = m[defaults::text("mesh_identity.row_kind_field")].as_str();
             let b = crate::meshw::wakepolicy::Bc { sender, urgency: m["urgency"].as_str(), question: needs_reply, heartbeat: false, body, kind };
@@ -311,6 +324,9 @@ fn scan_broadcasts(r: &crate::mesh::MeshReader, inv: &Inv, reader: &str, list: b
             .put("seq", n(q as f64))
             .put("needsReply", OVal::Bool(needs_reply))
             .put("addressed", OVal::Bool(addressed));
+        if let Some(room) = crate::meshw::wakepolicy::room_of(stored.as_ref()) {
+            b.put(defaults::text("mesh_room.key_room"), s(room));
+        }
         if alias.is_some() {
             b.put("fromLabel", s_or_null(sender));
         }

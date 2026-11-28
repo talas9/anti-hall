@@ -448,3 +448,63 @@ fn a_child_cannot_send_as_admin_and_the_rooms_admin_send_may_wake_all() {
     let r = send::run(&stranger, &argv(&["send", "--to-primary", "--message", "x"])).unwrap();
     assert_ne!(r.code, 0, "an undeclared identity: {}", r.stdout);
 }
+
+/// GH #845 phase 2a end to end: a room message wakes only the room's members (never the Primary that is not one, never the sender),
+/// @mentions narrow it to the members named, a non-member neither lists nor counts it, and a member that leaves is no longer woken.
+/// The summary the wake-watch reads and the drain / Codex tick reader agree.
+#[test]
+fn a_room_message_wakes_and_shows_only_its_members() {
+    let f = fx("room");
+    let (primary, key) = registry(&f, &["child-1", "child-2", "child-3"]);
+    let as_child = |id: &str| {
+        let mut i = f.inv.clone();
+        i.env.insert(defaults::text("mesh_write.env_builder_id").to_string(), id.into());
+        i
+    };
+    let (c1, c2, c3) = (as_child("child-1"), as_child("child-2"), as_child("child-3"));
+    let room = |inv: &Inv, words: &[&str]| crate::meshw::rooms::run(inv, &argv(words)).unwrap();
+    let created = room(&c1, &["room", "create", "lab"]);
+    assert_eq!(created.code, 0, "{}", created.stdout);
+    assert!(created.stdout.contains("\"changed\":true") && created.stdout.contains("\"member\":true"), "the creator joins: {}", created.stdout);
+    assert_eq!(room(&c2, &["room", "join", "lab"]).code, 0);
+    assert!(room(&c2, &["room", "join", "lab"]).stdout.contains("\"changed\":false"), "a second join changes nothing");
+    assert_ne!(room(&c3, &["room", "join", "nope"]).code, 0, "no such room");
+    assert_ne!(room(&c3, &["room", "create", "Bad Name"]).code, 0, "a bad name");
+    assert_ne!(room(&c3, &["room", "frobnicate", "lab"]).code, 0, "an unknown subcommand");
+    assert_ne!(send::run(&c3, &argv(&["send", "--room", "nope", "--message", "x"])).unwrap().code, 0, "a send to no room");
+    assert_ne!(send::run(&c3, &argv(&["send", "--room", "lab", "--broadcast", "--message", "x"])).unwrap().code, 0, "two target modes");
+
+    // a non-member posts: both members wake, the Primary (not a member) and the sender do not
+    let s = send::run(&c3, &argv(&["send", "--room", "lab", "--message", "standup in 5"])).unwrap();
+    assert_eq!(s.code, 0, "{}", s.stdout);
+    assert!(s.stdout.contains("\"room\":\"lab\""), "{}", s.stdout);
+    let st = crate::meshw::common::open_store(&f.inv, &key).unwrap();
+    let wake = |id: &str| crate::meshw::read::broadcast_wake(st.reader(), &f.inv, id).unwrap().0;
+    assert_eq!((wake("child-1"), wake("child-2"), wake(&f.primary), wake("child-3")), (1, 1, 0, 0));
+
+    // mentions narrow the wake to the members named
+    let m = send::run(&c1, &argv(&["send", "--room", "lab", "--message", "@child-2 can you review?"])).unwrap();
+    assert_eq!(m.code, 0, "{}", m.stdout);
+    assert_eq!((wake("child-1"), wake("child-2"), wake(&f.primary)), (1, 2, 0));
+
+    // the summary the watcher reads agrees, and a non-member lists nothing
+    let (sum, _) = crate::meshw::summary::derive_value(&st, &f.inv, &key).unwrap();
+    let field = |id: &str, k: &str| sum.get("workspaces").and_then(|w| w.get(id)).and_then(|w| w.get(k)).cloned();
+    let pending = defaults::text("mesh_wake.summary_field_pending");
+    assert_eq!(field("child-2", pending), Some(crate::checks::guardkit::ojson::OVal::Num(2.0)));
+    assert_eq!(field(&f.primary, pending), Some(crate::checks::guardkit::ojson::OVal::Num(0.0)));
+    assert_eq!(field(&f.primary, "broadcastUnread"), Some(crate::checks::guardkit::ojson::OVal::Num(0.0)), "hidden from a non-member");
+    let listed = crate::meshw::read::unread_broadcasts(st.reader(), &f.inv, "child-2").unwrap();
+    assert_eq!(listed.rows.len(), 2);
+    assert!(listed.rows.iter().all(|r| r.get(defaults::text("mesh_room.key_room")) == Some(&crate::checks::guardkit::ojson::OVal::Str("lab".into()))));
+    assert!(crate::meshw::read::unread_broadcasts(st.reader(), &f.inv, &f.primary).unwrap().rows.is_empty());
+    let primary_read = crate::meshw::read::run(&primary, &argv(&["read", "--peek"]), false).unwrap().stdout;
+    assert!(!primary_read.contains("standup in 5"), "a non-member's mesh read lists a room message: {primary_read}");
+
+    // a member that leaves is not woken by the next message; the list shows who is left
+    assert!(room(&c2, &["room", "leave", "lab"]).stdout.contains("\"changed\":true"));
+    assert_eq!(send::run(&c3, &argv(&["send", "--room", "lab", "--message", "after the leave"])).unwrap().code, 0);
+    assert_eq!((wake("child-1"), wake("child-2")), (2, 2));
+    let list = room(&c1, &["room", "list"]);
+    assert!(list.stdout.contains("\"members\":[\"child-1\"]") && list.stdout.contains("\"member\":true"), "{}", list.stdout);
+}

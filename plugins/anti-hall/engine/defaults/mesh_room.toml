@@ -23,8 +23,8 @@ doc = "The pattern a room name must match (JavaScript syntax, matched against th
 value = '^[a-z0-9][a-z0-9._-]{0,47}$'
 
 [mesh_room.flag_room]
-doc = "The `mesh send` flag that posts the message to a room instead of a workspace or the whole project."
-value = "--room"
+doc = "The `mesh send` flag (`--room <name>`, the name without its dashes here) that posts the message to a room instead of a workspace or the whole project."
+value = "room"
 
 [mesh_room.verb_room]
 doc = "The mesh verb word of the room commands (`mesh room <sub> [<name>]`)."
@@ -101,10 +101,6 @@ value = "no room {name}: create it first with `mesh room create {name}`"
 [mesh_room.msg_no_member]
 doc = "Refusal of a room command from a caller the project's registry does not hold (it cannot subscribe)."
 value = "this workspace is not registered in the project's mesh, so it cannot join a room"
-
-[mesh_room.msg_flag_conflict]
-doc = "Refusal of a `send --room` that also asks for a question answer to a single sender or an explicit ack (a room message has many readers)."
-value = "--room cannot be combined with --answers or --ack-only"
 
 [mesh_room.reason_no_room]
 doc = "`reason` of a refusal for a room that does not exist."

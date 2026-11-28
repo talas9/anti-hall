@@ -918,8 +918,17 @@ pub fn compute(st: &MeshStore, inv: &Inv, _touched: Option<&str>) -> R<OVal> {
             st.reader().message_count_from_others(&d.id, &family, wake_prefix)
         }
         .unwrap_or_else(|e| soft("count", e)) as f64;
-        let unread_bc: Vec<(usize, &Msg)> =
-            broadcast_all.iter().enumerate().filter(|(_, r)| !r.is_heartbeat && r.store_seq.is_some_and(|q| q.is_finite() && q > bc_cursor)).collect();
+        // GH #845 phase 2a: a room message this workspace was not a member of is neither unread nor wakes it
+        let unread_bc: Vec<(usize, &Msg)> = broadcast_all
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| !r.is_heartbeat && r.store_seq.is_some_and(|q| q.is_finite() && q > bc_cursor))
+            .filter(|(i, r)| {
+                let text = r.store_seq.and_then(|q| bc_extras.get(&(q as i64))).and_then(|(_, a)| a.as_deref());
+                let stored = bc_audience.entry(*i).or_insert_with(|| crate::meshw::wakepolicy::decode(text));
+                !crate::meshw::wakepolicy::hidden(stored.as_ref(), &d.id)
+            })
+            .collect();
         let from_others = |r: &Msg| !(!family.is_empty() && r.sender.as_ref().is_some_and(|x| family.contains(x)));
         let bc_from_others = unread_bc.iter().filter(|(_, r)| from_others(r)).count();
         // broadcastWakeSeq / broadcastWakePending: the unread broadcasts of others that wake this workspace (contract §3-§4); the

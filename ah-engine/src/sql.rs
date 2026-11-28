@@ -421,6 +421,23 @@ pub const MESHW_DDL_BROADCAST_CURSORS: &str =
     "CREATE TABLE IF NOT EXISTS broadcast_cursors ( workspace_id TEXT PRIMARY KEY, value INTEGER NOT NULL, updated_at INTEGER);";
 /// Node's `reader_cursors` table.
 pub const MESHW_DDL_READER_CURSORS: &str = "CREATE TABLE IF NOT EXISTS reader_cursors ( partition TEXT NOT NULL, ns TEXT NOT NULL CHECK (ns IN ('store','nd')), reader TEXT NOT NULL, value INTEGER NOT NULL CHECK (value >= 0), retired_line INTEGER, updated_at INTEGER NOT NULL, PRIMARY KEY (partition, ns, reader)) WITHOUT ROWID;";
+/// GH #845 phase 2a: the project's mesh rooms (engine only; Node never reads them).
+pub const MESHW_DDL_ROOMS: &str = "CREATE TABLE IF NOT EXISTS mesh_rooms ( name TEXT PRIMARY KEY, created_by TEXT, created_at INTEGER);";
+/// GH #845 phase 2a: who is subscribed to which room (registry ids).
+pub const MESHW_DDL_ROOM_MEMBERS: &str =
+    "CREATE TABLE IF NOT EXISTS mesh_room_members ( room TEXT NOT NULL, member TEXT NOT NULL, joined_at INTEGER, PRIMARY KEY (room, member)) WITHOUT ROWID;";
+/// Create a room (an existing one is kept as it is).
+pub const MESHW_ROOM_CREATE: &str = "INSERT OR IGNORE INTO mesh_rooms (name, created_by, created_at) VALUES (?1, ?2, ?3);";
+/// Subscribe a member (an existing subscription is kept).
+pub const MESHW_ROOM_JOIN: &str = "INSERT OR IGNORE INTO mesh_room_members (room, member, joined_at) VALUES (?1, ?2, ?3);";
+/// Unsubscribe a member (the caller's own request; the room stays).
+pub const MESHW_ROOM_LEAVE: &str = "DELETE FROM mesh_room_members WHERE room = ?1 AND member = ?2;";
+/// Every room name, sorted (fails on a store the room tables were never created in).
+pub const MESH_ROOMS: &str = "SELECT name FROM mesh_rooms ORDER BY name";
+/// Whether a room exists.
+pub const MESH_ROOM_EXISTS: &str = "SELECT 1 FROM mesh_rooms WHERE name = ?1";
+/// A room's members, sorted.
+pub const MESH_ROOM_MEMBERS: &str = "SELECT member FROM mesh_room_members WHERE room = ?1 ORDER BY member";
 /// Column names of a table (`PRAGMA table_info`), for Node's additive migrations.
 pub const MESHW_TABLE_INFO_MESSAGES: &str = "PRAGMA table_info(messages);";
 /// Column names of the registry.

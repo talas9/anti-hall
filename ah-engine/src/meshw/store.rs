@@ -184,6 +184,8 @@ impl MeshStore {
         conn.execute_batch(sql::MESHW_DDL_GATES)?;
         conn.execute_batch(sql::MESHW_DDL_BROADCAST_CURSORS)?;
         conn.execute_batch(sql::MESHW_DDL_READER_CURSORS)?;
+        conn.execute_batch(sql::MESHW_DDL_ROOMS)?;
+        conn.execute_batch(sql::MESHW_DDL_ROOM_MEMBERS)?;
         let has_write_seq =
             table_columns(&conn, sql::MESHW_TABLE_INFO_REGISTRY).is_some_and(|c| c.iter().any(|x| x == defaults::text("mesh_write.write_seq_column")));
         Ok(MeshStore { reader: MeshReader::from_conn(conn), has_write_seq })

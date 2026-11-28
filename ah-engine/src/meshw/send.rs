@@ -741,10 +741,13 @@ pub(crate) fn cmd_send_mode(inv: &Inv, a: &Args, plan: bool) -> R<Obj> {
         return Ok(refused(&[("error", s(&msg))]));
     }
     let to_flag = a.one(defaults::text("mesh_write.flag_to"));
-    let broadcast = a.has(defaults::text("mesh_write.flag_broadcast"))
+    let bc_flag = a.has(defaults::text("mesh_write.flag_broadcast"))
         || a.one(defaults::text("mesh_write.flag_type")) == Some(defaults::text("mesh_write.mtype_broadcast"));
+    // GH #845 phase 2a: `--room <name>` is a broadcast row whose audience is the room (one target mode of its own)
+    let room = a.one(defaults::text("mesh_room.flag_room"));
+    let broadcast = bc_flag || room.is_some();
     let to_primary = a.has(defaults::text("mesh_write.flag_to_primary"));
-    let modes = usize::from(to_flag.is_some()) + usize::from(broadcast) + usize::from(to_primary);
+    let modes = usize::from(to_flag.is_some()) + usize::from(bc_flag) + usize::from(to_primary) + usize::from(room.is_some());
     if modes != 1 {
         let key = if modes > 1 { "devswarm_cli.msg_send_target_many" } else { "devswarm_cli.msg_send_target_none" };
         return Ok(refused(&[("error", s(defaults::text(key)))]));
@@ -774,6 +777,15 @@ pub(crate) fn cmd_send_mode(inv: &Inv, a: &Args, plan: bool) -> R<Obj> {
     }
     if broadcast && answers {
         return Ok(refused(&[("error", s(defaults::text("devswarm_cli.msg_send_answers_broadcast")))]));
+    }
+    if let Some(r) = room {
+        if defaults::num("mesh_room.enabled") != 1 {
+            return Ok(refused(&[("error", s(defaults::text("mesh_room.msg_disabled")))]));
+        }
+        if !crate::meshw::rooms::valid_name(r) {
+            let msg = defaults::render("mesh_room.msg_bad_name", &[("name", &quote(r))]);
+            return Ok(refused(&[("reason", s(defaults::text("mesh_room.reason_bad_name"))), ("error", s(&msg))]));
+        }
     }
     let m_flag = a.one(defaults::text("mesh_write.flag_message"));
     let m_file = a.one(defaults::text("mesh_write.flag_message_file"));
@@ -913,6 +925,22 @@ pub(crate) fn cmd_send_mode(inv: &Inv, a: &Args, plan: bool) -> R<Obj> {
             kind: declared.map(|d| d.kind),
         };
         match crate::meshw::wakepolicy::resolve(&b, &ids) {
+            Ok(base) if room.is_some() => {
+                let name = room.unwrap_or_default();
+                let Some(members) = crate::meshw::rooms::members_of(st.reader(), name) else {
+                    let msg = defaults::render("mesh_room.msg_no_room", &[("name", &name)]);
+                    return Ok(refused(&[("reason", s(defaults::text("mesh_room.reason_no_room"))), ("error", s(&msg))]));
+                };
+                // the sender never wakes for its own message: its mesh id and the registry row it reads under
+                let own = resolve_mesh_target(inv, Some(st.reader()), &rows, Some(&from)).ok().flatten().map(|r| r.id);
+                let mut r = crate::meshw::wakepolicy::room_audience(name, &members, &base, &from);
+                r.wake.retain(|x| Some(x) != own.as_ref());
+                if !plan {
+                    let how = if matches!(base, crate::meshw::wakepolicy::Audience::Ids(_)) { "mesh_room.wake_mentions" } else { "mesh_room.wake_members" };
+                    crate::metrics::bump_shared("mesh_room_sends", &[("wake", defaults::text(how))]);
+                }
+                Some(crate::meshw::wakepolicy::encode(&crate::meshw::wakepolicy::Audience::Room(r)))
+            }
             Ok(a) => Some(crate::meshw::wakepolicy::encode(&a)),
             Err(e) => {
                 let msg = defaults::render("mesh_wake.msg_ambiguous_mention", &[("token", &e.token), ("ids", &e.ids.join(", "))]);
@@ -962,6 +990,7 @@ pub(crate) fn cmd_send_mode(inv: &Inv, a: &Args, plan: bool) -> R<Obj> {
         ack_only,
         audience,
         sender_kind: crate::meshw::senders::stored_kind(declared),
+        room,
     };
     if broadcast {
         return do_append(&ctx);
@@ -1089,6 +1118,8 @@ struct AppendCtx<'a> {
     audience: Option<String>,
     /// The `sender_kind` the row stores (GH #845 identities).
     sender_kind: &'static str,
+    /// The room of a `--room` send (GH #845 phase 2a).
+    room: Option<&'a str>,
 }
 
 /// `doAppend()`: append, read it back, build the result, write the receipt. A failed INSERT wrote nothing (SQLite
@@ -1150,6 +1181,9 @@ fn do_append(c: &AppendCtx<'_>) -> R<Obj> {
         .put("urgency", s(c.urgency))
         .put("sent", OVal::Bool(inserted))
         .put("seq", seq.map_or(OVal::Null, |x| n(x as f64)));
+    if let Some(r) = c.room {
+        out.put(defaults::text("mesh_room.key_room"), s(r));
+    }
     if let Some(from) = c.redirect {
         out.put("redirected", OVal::Bool(true)).put("redirectedFrom", s(from));
     }
@@ -1185,8 +1219,12 @@ fn do_append(c: &AppendCtx<'_>) -> R<Obj> {
         ("verified".into(), OVal::Bool(verified)),
         ("repoKey".into(), s(c.repo_key)),
         ("cwd".into(), s(c.cwd)),
-    ])
-    .done();
+    ]);
+    let mut receipt = receipt;
+    if let Some(r) = c.room {
+        receipt.put(defaults::text("mesh_room.key_room"), s(r));
+    }
+    let receipt = receipt.done();
     let t_receipt = std::time::Instant::now();
     common::write_send_receipt(&c.inv.write_home, c.now, &hash, &receipt);
     // LABEL AT ARRIVAL: a freshly inserted un-flagged direct message is queued for Jev triage (see `jev_enqueue_arrival`)
