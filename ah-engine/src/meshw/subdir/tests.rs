@@ -586,3 +586,31 @@ fn owner_chat_rows_are_orders_for_the_primary_not_roster_feed() {
     let child = sum.get("workspaces").and_then(|w| w.get("child-1")).expect("child entry").stringify();
     assert!(!child.contains(&format!("\"{flag}\":true")), "{child}");
 }
+
+/// GH #862: `mesh room create|join|leave` honour the declared sender (as `mesh send` does): the owner's room (a clean environment, here
+/// in a child's checkout) joins and leaves as `admin`; an agent that declares `admin` is refused.
+#[test]
+fn room_ops_honour_the_declared_sender_and_refuse_an_agent() {
+    let f = fx("room-admin");
+    let (_primary, _key) = registry(&f, &["child-1"]);
+    let mut owner = f.inv.clone();
+    owner.env.remove(defaults::text("mesh_identity.agent_env_builder"));
+    owner.env.insert(defaults::text("mesh_identity.sender_env").to_string(), "admin".into());
+    let room = |inv: &Inv, words: &[&str]| crate::meshw::rooms::run(inv, &argv(words)).unwrap();
+    let created = room(&owner, &["room", "create", "lab"]);
+    assert_eq!(created.code, 0, "{}", created.stdout);
+    assert!(created.stdout.contains("\"member\":true") && created.stdout.contains("\"admin\""), "admin created and joined: {}", created.stdout);
+    let left = room(&owner, &["room", "leave", "lab"]);
+    assert!(left.stdout.contains("\"changed\":true") && left.stdout.contains("\"member\":false"), "admin left: {}", left.stdout);
+    let joined = room(&owner, &["room", "join", "lab"]);
+    assert!(joined.stdout.contains("\"changed\":true") && joined.stdout.contains("\"member\":true"), "admin joined: {}", joined.stdout);
+    // an agent (the child's builder id is set) cannot declare admin: refused, nothing changes
+    let mut agent = f.inv.clone();
+    agent.env.insert(defaults::text("mesh_identity.sender_env").to_string(), "admin".into());
+    let refused = room(&agent, &["room", "leave", "lab"]);
+    assert_ne!(refused.code, 0, "an agent left as admin: {}", refused.stdout);
+    let as_flag = format!("--{}", defaults::text("mesh_identity.flag_as"));
+    assert_ne!(room(&agent, &["room", "join", "lab", &as_flag, "admin"]).code, 0, "an agent joined as admin via --as");
+    // the same agent, undeclared, still acts as itself
+    assert_eq!(room(&f.inv, &["room", "join", "lab"]).code, 0);
+}
