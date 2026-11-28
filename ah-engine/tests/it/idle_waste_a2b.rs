@@ -171,6 +171,7 @@ fn track(h: &Home, tp: &PathBuf, prompt: &str, extra: &[(&str, &str)]) -> String
         ("ANTIHALL_DEVSWARM_SUPERVISOR", "on"),
         ("ANTIHALL_DEDUPE_WINDOW_MIN", "0"),
         ("ANTIHALL_TASK_TRACKER_TERSE", "0"),
+        ("ANTIHALL_TASK_TRACKER_LINES", "1"), // the open-tasks and DISPATCH lines are off by default (#958): the waste meter counts what they would repeat
         ("AH_ENGINE_NOSPAWN", "1"),
         ("ANTIHALL_INGEST_DRY_RUN", "1"),
     ];

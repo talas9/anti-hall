@@ -112,8 +112,10 @@ files = [
     "guards_v1.toml",
     "units.toml",
     "guards_l12.toml",
+    "omc_coexist.toml",
     "codex_scripts.toml",
     "diagnostics.toml",
+    "overload.toml",
     "mem.toml",
     "wire.toml",
     "devswarm_parent.toml",
@@ -123,5 +125,8 @@ files = [
     "io.toml",
     "session_switches.toml",
     "tool_advisory.toml",
+    "mesh_wake.toml",
+    "mesh_chat.toml",
+    "mesh_identity.toml",
 ]
 extra_dir = "hooks.d"

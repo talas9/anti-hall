@@ -48,7 +48,7 @@ function decide(p) {
     // the Stop-side fire, once per arm; never for a crossing against a guessed window
     result = cb.getContextPct(tp, p.session_id, w);
     var over = cb.overThreshold(result, cfg);
-    if (over === cb.c('ctxbudget.ah_via_pct') || over === cb.c('ctxbudget.ah_via_tokens') || over === cb.c('ctxbudget.ah_via_workspace')) {
+    if ((over === cb.c('ctxbudget.ah_via_pct') || over === cb.c('ctxbudget.ah_via_tokens') || over === cb.c('ctxbudget.ah_via_workspace')) && !cb.quiet(p, linesOf())) {
       var hp = cb.expectedHandoverPath(p);
       var suffix = cb.decisiveSuffixFor(p, cfg, linesOf());
       w.latch = { fired: true, firedAt: now, firedPct: result.pct, firedVia: cb.c('ctxbudget.ah_via_stop_prefix') + over, lastNagPct: result.pct, lastNagAt: now, softFired: latch.softFired === true };
@@ -68,7 +68,7 @@ function decide(p) {
         if ((risen || quietElapsed) && !(!risen && latch.lastPauseNagPct === shown)) {
           var open = cb.hasOpenTasks(linesOf());
           var spawned = open === true ? false : cb.recentSpawn(tag, now);
-          if (open !== true && !spawned) {
+          if (open !== true && !spawned && !cb.quiet(p, linesOf())) { // quiet mode (GH #958 (b)): no stopping-point advice while the work must go on
             var sfx = cb.decisiveSuffixFor(p, cfg, linesOf());
             w.latch = Object.assign({}, latch, { lastNagAt: now, lastPauseNagPct: shown });
             if (risen) w.latch.lastNagPct = result.pct;

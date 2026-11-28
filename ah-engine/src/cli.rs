@@ -773,6 +773,7 @@ fn cmd_config_explain(p: &Parsed) -> i32 {
             let (layers, _) = crate::cfgstore::load_layers_cold(&crate::cfgstore::Paths::from_env());
             let project = crate::layers::project(&cwd).map(|p| p.settings.clone()).unwrap_or_default();
             crate::cfgstore::explain_setting_here(key, &layers, &project)
+                .or_else(|| crate::cfgstore::explain_descriptor(key, &crate::reqenv::RequestEnv::capture()))
         }
     };
     let Some(v) = found else {

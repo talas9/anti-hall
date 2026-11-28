@@ -44,7 +44,7 @@ Subagent, delegation and routing guards.
 - `context.codexOrchFullOn` = "session": Codex delivery mode of the full rules
 - `context.orchFullOn` = "auto": Where the delivery mode of the full orchestration rules is read from (context.orchFullOn)
 - `context.verifyFirstOrchestration` = true: Orchestration rules switch
-- `nudges.enabled` = false: Nudge ladder on/off
+- `nudges.enabled` = true: Nudge ladder on/off
 - `context.verifyFirstSubagent` = true: Verify-first-subagent switch
 - `guards.idleOrderAfterMin` = 30: Where the idle minutes before the first order are read from (guards.idleOrderAfterMin, default...
 - `guards.idleOrder` = true: Where the on/off switch of the idle orders is read from (guards.idleOrder, default on)
@@ -59,6 +59,7 @@ Subagent, delegation and routing guards.
 - `afk.idleMinutes` = 20: The afk.idleMinutes setting: minutes without an owner prompt (any session on this machine) after...
 - `afk.measure` = true: The afk.measure setting: count each main-session turn's output tokens from the transcript usage...
 - `afk.noQuestions` = true: The afk.noQuestions setting: while AFK, deny the harness question tool (afk.question_tools)...
+- `afk.noStop` = true: The afk.noStop setting: capture the owner's plain-word no-stop orders per session and hold a...
 - `afk.presentMinutes` = 10: The afk.presentMinutes setting: minutes an owner prompt lifts its session's question block
 - `afk.promptCommands` = true: The afk.promptCommands setting: a prompt that is exactly one of afk.words_on / afk.words_off /...
 - `guards.noBlockingQuestions` = "off": Question mode: off, advise or block
@@ -81,10 +82,11 @@ Subagent, delegation and routing guards.
 - `agents.burnBreaker` = true: Switch agents.burnBreaker (default on): off raises no burn signal and lets the burn-breaker...
 - `guards.siblingSweep` = true: Where the on/off switch is read from (guards.siblingSweep, default on)
 - `agents.actOnStuck` = true: Where the switch of the stuck-agent action is read from (agents.actOnStuck, default on): on, a...
-- `nudges.idleWake` = false: Idle wake on/off (#515)
+- `nudges.compliance` = true: Task-list compliance signals on/off (GH #958): stale_list, untracked_request, inprogress_waiting
+- `nudges.idleWake` = true: Idle wake on/off (#515)
 - `agents.nudgeOwnerActive` = true: Where the switch of the owner-active rule is read from (agents.nudgeOwnerActive, default on):...
 - `agents.ownerNotify` = false: Send owner-channel notices
-- `nudges.parallel` = false: Parallel nudge on/off (#517)
+- `nudges.parallel` = true: Parallel nudge on/off (#517)
 - `agents.rearmNeedsChildren` = true: Quiets the re-arm note with no child workspaces
 - `agents.reminders` = true: Queue agent reminders
 - `agents.tracker` = true: Enable tracker ticks
@@ -99,6 +101,7 @@ Subagent, delegation and routing guards.
 - `agents.nudgeScope` = true: Scope nudges and wakes
 - `agents.nudge` = true: Route unhealthy-child signals to its parent
 - `agents.nudgeSnoozeHold` = true: Preserve snoozes per child and trigger
+- `afk.offerHold` = true: Hold a turn that ends offering work
 - `guards.idleGateMode` = "one_line": Quiet response mode
 - `guards.idleGateOwnerCronOptIn` = false: Owner-authored roster cron prompts are excluded unless this setting is enabled; known mailbox...
 - `guards.idleGate` = true: Enable the conservative scheduled-turn gate through guards.idleGate

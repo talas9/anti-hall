@@ -145,9 +145,10 @@ impl<K: Hash + Eq + Clone + Send + 'static, V: Clone + Send + 'static> BoundedCa
         BoundedCache { core, budget }
     }
 
-    /// The value for `k`, refreshing its recency.
+    /// The value for `k` now, refreshing its recency; an entry whose TTL (an absolute `health::now_ms` timestamp) has passed is
+    /// dropped and reported as absent.
     pub fn get(&self, k: &K) -> Option<V> {
-        self.get_at(k, 0)
+        self.get_at(k, crate::health::now_ms())
     }
 
     /// The value for `k` at `now_ms`, dropping it first when its TTL has expired.
@@ -179,13 +180,16 @@ impl<K: Hash + Eq + Clone + Send + 'static, V: Clone + Send + 'static> BoundedCa
         self.core.lock().contains(&k)
     }
 
-    /// Drop and return `k`, if present.
+    /// Drop and return `k` now, if present and not expired (an expired entry is dropped and reported as absent).
     pub fn remove(&self, k: &K) -> Option<V> {
+        self.remove_at(k, crate::health::now_ms())
+    }
+
+    /// [`BoundedCache::remove`] at `now_ms`.
+    pub fn remove_at(&self, k: &K, now_ms: u64) -> Option<V> {
         let mut t = self.core.lock();
-        let v = t.take(k, 0);
-        if v.is_some() {
-            self.core.bytes.store(t.retained_bytes(), SeqCst);
-        }
+        let v = t.take(k, now_ms);
+        self.core.bytes.store(t.retained_bytes(), SeqCst);
         v
     }
 

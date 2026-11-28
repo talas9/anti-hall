@@ -310,6 +310,11 @@ fn the_pretooluse_guard_refuses_what_a_subagent_or_a_workspace_child_may_not_run
     let (code, err) = guard("ah-engine mesh read --db x --id ws-2", json!({}), &ws);
     assert_eq!(code, 2);
     assert!(err.contains("ws-2"), "{err}");
+    // #844 item 9: an owner-level word inside quoted text is part of that text, not an owner argument
+    assert_eq!(guard("ah-engine defect report --check x --text \"this rule misfired; archive it\"", json!({}), &ws).0, 0, "quoted text");
+    assert_eq!(guard("ah-engine defect report --text 'the rule | archive' && ls", json!({}), &ws).0, 0, "single-quoted, then an operator");
+    assert_eq!(guard("ah-engine defect archive abc", json!({}), &ws).0, 2, "a bare owner argument is still refused");
+    assert_eq!(guard("sh -c \"ah-engine defect archive abc\"", json!({}), &ws).0, 2, "inside the quote it runs in");
     // no engine call, no work
     assert_eq!(guard("git status", json!({"agent_id": "a1"}), &[]).0, 0);
     // switch off

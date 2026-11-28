@@ -9,6 +9,7 @@ use crate::blog::Log;
 use crate::cfg::Settings;
 use crate::gate::{self, Right, Sock};
 use crate::limits::{self, Ctr};
+use crate::loadscale;
 use crate::proc::{self, Feed, Opts, Retry, Run};
 use crate::util::{
     env_nonempty, fill, is_exec, json_str_field, json_true_field, now_ms, positive, say, uid,
@@ -68,6 +69,8 @@ struct L {
     ev_s: Option<u64>,
     t0: Instant,
     ignored_knobs: Vec<String>,
+    /// #969: the load factor (permille) fitted once for this call, passed to the hook client (`daemon.load_scale_env`).
+    load: u64,
 }
 
 impl L {
@@ -572,7 +575,7 @@ impl L {
         // the free text of a gh pr/issue/release command blanked), as dispatch::capacity_decide; a command it can not balance is held
         // under `unreadable` (#918 review: the quote-blind raw text alone would let any such tail switch the reading off)
         let ncfg = Self::capacity_norm_cfg(cfg);
-        let norm = ncfg
+        let mut norm = ncfg
             .as_ref()
             .and_then(|c| shellwords::normalise(command, c));
         if let Some(n) = norm.as_ref().filter(|n| n.opt_skips > 0) {
@@ -587,6 +590,36 @@ impl L {
         {
             return false;
         }
+        // the parsed read exemption: a list of plain reads and engine-local verbs read word by word, as
+        // dispatch::capacity_decide
+        if listed
+            && ncfg
+                .as_ref()
+                .is_some_and(|c| self.capacity_parsed_read(cfg, command, c))
+        {
+            limits::bump(Ctr::CapacityParsedRead);
+            return false;
+        }
+        // #971: a list the exemption could not pass as a whole has its engine-local calls masked out (`parsed.mask`), so the rest
+        // of it is decided as it would be without them, as dispatch::capacity_decide
+        let masked = ncfg
+            .as_ref()
+            .filter(|_| listed)
+            .and_then(|c| self.capacity_mask(cfg, command, c));
+        let command = masked.as_deref().unwrap_or(command);
+        if masked.is_some() {
+            limits::bump(Ctr::CapacityParsedMask);
+            norm = ncfg
+                .as_ref()
+                .and_then(|c| shellwords::normalise(command, c));
+            if self.capacity_read_only(cfg, norm.as_ref().map_or(command, |n| n.text.as_str()))
+                || ncfg
+                    .as_ref()
+                    .is_some_and(|c| self.capacity_parsed_read(cfg, command, c))
+            {
+                return false;
+            }
+        }
         // a blanked gh text value leaves only the normalised text to match: the raw text still holds the words that were data
         let mut texts: Vec<&str> = match &norm {
             Some(n) if n.stripped => vec![n.text.as_str()],
@@ -597,6 +630,7 @@ impl L {
         let (mut raw_only_hit, mut via_norm) = (false, false);
         let mut rule = None;
         let mut via: Option<Ctr> = None; // #920: the class the hold falls in beyond its rule (counted)
+        let mut engine_call = false; // #969: held as an engine call off the local list (its own message)
         if listed {
             for (name, pat) in rules {
                 let Some(pat) = pat.as_str() else { continue };
@@ -627,6 +661,27 @@ impl L {
                     Err(e) => {
                         self.log_line(&format!("capacity_hold_rule rule={name} error={e}"));
                     }
+                }
+            }
+            // #969: an engine call the parsed exemption did not pass; only a command word counts, as the engine's
+            // dispatch::capacity_decide
+            if rule.is_none()
+                && let (Some(n), Some(nc)) = (&norm, &ncfg)
+                && let Some(r) = cfg
+                    .get("parsed")
+                    .and_then(|p| p.get("unlisted_rule"))
+                    .and_then(|v| v.as_str())
+                    .filter(|r| !r.is_empty())
+            {
+                let home = Some(nc.ro_home.as_str())
+                    .filter(|h| !h.is_empty())
+                    .and_then(std::env::var_os);
+                if n.cmds
+                    .iter()
+                    .any(|c| shellwords::is_engine_program(c, nc, home.as_deref()))
+                {
+                    rule = Some(r.to_string());
+                    engine_call = true;
                 }
             }
             // a git subcommand that is no known one (an alias, an external command) is held under its own rule
@@ -694,6 +749,7 @@ impl L {
                         rule = Some(r);
                         via = Some(c);
                     } else if unresolved
+                        && Self::capacity_unknown_risky(cfg, u, &n.text)
                         && let Some(r) = u
                             .and_then(|u| u.get("rule"))
                             .and_then(|v| v.as_str())
@@ -733,10 +789,12 @@ impl L {
         }
         limits::bump(Ctr::CapacityHold);
         self.log_line(&format!("capacity_hold event={} rule={rule}", self.event));
-        let msg = self.s.msg(
-            "dispatch.msg_capacity_hold",
-            &[("tool", tool), ("rule", &rule)],
-        );
+        let key = if engine_call {
+            "dispatch.msg_capacity_hold_engine"
+        } else {
+            "dispatch.msg_capacity_hold"
+        };
+        let msg = self.s.msg(key, &[("tool", tool), ("rule", &rule)]);
         write_out(b"", format!("{msg}\n").as_bytes());
         true
     }
@@ -782,6 +840,9 @@ impl L {
         let home = Some(text("home_env"))
             .filter(|k| !k.is_empty())
             .and_then(std::env::var_os);
+        let ro_home = Some(ncfg.ro_home.as_str())
+            .filter(|h| !h.is_empty())
+            .and_then(std::env::var_os);
         let dirs = shellwords::dirs(
             payload.get(text("cwd_field")).and_then(|v| v.as_str()),
             &n.cds,
@@ -812,8 +873,12 @@ impl L {
             .unwrap_or_default();
         let mut unread = false;
         let mut seen: Vec<String> = Vec::new();
-        let mut queue: std::collections::VecDeque<(String, usize)> =
-            n.scripts.iter().chain(local).map(|p| (p.clone(), 0)).collect();
+        let mut queue: std::collections::VecDeque<(String, usize)> = n
+            .scripts
+            .iter()
+            .chain(local)
+            .map(|p| (p.clone(), 0))
+            .collect();
         while let Some((path, depth)) = queue.pop_front() {
             if seen.contains(&path) {
                 continue;
@@ -822,6 +887,11 @@ impl L {
                 break;
             }
             seen.push(path.clone());
+            // #969: the engine's own binary is no script (far over the read cap: it would be held as unread)
+            if shellwords::is_engine_program(&path, ncfg, home.as_deref()) {
+                limits::bump(Ctr::CapacityEngineProgram);
+                continue;
+            }
             // #928: a script on the trusted list (its repo-relative path matches an entry's glob AND its content hash is the entry's)
             // is not matched; any edit changes the hash and the script is checked like any other
             if !trusted.is_empty()
@@ -886,6 +956,24 @@ impl L {
                         {
                             return held(name);
                         }
+                    }
+                    // #969 review: an engine call in the script is held as one at the top level is (engine-unlisted), unless the
+                    // whole body is a list the parsed read exemption passes; only a command word counts
+                    let unlisted = cfg
+                        .get("parsed")
+                        .and_then(|p| p.get("unlisted_rule"))
+                        .and_then(|v| v.as_str())
+                        .unwrap_or_default();
+                    if !unlisted.is_empty()
+                        && !skip.contains(&unlisted)
+                        && norm.as_ref().is_some_and(|nb| {
+                            nb.cmds.iter().any(|c| {
+                                shellwords::is_engine_program(c, ncfg, ro_home.as_deref())
+                            })
+                        })
+                        && !self.capacity_parsed_read(cfg, &body, ncfg)
+                    {
+                        return held(unlisted);
                     }
                     // the scripts this one runs (`source ./lib.sh`, `sh other.sh`)
                     if depth < int("depth") {
@@ -991,7 +1079,200 @@ impl L {
                         .collect()
                 })
                 .unwrap_or_default(),
+            ro_seps: strs(cfg.get("parsed").and_then(|p| p.get("seps"))),
+            ro_skip: strs(cfg.get("parsed").and_then(|p| p.get("skip"))),
+            ro_vars: strs(cfg.get("parsed").and_then(|p| p.get("vars"))),
+            ro_placeholder: one(cfg.get("parsed").and_then(|p| p.get("placeholder"))),
+            ro_home: one(cfg.get("parsed").and_then(|p| p.get("home_env"))),
+            ro_programs: strs(cfg.get("parsed").and_then(|p| p.get("programs"))),
+            ro_verbs: strs(cfg.get("parsed").and_then(|p| p.get("verbs"))),
+            ro_shells: strs(cfg.get("parsed").and_then(|p| p.get("shells"))),
+            ro_assign_deny: strs(cfg.get("parsed").and_then(|p| p.get("assign_deny"))),
+            ro_assigners: strs(cfg.get("parsed").and_then(|p| p.get("assigners"))),
+            ro_text_opts: strs(cfg.get("parsed").and_then(|p| p.get("text_opts"))),
+            ro_bin_dirs: strs(cfg.get("parsed").and_then(|p| p.get("bin_dirs"))),
+            ro_inert: strs(cfg.get("parsed").and_then(|p| p.get("inert"))),
         })
+    }
+
+    /// The parsed read exemption (`dispatch.capacity_hold` `parsed`), as the engine's dispatch::capacity_parsed_read: each pipeline
+    /// of the list is a plain read the whole of which matches the read pattern, or an engine-local verb whose pipe tail does and
+    /// whose redirections match `parsed.redirs` and not `parsed.redirs_unless` (#971).
+    fn capacity_parsed_read(
+        &self,
+        cfg: &toml::Value,
+        command: &str,
+        ncfg: &shellwords::Cfg,
+    ) -> bool {
+        let home = Some(ncfg.ro_home.as_str())
+            .filter(|h| !h.is_empty())
+            .and_then(std::env::var_os);
+        let Some(parts) = shellwords::read_only_parts(command, ncfg, home.as_deref()) else {
+            return false;
+        };
+        if parts.is_empty() || !parts.iter().all(|p| self.capacity_part_ok(cfg, p)) {
+            return false;
+        }
+        // #971 review: an engine call that writes a file passes only beside parts that can not run or load what it wrote, as the
+        // engine's dispatch::capacity_parsed_read
+        let writers = parts
+            .iter()
+            .filter(|p| Self::capacity_writes(cfg, p))
+            .count();
+        writers == 0
+            || writers == 1
+                && parts
+                    .iter()
+                    .filter(|p| !Self::capacity_writes(cfg, p))
+                    .all(|p| match p {
+                        shellwords::Part::Read(t) => Self::capacity_parsed_regex(cfg, "after_write", t),
+                        shellwords::Part::Local(..) => true,
+                    })
+    }
+
+    /// #971 review: whether `text` matches the `parsed.<key>` regular expression (ASCII, case-insensitive, on bytes), as the
+    /// engine's dispatch::capacity_parsed_regex; an empty or uncompilable one matches nothing.
+    fn capacity_parsed_regex(cfg: &toml::Value, key: &str, text: &str) -> bool {
+        let pat = cfg
+            .get("parsed")
+            .and_then(|p| p.get(key))
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        !pat.is_empty()
+            && regex::bytes::RegexBuilder::new(pat)
+                .unicode(false)
+                .case_insensitive(true)
+                .build()
+                .is_ok_and(|re| re.is_match(text.as_bytes()))
+    }
+
+    /// #971 review: whether an engine-local call writes a file (a redirection off `parsed.redirs_inert`); never masked, as the
+    /// engine's dispatch::capacity_writes.
+    fn capacity_writes(cfg: &toml::Value, part: &shellwords::Part) -> bool {
+        matches!(part, shellwords::Part::Local(_, redirs)
+            if redirs.iter().any(|r| !Self::capacity_parsed_regex(cfg, "redirs_inert", r)))
+    }
+
+    /// Whether one part of the parsed read exemption passes, as the engine's dispatch::capacity_part_ok.
+    fn capacity_part_ok(&self, cfg: &toml::Value, part: &shellwords::Part) -> bool {
+        match part {
+            shellwords::Part::Read(t) => self.capacity_read_only(cfg, t),
+            shellwords::Part::Local(tail, redirs) => {
+                (tail.is_empty()
+                    || self.capacity_read_only(cfg, tail)
+                    || Self::capacity_tail_ok(cfg, tail))
+                    && redirs.iter().all(|r| Self::capacity_redir_ok(cfg, r))
+            }
+        }
+    }
+
+    /// #971: `command` with each engine-local call that passes replaced by `parsed.mask`, `None` when there is none (or `mask`
+    /// is empty: off); a call that writes a file is never masked. As the engine's
+    /// dispatch::capacity_mask.
+    fn capacity_mask(
+        &self,
+        cfg: &toml::Value,
+        command: &str,
+        ncfg: &shellwords::Cfg,
+    ) -> Option<String> {
+        let mask = cfg
+            .get("parsed")
+            .and_then(|p| p.get("mask"))
+            .and_then(|v| v.as_str())
+            .filter(|m| !m.is_empty())?;
+        let home = Some(ncfg.ro_home.as_str())
+            .filter(|h| !h.is_empty())
+            .and_then(std::env::var_os);
+        let spans: Vec<_> = shellwords::local_spans(command, ncfg, home.as_deref())?
+            .into_iter()
+            .filter(|(_, p)| self.capacity_part_ok(cfg, p) && !Self::capacity_writes(cfg, p))
+            .collect();
+        if spans.is_empty() {
+            return None;
+        }
+        let mut out = command.to_string();
+        for (range, _) in spans.iter().rev() {
+            out.replace_range(range.clone(), mask);
+        }
+        Some(out)
+    }
+
+    /// #969: the load factor (permille) sampled for this event: the load per core clamped to [1000, `daemon.load_scale_max_permille`]
+    /// and stepped, only for an event in `daemon.load_scale_events`. Sampled once per call, here only; [`Self::load`] is what fits.
+    fn sampled_factor(&self) -> u64 {
+        if self.event.is_empty()
+            || !self
+                .s
+                .list("daemon.load_scale_events")
+                .contains(&self.event)
+        {
+            return 1000;
+        }
+        loadscale::factor_permille(
+            loadscale::per_core(),
+            self.s.num("daemon.load_scale_max_permille"),
+            self.s.num("daemon.load_scale_step_permille"),
+        )
+    }
+
+    /// #969: whether an unknown command name is held: always, unless `unknown.risky_only` is 1, then only when the command matches
+    /// `script.risky` (as the engine's dispatch::capacity_decide).
+    fn capacity_unknown_risky(cfg: &toml::Value, u: Option<&toml::Value>, text: &str) -> bool {
+        if u.and_then(|u| u.get("risky_only"))
+            .and_then(|v| v.as_integer())
+            != Some(1)
+        {
+            return true;
+        }
+        let pat = cfg
+            .get("script")
+            .and_then(|s| s.get("risky"))
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        !pat.is_empty()
+            && regex::bytes::RegexBuilder::new(pat)
+                .unicode(false)
+                .case_insensitive(true)
+                .build()
+                .is_ok_and(|re| re.is_match(text.as_bytes()))
+    }
+
+    /// #971: whether a redirection of an engine-local verb is harmless (`parsed.redirs`, not `parsed.redirs_unless`), as the
+    /// engine's dispatch::capacity_redir_ok; an empty or uncompilable `redirs`, or an uncompilable `redirs_unless`, passes none.
+    fn capacity_redir_ok(cfg: &toml::Value, redir: &str) -> bool {
+        let pat = |k: &str| {
+            cfg.get("parsed")
+                .and_then(|p| p.get(k))
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string()
+        };
+        let re = |p: &str| {
+            regex::bytes::RegexBuilder::new(p)
+                .unicode(false)
+                .case_insensitive(true)
+                .build()
+        };
+        let (ok, unless) = (pat("redirs"), pat("redirs_unless"));
+        !ok.is_empty()
+            && re(&ok).is_ok_and(|r| r.is_match(redir.as_bytes()))
+            && (unless.is_empty() || re(&unless).is_ok_and(|r| !r.is_match(redir.as_bytes())))
+    }
+
+    /// Whether the pipe tail of an engine-local verb is one of the `parsed.tail_ok` filters, as the engine's
+    /// dispatch::capacity_tail_ok; empty or uncompilable = none.
+    fn capacity_tail_ok(cfg: &toml::Value, tail: &str) -> bool {
+        let pat = cfg
+            .get("parsed")
+            .and_then(|p| p.get("tail_ok"))
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        !pat.is_empty()
+            && regex::bytes::RegexBuilder::new(pat)
+                .unicode(false)
+                .case_insensitive(true)
+                .build()
+                .is_ok_and(|re| re.is_match(tail.as_bytes()))
     }
 
     /// #901/#904: whether `command` is a plain read that passes dispatch.capacity_hold whatever words it names: the whole command
@@ -1068,15 +1349,28 @@ impl L {
         ) {
             envs.push((name, p.display().to_string()));
         }
-        let mut slow_max = self.s.num_event(
-            "client.slow_fallback_max_ms",
-            "client.slow_fallback_event_ms",
-            &self.event,
+        // always set (1000 = none), so a value inherited from the parent environment never stands in for this call's own
+        if let Some(name) = Some(self.s.text("daemon.load_scale_env")).filter(|n| !n.is_empty()) {
+            envs.push((name, self.load.to_string()));
+        }
+        let mut slow_max = loadscale::scale(
+            self.s.num_event(
+                "client.slow_fallback_max_ms",
+                "client.slow_fallback_event_ms",
+                &self.event,
+            ),
+            self.load,
         );
-        slow_max = slow_max.min(
+        // #969 review: what is left of the outer bound at the engine start (the cold wait may have used some), less both kill graces
+        // and the wall margin, so the late wait ends with room for the fallback inside min(hooks.json timeout, the wrapper cap)
+        slow_max = loadscale::late_wait_ms(
+            slow_max,
             self.event_timeout_s()
                 .unwrap_or(self.timeout_s)
                 .saturating_mul(1000),
+            self.t0.elapsed().as_millis() as u64,
+            self.grace.as_millis() as u64,
+            self.s.num("launcher.wall_hard_margin_ms"),
         );
         let mut wait_file = None;
         match (
@@ -1715,6 +2009,7 @@ pub fn run() -> i32 {
         ev_s: None,
         t0,
         ignored_knobs,
+        load: 1000,
     };
     l.guard = l.s.list("dispatch.guard_events").contains(&l.event);
     l.list = l
@@ -1723,6 +2018,15 @@ pub fn run() -> i32 {
         .unwrap_or_else(|| l.hooks_dir.join(l.key(&host_key("fallback_list"))));
 
     l.stale_engine_notice();
+    // #969: the call waits on the engine's answer; on a loaded machine it runs in the daemon's QoS class (daemon.qos), not behind
+    // every other process at the same priority
+    let qos = l.s.text("daemon.qos");
+    limits::apply_qos(
+        l.s.shipped("daemon.qos_classes")
+            .and_then(|t| t.get(qos.as_str()))
+            .and_then(toml::Value::as_integer)
+            .and_then(|n| u32::try_from(n).ok()),
+    );
 
     // budgets: the test knobs, else the shipped client deadline + slack + wrapper margin
     let knob_s = l.knob("launcher.knob_timeout_s");
@@ -1806,14 +2110,26 @@ pub fn run() -> i32 {
     } else {
         0
     };
-    let slow_ms =
-        l.s.num_event(
-            "client.slow_fallback_max_ms",
-            "client.slow_fallback_event_ms",
-            &l.event,
-        )
-        .min(ev_ms);
     let grace_ms = l.grace.as_millis() as u64;
+    // #969: the load factor, sampled once and fitted so the whole plan (cold wait, late wait, both kill graces, the wall margin)
+    // stays inside the event's outer bound; the client and the daemon use this one and never sample themselves
+    let slow_base = l.s.num_event(
+        "client.slow_fallback_max_ms",
+        "client.slow_fallback_event_ms",
+        &l.event,
+    );
+    let avail = ev_ms.saturating_sub(
+        cold_ms
+            .saturating_add(grace_ms.saturating_mul(2))
+            .saturating_add(l.s.num("launcher.wall_hard_margin_ms")),
+    );
+    l.load = loadscale::fit_permille(
+        l.sampled_factor(),
+        slow_base,
+        avail,
+        l.s.num("daemon.load_scale_step_permille"),
+    );
+    let slow_ms = loadscale::scale(slow_base, l.load).min(ev_ms);
     // the soft wall is a per-event setting; 0 (or no entry) keeps the fail-fast formula
     let soft_ms =
         l.s.num_for("launcher.wall_soft_ms", &l.event)
@@ -1822,9 +2138,9 @@ pub fn run() -> i32 {
     let planned = cold_ms
         .saturating_add(eng_ms.max(slow_ms))
         .saturating_add(grace_ms.saturating_mul(2));
-    let wall_ms = planned
-        .saturating_add(l.s.num("launcher.wall_hard_margin_ms"))
-        .min(ev_ms.max(planned));
+    // #969 review: never past the outer bound; run_engine shortens the late wait to what is left of it, so the fallback after an
+    // unanswered late wait runs before the backstop and the host
+    let wall_ms = loadscale::wall_ms(planned, l.s.num("launcher.wall_hard_margin_ms"), ev_ms);
     if !limits::arm_wall(
         wall_ms
             .saturating_sub(l.t0.elapsed().as_millis() as u64)

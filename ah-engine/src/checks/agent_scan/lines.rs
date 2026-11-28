@@ -250,6 +250,9 @@ pub struct Idle {
     id: String,
     /// `Ok(None)`: not a genuine report of that teammate.
     ts: Got<Option<Ts>>,
+    /// A plain-text report (a SendMessage to the coordinator) rather than an idle notice; stores made before it lack the field.
+    #[serde(default)]
+    report: bool,
 }
 
 /// A teammate spawn result (taken when the result answers a launch call or an unseen call).
@@ -666,6 +669,11 @@ fn digest(raw: &[u8], off: u64, r: &mut dyn Resolve, spans: &mut Vec<Span>) -> O
 /// `teammateIdles` without the spawned-teammate test (the replay applies it): every candidate report with its outcome.
 fn idle_candidates(entry: &Value, entry_ts: f64) -> Vec<Idle> {
     let mut out = Vec::new();
+    // a report the host stamped with a peer origin (#972 wave 2): its sender is structured, whatever envelope wraps the text
+    if let Some(who) = super::peer_report_from(entry) {
+        out.push(Idle { id: who.to_string(), ts: Got::of(Ok(Some(Ts(entry_ts)))), report: true });
+        return out;
+    }
     if sprop(entry, "type") != Some("user") {
         return out;
     }
@@ -685,12 +693,29 @@ fn idle_candidates(entry: &Value, entry_ts: f64) -> Vec<Idle> {
         }
     }
     let skew = defaults::num("agent_scan.report_future_skew_ms") as f64;
+    let mut late: Option<f64> = None;
     let mut at = prefix.len();
     at += c[at..].len() - trim_start(&c[at..]).len();
     while let Some(m) = pats().teammate_block.captures(&c[at..]) {
         let (id, body) = (m.get(1).map_or("", |x| x.as_str()), m.get(2).map_or("", |x| x.as_str()));
         at += m.get(0).map_or(0, |x| x.end());
         at += c[at..].len() - trim_start(&c[at..]).len();
+        let lead = body.trim_start();
+        if !lead.starts_with('{') && !lead.is_empty() {
+            out.push(Idle { id: id.to_string(), ts: Got::of(Ok(Some(Ts(entry_ts)))), report: true });
+            // the block closed at the first closing tag inside it: the report quotes earlier teammate messages, and what follows is quoted
+            // text, never another teammate's report
+            if body.contains(defaults::text("agent_scan.teammate_open")) {
+                // the teammate's own idle notice may follow the quoted text: it dates the report
+                if let Ok(Some(t)) = super::late_idle_ts(&c[at..], id, entry_ts)
+                    && t < entry_ts
+                {
+                    late = Some(t);
+                }
+                break;
+            }
+            continue;
+        }
         if body.contains('\n') || !body.starts_with('{') {
             continue;
         }
@@ -708,7 +733,25 @@ fn idle_candidates(entry: &Value, entry_ts: f64) -> Vec<Idle> {
             }
             Ok(Some(Ts(if inner.is_finite() && entry_ts.is_finite() { inner } else { entry_ts })))
         })();
-        out.push(Idle { id: id.to_string(), ts: Got::of(ts) });
+        out.push(Idle { id: id.to_string(), ts: Got::of(ts), report: false });
+    }
+    // a plain report has no time of its own: the idle notice of the same entry (the teammate's turn end, written after the report text)
+    // dates it, the entry's receipt time is its latest possible time
+    let mut idles: Vec<(String, f64)> = out
+        .iter()
+        .filter_map(|i| match (&i.ts, i.report) {
+            (Got::Ok(Some(Ts(t))), false) if t.is_finite() => Some((i.id.clone(), *t)),
+            _ => None,
+        })
+        .collect();
+    if let Some(t) = late {
+        let ids: Vec<String> = out.iter().filter(|i| i.report).map(|i| i.id.clone()).collect();
+        idles.extend(ids.into_iter().map(|id| (id, t)));
+    }
+    for i in out.iter_mut().filter(|i| i.report) {
+        if let Some((_, t)) = idles.iter().find(|(id, t)| *id == i.id && *t < entry_ts) {
+            i.ts = Got::Ok(Some(Ts(*t)));
+        }
     }
     out
 }
@@ -1015,7 +1058,7 @@ fn apply(w: &mut Walk, l: &ALine, keeps: &dyn Fn(u64) -> bool, loads: &mut Vec<L
                 if w.team_info.has(&i.id)
                     && let Some(ts) = i.ts.clone().res()?
                 {
-                    w.team_event(&i.id, "idle", ts.0, seq);
+                    w.team_event(&i.id, if i.report { "report" } else { "idle" }, ts.0, seq);
                 }
             }
             Part::Spawn(sp) => {

@@ -2,7 +2,7 @@
 //! (`ah-engine hook --event UserPromptSubmit --host claude|codex`, in-process), a main-thread session in a scratch home.
 //!
 //! * Switch on and the prompt is a harness notice (task notification, mesh tick, goal check-in, peer or teammate message): the
-//!   verify-first and task-tracker reminders are not in the answer.
+//!   task-tracker reminder is not in the answer (the verify-first reminder left the per-prompt dispatch table in #958).
 //! * Switch on and a human prompt, or switch off and a notice: both are there, as they always were.
 //!
 //! The counters are checked through a real daemon in `dispatch_e2e.rs` (`notice_turn_counters_reach_the_daemons_metrics_...`): the plan
@@ -15,7 +15,6 @@ use std::io::Write;
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
 
-const VERIFY_FIRST: &str = "VERIFY-FIRST";
 const TASK_TRACKER: &str = "task tracker";
 
 struct Rig {
@@ -77,17 +76,17 @@ const NOTICES: [&str; 7] = [
 ];
 
 #[test]
-fn notice_turn_a_human_prompt_keeps_both_reminders_with_the_switch_on() {
+fn notice_turn_a_human_prompt_keeps_the_reminder_with_the_switch_on() {
     for host in ["claude", "codex"] {
         let r = Rig::new(&format!("human-{host}"));
         let (code, out, err) = r.prompt(host, "please fix the failing build", true);
         assert_eq!((code, err.as_str()), (0, ""), "{host}: {out}");
-        assert!(out.contains(VERIFY_FIRST) && out.contains(TASK_TRACKER), "{host}: {out}");
+        assert!(out.contains(TASK_TRACKER), "{host}: {out}");
     }
 }
 
 #[test]
-fn notice_turn_a_notice_keeps_both_reminders_with_the_switch_off() {
+fn notice_turn_a_notice_keeps_the_reminder_with_the_switch_off() {
     for host in ["claude", "codex"] {
         for (i, notice) in NOTICES.iter().enumerate() {
             let r = Rig::new(&format!("off-{host}-{i}"));
@@ -95,38 +94,38 @@ fn notice_turn_a_notice_keeps_both_reminders_with_the_switch_off() {
             assert_eq!((code, err.as_str()), (0, ""), "{host}: {out}");
             // task-tracker has a peer-message filter of its own, so it is silent on those two kinds even with the switch off
             let tracker_quiet = notice.starts_with("<cross-session-message") || notice.starts_with("<teammate-message");
-            assert!(out.contains(VERIFY_FIRST) && (tracker_quiet || out.contains(TASK_TRACKER)), "{host} {notice}: {out}");
+            assert!(tracker_quiet || out.contains(TASK_TRACKER), "{host} {notice}: {out}");
         }
     }
 }
 
 #[test]
-fn notice_turn_a_notice_drops_both_reminders_with_the_switch_on() {
+fn notice_turn_a_notice_drops_the_reminder_with_the_switch_on() {
     for host in ["claude", "codex"] {
         for (i, notice) in NOTICES.iter().enumerate() {
             let r = Rig::new(&format!("on-{host}-{i}"));
             let (code, out, err) = r.prompt(host, notice, true);
             assert_eq!((code, err.as_str()), (0, ""), "{host}: {out}");
-            assert!(!out.contains(VERIFY_FIRST) && !out.contains(TASK_TRACKER), "{host} {notice}: {out}");
+            assert!(!out.contains(TASK_TRACKER), "{host} {notice}: {out}");
         }
     }
 }
 
 /// PR #893 review: a /loop the human types is a human turn; only the scheduled wake's sentinel is a notice.
 #[test]
-fn notice_turn_a_human_typed_loop_command_keeps_both_reminders_with_the_switch_on() {
+fn notice_turn_a_human_typed_loop_command_keeps_the_reminder_with_the_switch_on() {
     for (i, typed) in ["/loop 5m /babysit-prs", "/oh-my-claudecode:loop check the deploy"].iter().enumerate() {
         let r = Rig::new(&format!("loop-{i}"));
         let (code, out, err) = r.prompt("claude", typed, true);
         assert_eq!((code, err.as_str()), (0, ""), "{out}");
-        assert!(out.contains(VERIFY_FIRST) && out.contains(TASK_TRACKER), "{typed}: {out}");
+        assert!(out.contains(TASK_TRACKER), "{typed}: {out}");
     }
 }
 
 #[test]
-fn notice_turn_a_human_sentence_that_names_a_notice_keeps_both_reminders_with_the_switch_on() {
+fn notice_turn_a_human_sentence_that_names_a_notice_keeps_the_reminder_with_the_switch_on() {
     let r = Rig::new("mention");
     let (code, out, err) = r.prompt("claude", "why does the mesh inbox tick fail", true);
     assert_eq!((code, err.as_str()), (0, ""), "{out}");
-    assert!(out.contains(VERIFY_FIRST) && out.contains(TASK_TRACKER), "{out}");
+    assert!(out.contains(TASK_TRACKER), "{out}");
 }

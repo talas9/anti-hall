@@ -247,6 +247,38 @@ var cb = {
     delete next.gateBackstopPct;
     return next;
   },
+  // ---- quiet mode (GH #958 (b)) ----
+  // Whether the session must keep working: the machine-wide AFK flag or the session's no-stop state is on, or a task is open (lib/87-nostop.js).
+  // A task of a subagent's own sidechain is not the session's work: the store lists only the session's tasks, and the transcript tail is read
+  // as hasOpenTasks reads it (sidechain records skipped); `lines` is the tail the caller already holds (read here when omitted).
+  quiet: function (p, lines) {
+    if (nostop.afkOn() || nostop.session(p) !== null) return true;
+    // GH #981: an OMC autonomous loop drives this session (task-guard defers to it the same way): no stopping-point advice against it
+    if (ah.settings.bool('ctxbudget.set_quiet_on_omc_loop') && omcx.loopActive(ah.home() || '', p && typeof p.cwd === 'string' ? p.cwd : '', p && p.session_id ? String(p.session_id) : '', ah.clock.now(), ah.cfg('ctxbudget.omc_tag'))) {
+      ah.metric('auto_handover_quiet_omc', []);
+      return true;
+    }
+    var home = ah.home(), sid = p && p.session_id ? String(p.session_id) : '';
+    if (home && sid !== '') {
+      var gaps = { n: 0, strict: true }, st = tk.storeTasks(home, sid, gaps);
+      if (st !== null && gaps.n === 0) return tk.withStore([], st).some(tk.isOpen);
+    }
+    if (lines === undefined) {
+      var tp = p && typeof p.transcript_path === 'string' ? p.transcript_path : null;
+      lines = tp ? ah.fs.tailLines(hookProc.open(p, tp), cb.n('ctxbudget.tail_bytes'), false) : null;
+    }
+    return cb.hasOpenTasks(lines) === true;
+  },
+  // The refresh nudge (the only context message in quiet mode): null unless the saved handover is older than the last task or milestone change
+  // by ctxbudget.refresh_stale_ms (or there is none) and the last nudge is older than ctxbudget.refresh_interval_ms.
+  refreshNudge: function (p, latch, pct, now) {
+    var last = latch && typeof latch.lastRefreshAt === 'number' && isFinite(latch.lastRefreshAt) ? latch.lastRefreshAt : 0;
+    if (now - last < cb.n('ctxbudget.refresh_interval_ms')) return null;
+    var h = cb.sessionHandover(p), change = nostop.lastChangeMs(p);
+    if (h !== null && change - h.mtimeMs <= cb.n('ctxbudget.refresh_stale_ms')) return null;
+    var instead = h === null ? cb.c('ctxbudget.refresh_instead_none') : cb.r('ctxbudget.refresh_instead', { min: Math.max(0, Math.round((now - h.mtimeMs) / 60000)) });
+    return text.message('order', cb.c('ctxbudget.ah_guard'), { what: cb.r('ctxbudget.refresh_what', { pct: Math.round(pct) }), instead: instead });
+  },
   // ---- texts ----
   compactCommand: function (hp, codex) { return codex ? cb.c('ctxbudget.ah_compact_codex') : cb.r('ctxbudget.ah_compact_claude', { path: hp || cb.c('ctxbudget.ah_compact_no_path') }); },
   fire: function (result, via, p, maxTokens, hp, cfg) {

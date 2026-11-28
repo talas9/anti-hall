@@ -203,6 +203,77 @@ pub(crate) fn limit_of(a: &Args) -> usize {
 }
 
 /// The cut a count made, when it made one.
+/// Where an ack of what count `c` delivered moves each cursor: the NDJSON position, the store position, and each sibling's.
+fn ack_points(c: &tick::Counted) -> (f64, f64, Vec<(String, f64)>) {
+    let max_index = c.store_rows.iter().filter_map(|r| r["index"].as_f64()).fold(None, |m: Option<f64>, i| Some(m.map_or(i, |x| x.max(i))));
+    let store = max_index.map_or(c.store_cursor, |m| c.store_cursor.max(m));
+    (c.nd_target, store, c.siblings.iter().map(|sib| (sib.id.clone(), sib.cursor + sib.physical)).collect())
+}
+
+/// Review (direct-mail ack race): the boundary `inbox read` delivered, as the `--through` token `inbox ack` takes back
+/// (`nd:<pos>,store:<pos>,<sibling>:<pos>`; separators and keys from `mesh_wake.ack_through_*`).
+pub(crate) fn encode_through(nd: f64, store: f64, siblings: &[(String, f64)]) -> String {
+    let (sep, kv) = (defaults::text("mesh_wake.ack_through_sep"), defaults::text("mesh_wake.ack_through_kv"));
+    let num = crate::checks::jsport::num::to_js_string;
+    let mut parts = vec![
+        format!("{}{kv}{}", defaults::text("mesh_wake.ack_through_nd"), num(nd)),
+        format!("{}{kv}{}", defaults::text("mesh_wake.ack_through_store"), num(store)),
+    ];
+    parts.extend(siblings.iter().map(|(id, v)| format!("{id}{kv}{}", num(*v))));
+    parts.join(sep)
+}
+
+/// The `--through` token back as positions by key; `None` when any part is not `<key>:<finite number>`.
+pub(crate) fn decode_through(raw: &str) -> Option<std::collections::HashMap<String, f64>> {
+    let (sep, kv) = (defaults::text("mesh_wake.ack_through_sep"), defaults::text("mesh_wake.ack_through_kv"));
+    let mut out = std::collections::HashMap::new();
+    for part in raw.split(sep).filter(|p| !p.is_empty()) {
+        let (k, v) = part.rsplit_once(kv)?;
+        let x = crate::checks::guardkit::text::js_number_of_str(v);
+        if k.is_empty() || !x.is_finite() {
+            return None;
+        }
+        out.insert(k.to_string(), x);
+    }
+    (!out.is_empty()).then_some(out)
+}
+
+/// Re-review N-6: where `inbox read` keeps the boundary it delivered for workspace `id`, so a bare `inbox ack` acks exactly that.
+fn through_file(inv: &Inv, id: &str) -> std::path::PathBuf {
+    crate::meshw::idlock::devswarm_root(&inv.home)
+        .join(defaults::text("mesh_wake.dir_ack_through"))
+        .join(format!("{id}{}", defaults::text("mesh_write.json_suffix")))
+}
+
+/// Keep the boundary `inbox read` delivered (best effort: a read never fails on it; an ack with no record acks nothing).
+fn save_through(inv: &Inv, id: &str, token: &str) {
+    let f = through_file(inv, id);
+    if let Some(dir) = f.parent() {
+        crate::discard::harmless(std::fs::create_dir_all(dir)); // keep: a missing record only makes a bare ack ack nothing
+    }
+    let mut o = Obj::default();
+    o.put(defaults::text("mesh_wake.key_ack_through"), s(token)).put("ts", n(inv.now as f64));
+    crate::discard::harmless(std::fs::write(&f, o.done().stringify())); // keep: same
+}
+
+/// The boundary the last `inbox read` of `id` delivered, if one is kept.
+fn load_through(inv: &Inv, id: &str) -> Option<String> {
+    let text = std::fs::read_to_string(through_file(inv, id)).ok()?;
+    match OVal::parse(&text)?.get(defaults::text("mesh_wake.key_ack_through")) {
+        Some(OVal::Str(t)) => Some(t.clone()),
+        _ => None,
+    }
+}
+
+/// An ack's target for one cursor: what the ack-time count would move it to, held to the read's boundary when the ack names one (a
+/// cursor the read did not name stays where it is).
+fn held(through: Option<&std::collections::HashMap<String, f64>>, key: &str, computed: f64, now: f64) -> f64 {
+    match through {
+        None => computed,
+        Some(m) => m.get(key).map_or(now, |v| computed.min(*v).max(now)),
+    }
+}
+
 fn truncation(c: &tick::Counted) -> Option<Truncation> {
     (c.truncated > 0).then_some(Truncation { count: c.truncated, limit: c.limit })
 }
@@ -310,13 +381,39 @@ pub fn run_read(inv: &Inv, a: &Args) -> R<Answer> {
     if let Some(t) = truncation(&c) {
         t.put(&mut o, defaults::text("mesh_write.truncated_hint"));
     }
+    // review (direct-mail ack race): the exact boundary this read delivered; `inbox ack --through` acks only through it, so mail
+    // that lands between the read and the ack stays unread
+    let (nd_to, store_to, sib_to) = ack_points(&c);
+    let through = encode_through(nd_to, store_to, &sib_to);
+    o.put(defaults::text("mesh_wake.key_ack_through"), s(&through));
+    save_through(inv, id, &through);
     if c.unread > 0 {
         o.put("cursorAdvanced", OVal::Bool(false)).put(
             "ackHint",
-            OVal::Str(defaults::render("mesh_write.read_ack_hint", &[("total", &c.unread), ("nd", &c.nd_unread), ("store", &c.store_unread), ("id", &id)])),
+            OVal::Str(defaults::render(
+                "mesh_write.read_ack_hint",
+                &[("total", &c.unread), ("nd", &c.nd_unread), ("store", &c.store_unread), ("id", &id), ("through", &through)],
+            )),
         );
     }
     o.put("count", n(c.unread as f64)).put("cursor", n(c.nd_cursor)).put("storeCursor", n(c.store_cursor));
+    // GH #845 (contract §6): the unread broadcasts are listed beside the direct mail, read only, with the boundary
+    // `inbox ack <id> --broadcast-to <seq>` acks through
+    // review P2-8: a broadcast read that fails never fails the direct-mail read: none listed, the reason noted
+    if c.unavail.is_none() {
+        match common::open_store(inv, &c.store_key) {
+            Ok(st) => {
+                let key = crate::meshw::read::reader_key(st.reader(), inv, id);
+                if let Some(u) = crate::meshw::read::unread_broadcasts_or_note(st.reader(), inv, &key, &mut o) {
+                    crate::meshw::read::put_broadcasts(&mut o, &u, true);
+                }
+            }
+            Err(ident::Defer(reason)) => {
+                crate::metrics::bump_shared("mesh_broadcast_read_failed", &[]);
+                o.put(defaults::text("mesh_wake.key_broadcasts_error"), s(&reason));
+            }
+        }
+    }
     let result = o.done();
     tick::emit_known_warning(defaults::text("mesh_write.action_read"), &result);
     Ok(Answer { code: 0, stdout: format!("{}\n", result.stringify()), effect: Effect::None })
@@ -392,6 +489,39 @@ pub fn run_ack(inv: &Inv, a: &Args) -> R<Answer> {
             Some(x)
         }
     };
+    // GH #845: `--broadcast-to <seq>` (the `broadcastAckTarget` of `inbox read`), a non-negative whole number
+    let bc_to: Option<i64> = match a.one(defaults::text("mesh_write.flag_broadcast_to")) {
+        None => None,
+        Some(raw) => {
+            let x = crate::checks::guardkit::text::js_number_of_str(raw);
+            if !x.is_finite() || x < 0.0 {
+                let mut o = Obj::default();
+                o.put("ok", OVal::Bool(false)).put("error", s(defaults::text("mesh_wake.msg_broadcast_to_not_number")));
+                return Ok(Answer { code: 2, stdout: format!("{}\n", o.done().stringify()), effect: Effect::None });
+            }
+            Some(x.floor() as i64)
+        }
+    };
+    // review (direct-mail ack race): `--through <ackThrough of inbox read>` holds every cursor to what that read delivered
+    // re-review N-6: a bare ack (no --through, no --to) is held to the boundary the last `inbox read` delivered; with no read on
+    // record it acks nothing, so mail nobody was shown is never acked
+    let given = a.one(defaults::text("mesh_wake.flag_ack_through")).map(str::to_string);
+    let bare = given.is_none() && a.one(defaults::text("mesh_write.flag_to")).is_none();
+    let recorded = if bare { load_through(inv, id) } else { None };
+    let no_read = bare && recorded.is_none();
+    let through = match given.or(recorded) {
+        None if no_read => Some(std::collections::HashMap::new()),
+        None => None,
+        Some(raw) => match decode_through(&raw) {
+            Some(m) => Some(m),
+            None => {
+                let mut o = Obj::default();
+                o.put("ok", OVal::Bool(false)).put("error", s(defaults::text("mesh_wake.msg_ack_through_invalid")));
+                return Ok(Answer { code: 2, stdout: format!("{}\n", o.done().stringify()), effect: Effect::None });
+            }
+        },
+    };
+    let (nd_point, store_point, _) = ack_points(&c);
     // a store the count could not use is not written either: the NDJSON position alone moves
     let st = if c.unavail.is_none() { Some(common::open_store(inv, &c.store_key)?) } else { None };
     let rows = match &st {
@@ -460,7 +590,8 @@ pub fn run_ack(inv: &Inv, a: &Args) -> R<Answer> {
     }
     // the NDJSON side: the position the read ended at, never past the inbox as it is now
     let lines_now = union::non_empty_lines(&inbox)?.map_or(0, |l| l.len()) as f64;
-    let nd_to = explicit.unwrap_or(c.nd_target).max(0.0).floor().min(lines_now);
+    let nd_to =
+        explicit.unwrap_or_else(|| held(through.as_ref(), defaults::text("mesh_wake.ack_through_nd"), nd_point, c.nd_cursor)).max(0.0).floor().min(lines_now);
     let nd_cursor_now = if let Some(st) = &st {
         let nd = cursors::ack_for(st, &inv.home, id, defaults::text("mesh_write.cursor_ns_nd"), reader.as_deref(), nd_to, &mut procs);
         if nd.ok {
@@ -512,9 +643,9 @@ pub fn run_ack(inv: &Inv, a: &Args) -> R<Answer> {
         }
     };
     let mut failures: Vec<OVal> = Vec::new();
+    let mut bc_moved: Option<i64> = None;
     if let Some(st) = st.as_ref().filter(|_| owns_store && explicit.is_none()) {
-        let max_index = c.store_rows.iter().filter_map(|r| r["index"].as_f64()).fold(None, |m: Option<f64>, i| Some(m.map_or(i, |x| x.max(i))));
-        let to = max_index.map_or(c.store_cursor, |m| c.store_cursor.max(m));
+        let to = held(through.as_ref(), defaults::text("mesh_wake.ack_through_store"), store_point, c.store_cursor);
         let r = cursors::ack_for(st, &inv.home, id, defaults::text("mesh_write.ns_store"), reader.as_deref(), to, &mut procs);
         cursors::log_cursor_write(
             &inv.home,
@@ -545,7 +676,7 @@ pub fn run_ack(inv: &Inv, a: &Args) -> R<Answer> {
                 live_skipped.push(s(&sib.id));
                 continue;
             }
-            let target = sib.cursor + sib.physical;
+            let target = held(through.as_ref(), &sib.id, sib.cursor + sib.physical, sib.cursor);
             let r = cursors::ack_for(st, &inv.home, &sib.id, defaults::text("mesh_write.ns_store"), reader.as_deref(), target, &mut procs);
             cursors::log_cursor_write(
                 &inv.home,
@@ -570,6 +701,11 @@ pub fn run_ack(inv: &Inv, a: &Args) -> R<Answer> {
                 f.put("partitionId", s(&sib.id)).put("channel", s(defaults::text("mesh_write.channel_sibling_store"))).put("error", s(e));
                 failures.push(f.done());
             }
+        }
+        // GH #845 (contract §6): `--broadcast-to <seq>` acks the broadcasts `inbox read` listed, through the boundary it printed and
+        // never further (before the summary is derived, so the broadcast wake state follows); without it the cursor stays
+        if let Some(t) = bc_to {
+            bc_moved = crate::meshw::read::ack_broadcasts(st, &crate::meshw::read::reader_key(st.reader(), inv, id), t)?;
         }
         if let Some(why) = crate::meshw::summary::derive_after_write(st, inv, &c.store_key) {
             crate::meshw::log_summary_failure(defaults::text("mesh_write.verb_ack"), &why);
@@ -608,6 +744,12 @@ pub fn run_ack(inv: &Inv, a: &Args) -> R<Answer> {
     }
     if let Some(t) = &trunc {
         t.put(&mut out, defaults::text("mesh_write.truncated_hint_ack"));
+    }
+    if let Some(head) = bc_moved {
+        out.put(defaults::text("mesh_wake.key_broadcast_cursor"), n(head as f64));
+    }
+    if no_read {
+        out.put(defaults::text("mesh_wake.key_ack_no_read"), s(defaults::text("mesh_wake.msg_ack_no_read")));
     }
     let result = out.done();
     tick::emit_known_warning(defaults::text("mesh_write.verb_ack"), &result);

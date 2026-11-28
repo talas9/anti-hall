@@ -11,7 +11,7 @@ It fights four failure modes common to coding assistants:
 4. **Fake completion** — claiming work is done, fixed, or passing without running the check.
 
 What it ships: always-on hooks run by the Rust engine (mechanical guards such as `git-guard`, `api-guard`,
-`command-guard`, `edit-guard`, `swarm-guard`, `task-guard`), a rotating verify-first nudge,
+`command-guard`, `edit-guard`, `swarm-guard`, `task-guard`), the verify-first protocol at session and subagent start,
 skills you call as `/anti-hall:<name>` (`root-cause`, `deadly-loop`, `ship-it`, `doctor`,
 `handover`, `settings`, and more), legacy statusline cleanup, and optional DevSwarm and
 Jev integrations.

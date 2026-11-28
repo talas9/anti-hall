@@ -425,6 +425,10 @@ value = "anti-hall: the engine was still starting, so this {event} was not check
 doc = "Log detail for a hook call that skipped the daemon because a down marker, the breaker or the crash-loop cooldown was active."
 value = "skipped"
 
+[msg.client_skip_crashloop_hold]
+doc = "R0 (#969 hardening review): log detail for a hook call that skipped the daemon during the first client.crashloop_hold_max_ms of a crash-loop cooldown: load, not down, so a guard call in a dispatch.capacity_hold class is held and anything else passes."
+value = "skipped_crashloop_hold"
+
 [msg.client_skip_breaker_load]
 doc = "Log detail for a hook call that skipped the daemon because the client breaker (files.breaker_until) was open while a daemon process was still there (#905, client.down_requires_gone): load, not down, so a guard call in a dispatch.capacity_hold class is held and anything else passes."
 value = "skipped_breaker_load"
@@ -764,8 +768,12 @@ doc = "Status shown in place of a model-routing saving figure while no routing e
 value = "no model-routing events are recorded yet (planned, D52)"
 
 [msg.metrics_quantile_note]
-doc = "Printed with every latency histogram: how to read its percentiles."
+doc = "Printed with a histogram whose percentiles come from its buckets (a byte histogram, or telemetry.hdr_sigfig = 0): how to read them."
 value = "upper bound of the histogram bucket holding that rank"
+
+[msg.metrics_quantile_note_hdr]
+doc = "#969 hardening: printed with a latency histogram whose percentiles come from its HdrHistogram (telemetry.hdr_sigfig)."
+value = "value at that rank, within telemetry.hdr_sigfig significant digits (never above max)"
 
 [msg.tel_err]
 doc = "A telemetry value was refused. Placeholders: {code} (stable short code) and {field} (the field, when one is named)."

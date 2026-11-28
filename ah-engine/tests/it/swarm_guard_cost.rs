@@ -228,9 +228,12 @@ fn a_failing_swarm_guard_script_lets_the_spawn_through_counts_it_and_names_a_rea
     let (code, out, err) = run(&h, &["hook", "--event", "PreToolUse", "--tool", "Agent"], &payload(&h), &[("AH_ENGINE_DISPATCH_IN_PROCESS", "1")]);
     assert_eq!(code, 0, "a failed swarm-guard must not refuse the spawn: {out} {err}");
     assert!(
-        out.contains("systemMessage") && out.contains("swarm-guard guard could not run") && out.contains("injected"),
-        "the notice names the failure: {out}"
+        out.contains("systemMessage") && out.contains("swarm-guard guard could not run") && out.contains("it hit an internal error"),
+        "the notice names the failure in one short line: {out}"
     );
+    assert!(!out.contains("injected") &&out.lines().count() == 1, "the raw error and stack stay out of the notice (#953): {out}");
+    let logged = std::fs::read_dir(h.join("engine-state")).into_iter().flatten().flatten().any(|e| std::fs::read_to_string(e.path()).is_ok_and(|t| t.contains("script_error") && t.contains("injected")));
+    assert!(logged, "the full error is in the engine log");
     assert!(out.contains("/anti-hall:doctor") && !out.contains("~/.anti-hall/logic"), "the notice names a step that exists: {out}");
     let inbox = std::fs::read_to_string(h.join("engine-state/telemetry-inbox.jsonl")).unwrap_or_default();
     assert!(
@@ -248,7 +251,7 @@ fn a_swarm_guard_interrupted_by_the_cpu_limit_lets_the_spawn_through() {
     tracked_spread(&h, 5);
     let (code, out, err) = check(&h, &[("AH_ENGINE_SCRIPT_TIME_MS", "1")]);
     assert_eq!(code, 0, "{out} {err}");
-    assert!(out.contains("swarm-guard guard could not run") && out.contains("cpu limit"), "{out}");
+    assert!(out.contains("swarm-guard guard could not run") && out.contains("it ran past its CPU limit"), "{out}");
 }
 
 /// The text of the closed-guard block points at a step that exists (the owner override directory does not exist by default).

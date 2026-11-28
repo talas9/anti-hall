@@ -155,7 +155,7 @@ pub fn cursor_position(path: &str) -> R<Option<f64>> {
 }
 
 /// `String(o._h)` for a parsed NDJSON line: `Some(hash)` when it is an object (or array) with a non-null `_h`.
-fn embedded_hash(line: &str) -> R<Option<String>> {
+pub(crate) fn embedded_hash(line: &str) -> R<Option<String>> {
     let Some(o) = OVal::parse(line) else { return Ok(None) };
     match o.get(defaults::text("mesh_write.ndjson_hash_field")) {
         None | Some(OVal::Null) => Ok(None),

@@ -161,7 +161,7 @@ fn the_capacity_hold_corpus_is_held_and_passed_by_the_launcher_too() {
     {
         let (want, cmd) = match line.split_once(' ') {
             Some(("H", c)) => (2, c.replace("\\n", "\n").replace("{fix}", FIX)),
-            Some(("P", c)) => (0, c.replace("\\n", "\n").replace("{fix}", FIX)),
+            Some(("P" | "R", c)) => (0, c.replace("\\n", "\n").replace("{fix}", FIX)),
             _ => continue,
         };
         let payload = serde_json::json!({"session_id": format!("s-{i}"), "tool_name": "Bash", "tool_input": {"command": cmd}});
@@ -171,7 +171,7 @@ fn the_capacity_hold_corpus_is_held_and_passed_by_the_launcher_too() {
         if want == 2 { held += 1 } else { passed += 1 }
     }
     assert!(
-        held >= 244 && passed >= 101,
+        held >= 288 && passed >= 149,
         "corpus read: {held} held, {passed} pass"
     );
 }

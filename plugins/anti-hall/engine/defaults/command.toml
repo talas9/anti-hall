@@ -257,7 +257,7 @@ doc = "Judge shell wrappers by their script body. Default on: a `sh|bash <script
 value = { section = "guards", key = "commandResolveWrapperScripts", type = "boolean", env = "ANTIHALL_COMMAND_RESOLVE_WRAPPER_SCRIPTS", option = "", default = true }
 
 [metric.command_wrapper_resolved]
-doc = "Heavy-command checks that read a `sh|bash <script>` body (#547), by verdict: same (the body is not heavy, the wrapper's verdict is unchanged) or differs (the body is heavy and the wrapper is now stopped like the raw command)."
+doc = "Heavy-command checks that read a `sh|bash <script>` body (#547), by verdict: same (the body is not heavy, the wrapper's verdict is unchanged), differs (the body is heavy and the wrapper is now stopped like the raw command) or role (a deploy script judged as written, GH #981)."
 value = { kind = "counter", unit = "checks", labels = ["verdict"] }
 
 [command.remote_block]
@@ -386,6 +386,10 @@ value = "{kind}{detail} can't run in the main thread."
 [command.msg_heavy_remote]
 doc = "The kind of a state-changing remote command."
 value = "a command that changes a shared remote"
+
+[command.msg_heavy_pull]
+doc = "The kind of a git pull or fetch that is held in the main thread (it reads from a shared remote and changes only local state, but can stall on network or credentials). `git pull --ff-only` is not held."
+value = "a git pull or fetch from a shared remote"
 
 [command.msg_heavy_plain]
 doc = "The kind of any other heavy command."
@@ -950,6 +954,14 @@ value = 8
 [command.classify_push_subs]
 doc = "git subcommands that label a block a remote push."
 value = ["push"]
+
+[command.pull_light_flags]
+doc = "The only flags a `git pull --ff-only` may carry to stay light in the main thread (it fast-forwards the local branch and nothing else). Any other flag (--squash, --autostash, --no-commit, a rebase, prune or force flag, an unknown one) makes the pull heavy; --ff-only itself must be present."
+value = ["--ff-only", "--quiet", "--verbose", "-q", "-v"]
+
+[command.pull_light_short]
+doc = "The letters a bundled short flag of a light `git pull --ff-only` may hold (-qv); any other letter or a digit makes the pull heavy."
+value = ["q", "v"]
 
 [command.classify_pull_subs]
 doc = "git subcommands that label a block a remote pull or fetch."

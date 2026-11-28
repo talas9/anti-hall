@@ -89,6 +89,9 @@ pub struct Task {
     pub block_unknown: bool,
     /// When the task was created or last set pending or in progress (the guard variant only; `sinceMs`).
     pub since: Since,
+    /// When a TaskUpdate of this transcript last wrote the `blockedOn` marker, even with the text it had (the guard variant only;
+    /// `blockedOnAtMs`): it is the session's own re-confirmation of the blocker.
+    pub blocked_on_at: Since,
 }
 
 /// A task's `sinceMs`: `NaN` when unknown, a time, or a timestamp only JavaScript's date parser could read.
@@ -153,6 +156,7 @@ impl Task {
             unknown: Some(Unknown::all()),
             block_unknown: false,
             since: Since::Unknown,
+            blocked_on_at: Since::Unknown,
         }
     }
 

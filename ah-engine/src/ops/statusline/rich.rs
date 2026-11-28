@@ -400,6 +400,44 @@ fn usage_chip(data: &Option<J>, c: &Colors) -> String {
     parts.join(&sep_str(c))
 }
 
+/// GH #981: keep the host's own rate limits (the stdin `rate_limits`) as anti-hall's usage snapshot (ctxbudget.usage_statusline_file, in
+/// the usage-cache shape the usage readers share), so limit conservation does not depend on another plugin's cache that may no longer be
+/// refreshed. Written at most every statusline.usage_snapshot_min_ms, never when limitConserve.usageSource is omc-cache, and only with at
+/// least one window present. Best effort: a failed write changes nothing on the line.
+fn usage_snapshot(home: &str, data: &Option<J>) {
+    let source = crate::ops::settings::effective_text(defaults::text("ctxbudget.usage_source_section"), defaults::text("ctxbudget.usage_source_key"), "")
+        .unwrap_or_default();
+    if home.is_empty() || source == defaults::text("ctxbudget.usage_source_omc") {
+        return;
+    }
+    let Some(limits) = data.as_ref().and_then(|d| d.get("rate_limits")) else { return };
+    let path = Path::new(home).join(defaults::text("ctxbudget.usage_statusline_file"));
+    let min = Duration::from_millis(defaults::num("statusline.usage_snapshot_min_ms"));
+    if std::fs::metadata(&path).and_then(|m| m.modified()).ok().and_then(|t| SystemTime::now().duration_since(t).ok()).is_some_and(|age| age < min) {
+        return;
+    }
+    let mut out = serde_json::Map::new();
+    for row in defaults::raw("statusline.usage_snapshot_map").as_array().unwrap_or_default() {
+        let Some(window) = limits.get(row.str_field("window")) else { continue };
+        if let Some(J::Num(p)) = window.get(defaults::text("statusline.usage_pct_field"))
+            && p.is_finite()
+        {
+            out.insert(row.str_field("pct").to_string(), serde_json::json!(p));
+        }
+        if let Some(J::Str(at)) = window.get(defaults::text("statusline.usage_resets_field")) {
+            out.insert(row.str_field("resets").to_string(), serde_json::json!(at));
+        }
+    }
+    if out.is_empty() {
+        return;
+    }
+    let snap = serde_json::json!({"timestamp": crate::checks::jsport::date::now_ms() as i64, "source": defaults::text("statusline.usage_snapshot_source"), "data": out});
+    if let Some(dir) = path.parent() {
+        crate::discard::harmless(std::fs::create_dir_all(dir)); // keep: the write below reports nothing either
+    }
+    crate::discard::harmless(crate::atomic::write(&path, snap.to_string())); // keep: best effort, the line is drawn either way
+}
+
 /// `generateStatusline()` for the stdin text `input_raw` and the process working directory `cwd`.
 pub fn render(cx: &Ctx, env: &BTreeMap<String, String>, root: &str, cwd: &str, input_raw: &str) -> Rich {
     let c = Colors { on: env.get(defaults::text("statusline.no_color_env")).is_none_or(|v| v.is_empty()) };
@@ -524,6 +562,7 @@ pub fn render(cx: &Ctx, env: &BTreeMap<String, String>, root: &str, cwd: &str, i
         h.push_str(&format!("{sep}{}{}{duration}{}", c.c("cyan"), defaults::text("statusline.clock_icon"), c.c("reset")));
     }
     // the usage chip sits right before the context percentage (one segment, a gap between), each colored by its own level
+    usage_snapshot(&cx.home, &data);
     let usage = usage_chip(&data, &c);
     let ctx = used_pct.filter(|p| *p > 0.0).map(|p| format!("{}{}% ctx{}", level_color(p, &c), n(p), c.c("reset"))).unwrap_or_default();
     if !usage.is_empty() || !ctx.is_empty() {

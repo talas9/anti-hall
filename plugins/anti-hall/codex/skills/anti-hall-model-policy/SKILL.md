@@ -28,9 +28,11 @@ memorized in this file or any other doc.
    - **fast** — cheap/quick work: mechanical command running, repetitive
      execution, simple lookups.
 3. Within models visible to you (skip anything hidden/internal), match the
-   category using the catalog's own description text (e.g. "frontier
-   intelligence", "workhorse model for coding", "fast and
-   affordable/efficient") and prefer the NEWEST generation present — the
+   category using the catalog's own description text (e.g. "frontier" /
+   "most capable model", "workhorse" / "go-to model for coding", "fast and
+   affordable/efficient"; the phrases live in
+   `companion/lib/codex-model-roles.json` - catalog wording changes between
+   Codex releases, so extend that file, not code) and prefer the NEWEST generation present — the
    catalog orders this for you (lower `priority` = newer). Skip a model the
    catalog flags as retiring/upgrading if a live alternative exists in the
    same category.
@@ -45,8 +47,10 @@ uses the engine's Codex model resolver
 spawn-free, and returns `null` on any failure so the caller omits `-m`.
 
 Illustrative example only (STALE THE DAY YOU READ THIS — re-resolve, don't
-copy): as of 2026-09-23 the live catalog's newest generation maps frontier →
-`gpt-6-astra`, workhorse → `gpt-6-sol`, fast → `gpt-6-luna`. Do not hardcode
+copy): as of 2026-11-26 (codex-cli 0.171.0) the live catalog maps frontier →
+`gpt-6.2-astra`, workhorse → `gpt-6.2-sol`, fast → `gpt-6-luna`; also listed:
+`gpt-6.1-terra` (efficient, visual/computer use), older `gpt-6.1-sol`,
+`gpt-6-astra`, `gpt-6-sol`, `gpt-5.6-sol/terra/luna`. Do not hardcode
 these slugs anywhere; they are shown only to make the category descriptions
 concrete.
 

@@ -1074,6 +1074,26 @@ fn a_workspace_with_an_unarmed_lock_and_the_switch_off_gets_the_off_notice_not_t
     assert!(t.contains("devswarm.wakeWatch=false") && !t.contains("--auto"), "{t}");
 }
 
+/// #969 (live, a DevSwarm Primary at load 50-100): the merged watcher (`agents wake-watch --auto`) was live and itself delivered
+/// "no live wake-watch covers this workspace" (the wake row's own delivery proves the process ran) while the tracker read the
+/// workspace's lock as not live. The agent half's fresh stamp is the same live process: the workspace is covered, and the order to
+/// arm a second watcher (which would only be refused as held) is not sent.
+#[test]
+fn a_workspace_whose_merged_watcher_stamp_is_fresh_is_covered_even_when_its_lock_reads_stale() {
+    let h = home("ws-stamp");
+    let n = now0();
+    devswarm(&h, n, Some(n - 10 * MIN)); // the DevSwarm half's lock reads stale
+    let mut st = State::default();
+    for t in [n, n + MIN, n + 2 * MIN] {
+        let e = env(&h, t);
+        arm_wake(&e, "sessW"); // the agent half of the same process renews its stamp
+        tick(&e, &mut st);
+    }
+    assert_eq!(agent(&st, "sessW").ws.as_ref().unwrap().armed, Some(false), "the lock alone reads unarmed");
+    assert!(!agent(&st, "sessW").flags.contains_key("monitor_unarmed"), "the live merged watcher covers the workspace");
+    assert!(queue(&h, "sessW").iter().all(|r| r["signal"] != "monitor_unarmed"));
+}
+
 #[test]
 fn a_workspace_follows_devswarm_wake_watch_not_agents_wake_watch() {
     let h = home("ws-own-switch");
@@ -3500,8 +3520,15 @@ fn main_session(h: &Path, sid: &str, n: u64, idle_min: u64, reply: &str) {
     write(&sess(h, sid), &[prompt(n - 90 * MIN, "/w"), asst(n - idle_min * MIN, "p1", 5, 5, json!([{"type": "text", "text": reply}]), Some("end_turn"))]);
 }
 
+/// A task of the session's list at the layout Claude Code really writes: `~/.claude/tasks/session-<first 8 of the session id>/`.
 fn task_file(h: &Path, sid: &str, t: Value) {
-    let d = h.join(".claude/tasks").join(sid);
+    let sid8: String = sid.chars().take(8).collect();
+    task_file_in(h, &format!("session-{sid8}"), t);
+}
+
+/// A task in the list directory `dir` (a named list when the session ran with `CLAUDE_CODE_TASK_LIST_ID`).
+fn task_file_in(h: &Path, dir: &str, t: Value) {
+    let d = h.join(".claude/tasks").join(dir);
     std::fs::create_dir_all(&d).unwrap();
     std::fs::write(d.join(format!("{}.json", t["id"].as_str().unwrap())), t.to_string()).unwrap();
 }
@@ -3628,6 +3655,201 @@ fn an_idle_coordinator_under_the_cap_with_reply_gaps_not_in_the_task_list_is_tol
     assert_eq!(q.len(), 1, "{:?}", queue(&h, "s1"));
     let t = q[0]["text"].as_str().unwrap();
     assert!(t.contains("wire the codex port") && !t.contains("add the docs page") && t.contains("only 1 agent(s) running") && t.contains("in parallel"), "{t}");
+}
+
+// ---- task-list compliance (GH #958) ----
+
+const SID: &str = "a1b2c3d4-0000-4000-8000-000000000001";
+
+/// `count` answered Read calls from `from` on, a minute apart.
+fn reads(from: u64, count: u64, tag: &str) -> Vec<String> {
+    (0..count)
+        .flat_map(|i| {
+            let id = format!("{tag}{i}");
+            [
+                tool(from + i * 1000, &format!("m{id}"), 5, &id, "Read", json!({"file_path": format!("/w/{id}")})),
+                result(from + i * 1000 + 500, &id, "ok", false),
+            ]
+        })
+        .collect()
+}
+
+fn task_create(ts: u64, tag: &str) -> Vec<String> {
+    vec![
+        tool(ts, &format!("m{tag}"), 5, tag, "TaskCreate", json!({"subject": "Port the gauge"})),
+        result(ts + 500, tag, "Task #1 created successfully: Port the gauge", false),
+    ]
+}
+
+/// A busy main session whose transcript is `lines` after the owner's prompt.
+fn working_session(h: &Path, n: u64, lines: Vec<String>) {
+    register(h, std::process::id(), SID, "busy", n);
+    let mut all = vec![prompt(n - 60 * MIN, "/w")];
+    all.extend(lines);
+    write(&sess(h, SID), &all);
+}
+
+fn compliance_rows(h: &Path, sig: &str) -> Vec<Value> {
+    queue(h, SID).into_iter().filter(|r| r["signal"] == sig).collect()
+}
+
+#[test]
+fn the_backlog_line_of_the_task_window_is_never_a_task_the_nudges_count() {
+    // GH #982: `T-∞ Backlog: …` indexes the backlog store; it is not work, so no idle or dispatch nudge may name it
+    let h = home("backlog-line");
+    let e = env(&h, now0());
+    task_file(&h, SID, json!({"id": "1", "subject": "T-1 [P0] Real work", "status": "pending", "owner": "", "blockedBy": []}));
+    task_file(&h, SID, json!({"id": "2", "subject": "T-∞ Backlog: 3 more (1 P0, 2 P1) · next: T-7 [P0] x · run /anti-hall:tasks-reconcile", "status": "pending", "owner": "", "blockedBy": []}));
+    let ts = compliance::session_tasks(&e, SID);
+    assert_eq!(ts.len(), 1, "only the real task is read");
+    assert_eq!(ts[0].subject, "T-1 [P0] Real work");
+}
+
+#[test]
+fn the_task_list_is_read_from_the_session_dir_a_named_list_and_a_pointer_not_the_uuid_dir() {
+    let h = home("list-layout");
+    let e = env(&h, now0());
+    let t = |s: &str| json!({"id": "1", "subject": s, "status": "pending", "owner": "", "blockedBy": []});
+    assert!(compliance::session_tasks(&e, SID).is_empty(), "no list on disk");
+    task_file_in(&h, SID, t("full-id dir: the hook side's last candidate"));
+    assert_eq!(compliance::session_tasks(&e, SID)[0].subject, "full-id dir: the hook side's last candidate");
+    task_file(&h, SID, t("session dir"));
+    assert_eq!(compliance::session_tasks(&e, SID)[0].subject, "session dir", "the session-<8> directory is tried first");
+    // the hook side saves the named list the session ran with; the tick reads that list instead
+    task_file_in(&h, "named-list", t("named list"));
+    let req = crate::reqenv::RequestEnv::from_pairs([("HOME", h.to_string_lossy().to_string()), ("CLAUDE_CODE_TASK_LIST_ID", "named-list".to_string())]);
+    compliance::note_task_list(&req, &json!({"session_id": SID}));
+    assert_eq!(compliance::session_tasks(&e, SID)[0].subject, "named list", "the named list wins");
+    // a pointer file in the session dir moves the list one hop (a resumed session)
+    let h2 = home("list-pointer");
+    let e2 = env(&h2, now0());
+    task_file(&h2, SID, t("own"));
+    task_file_in(&h2, "shared", t("shared"));
+    std::fs::write(h2.join(".claude/tasks/session-a1b2c3d4/.session-list"), "shared").unwrap();
+    assert_eq!(compliance::session_tasks(&e2, SID)[0].subject, "shared");
+}
+
+#[test]
+fn stale_list_fires_after_many_work_calls_with_no_task_call_and_stays_silent_on_a_fresh_list() {
+    let n = now0();
+    let h = home("stale-list");
+    task_file(&h, SID, json!({"id": "1", "subject": "Port the gauge", "status": "pending", "owner": "", "blockedBy": []}));
+    let mut lines = task_create(n - 40 * MIN, "tc");
+    lines.extend(reads(n - 30 * MIN, 30, "r"));
+    working_session(&h, n, lines);
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n]);
+    assert!(compliance_rows(&h, "stale_list").is_empty(), "confirm_ticks: one tick is not enough");
+    ticks(&h, &mut st, &[n + MIN]);
+    let q = compliance_rows(&h, "stale_list");
+    assert_eq!(q.len(), 1, "{:?}", queue(&h, SID));
+    let t = q[0]["text"].as_str().unwrap();
+    assert!(t.contains("Do now:") && t.contains("30 work calls") && t.contains("Port the gauge"), "{t}");
+    assert!(wake_rows(&h, SID).iter().any(|r| r["text"].as_str().unwrap_or("").contains("30 work calls")), "the tick alone writes the wake row");
+    ticks(&h, &mut st, &[n + 2 * MIN, n + 3 * MIN]);
+    assert_eq!(compliance_rows(&h, "stale_list").len(), 1, "the cooldown holds the repeat");
+    // compliant: the list was updated in the last calls
+    let h2 = home("stale-list-ok");
+    task_file(&h2, SID, json!({"id": "1", "subject": "Port the gauge", "status": "pending", "owner": "", "blockedBy": []}));
+    let mut ok = reads(n - 40 * MIN, 30, "r");
+    ok.extend(task_create(n - 5 * MIN, "tc"));
+    ok.extend(reads(n - 4 * MIN, 5, "q"));
+    working_session(&h2, n, ok);
+    let mut st2 = State::default();
+    ticks(&h2, &mut st2, &[n, n + MIN, n + 2 * MIN]);
+    assert!(!agent(&st2, SID).flags.contains_key("stale_list") && compliance_rows(&h2, "stale_list").is_empty());
+}
+
+#[test]
+fn untracked_request_fires_after_a_prompt_with_many_calls_and_no_task_and_clears_when_a_task_is_made() {
+    let n = now0();
+    let h = home("untracked");
+    working_session(&h, n, reads(n - 30 * MIN, 20, "r"));
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n, n + MIN]);
+    let q = compliance_rows(&h, "untracked_request");
+    assert_eq!(q.len(), 1, "{:?}", queue(&h, SID));
+    assert!(q[0]["text"].as_str().unwrap().contains("Do now:") && q[0]["text"].as_str().unwrap().contains("20 tool calls"), "{q:?}");
+    // the session answers the nudge with a TaskCreate: the flag clears
+    append(&sess(&h, SID), &task_create(n + 2 * MIN, "tc"));
+    ticks(&h, &mut st, &[n + 3 * MIN]);
+    assert!(!agent(&st, SID).flags.contains_key("untracked_request"), "a task call answers the prompt");
+    // compliant: the task came first
+    let h2 = home("untracked-ok");
+    let mut ok = task_create(n - 40 * MIN, "tc");
+    ok.extend(reads(n - 30 * MIN, 20, "r"));
+    working_session(&h2, n, ok);
+    let mut st2 = State::default();
+    ticks(&h2, &mut st2, &[n, n + MIN, n + 2 * MIN]);
+    assert!(compliance_rows(&h2, "untracked_request").is_empty() && !agent(&st2, SID).flags.contains_key("untracked_request"));
+}
+
+#[test]
+fn inprogress_waiting_fires_with_nothing_running_and_stays_silent_under_lanes_a_background_job_or_a_monitor() {
+    let n = now0();
+    let task = json!({"id": "1", "subject": "Ship the gauge", "status": "in_progress", "owner": "", "blockedBy": []});
+    let late = [n, n + 16 * MIN, n + 17 * MIN];
+    let h = home("ipw");
+    task_file(&h, SID, task.clone());
+    working_session(&h, n, reads(n - 5 * MIN, 2, "r"));
+    let mut st = State::default();
+    ticks(&h, &mut st, &late[..2]);
+    assert!(compliance_rows(&h, "inprogress_waiting").is_empty(), "the clock starts at the first tick that saw nothing on it");
+    ticks(&h, &mut st, &late[2..]);
+    let q = compliance_rows(&h, "inprogress_waiting");
+    assert_eq!(q.len(), 1, "{:?}", queue(&h, SID));
+    assert!(q[0]["text"].as_str().unwrap().contains("Ship the gauge") && q[0]["text"].as_str().unwrap().contains("no agent and no background job"), "{q:?}");
+    assert!(!wake_rows(&h, SID).is_empty(), "an idle session is reached by the wake row");
+    // lanes running
+    let h1 = home("ipw-lanes");
+    task_file(&h1, SID, task.clone());
+    working_session(&h1, n, reads(n - 5 * MIN, 2, "r"));
+    running_sub(&h1, SID, n + 16 * MIN, 1);
+    let mut st1 = State::default();
+    ticks(&h1, &mut st1, &late);
+    assert!(compliance_rows(&h1, "inprogress_waiting").is_empty(), "a lane runs");
+    // a background job
+    let h2 = home("ipw-bg");
+    task_file(&h2, SID, task.clone());
+    let mut bg = reads(n - 5 * MIN, 2, "r");
+    bg.push(tool(n - 2 * MIN, "mbg", 5, "bg", "Bash", json!({"command": "cargo build", "run_in_background": true, "background": true})));
+    bg.push(result(n - 2 * MIN + 500, "bg", "Command running in background with ID: bg1", false));
+    working_session(&h2, n, bg);
+    let mut st2 = State::default();
+    ticks(&h2, &mut st2, &late);
+    assert!(compliance_rows(&h2, "inprogress_waiting").is_empty(), "a background job covers: {:?}", agent(&st2, SID).bg_ids);
+    // a Monitor
+    let h3 = home("ipw-monitor");
+    task_file(&h3, SID, task);
+    let mut mon = reads(n - 5 * MIN, 2, "r");
+    mon.push(tool(n - 2 * MIN, "mmon", 5, "mon", "Monitor", json!({"command": "tail -f x", "persistent": true})));
+    mon.push(result(n - 2 * MIN + 500, "mon", "started", false));
+    working_session(&h3, n, mon);
+    let mut st3 = State::default();
+    ticks(&h3, &mut st3, &late);
+    assert!(compliance_rows(&h3, "inprogress_waiting").is_empty(), "a Monitor covers");
+}
+
+#[test]
+fn an_idle_workspace_primary_and_an_orphaned_in_progress_task_count_as_dispatchable() {
+    let n = now0();
+    let h = home("workspace-idle");
+    task_file(&h, SID, json!({"id": "1", "subject": "Orphaned work", "status": "in_progress", "owner": "ghost", "blockedBy": []}));
+    main_session(&h, SID, n, 15, "done for now");
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n, n + MIN]);
+    let q: Vec<Value> = queue(&h, SID).into_iter().filter(|r| r["signal"] == "idle_no_agents").collect();
+    assert_eq!(q.len(), 1, "an in-progress task whose owner is not running is dispatchable: {:?}", queue(&h, SID));
+    assert!(q[0]["text"].as_str().unwrap().contains("Orphaned work"));
+    let mut ws = agent(&st, SID).clone();
+    ws.kind = "workspace".into();
+    ws.flags.clear();
+    ws.last_sent.clear();
+    ws.sent_log.clear();
+    let mut st2 = State::default();
+    st2.agents.insert(ws.id.clone(), ws);
+    let e = env(&h, n + 2 * MIN);
+    assert!(compliance::dispatchable(&compliance::session_tasks(&e, SID), &st2, &st2.agents[SID], e.now_ms).len() == 1);
 }
 
 // ---- the signals up now on one session's agents (the nudge ladder's fact check) ----
@@ -4248,6 +4470,7 @@ fn a_build_exempts_only_while_its_background_task_is_outstanding() {
                     writes: Vec::new(),
                     amp: false,
                     cwd: String::new(),
+                    blocker_task: String::new(),
                 },
             );
         }),
@@ -4630,7 +4853,7 @@ fn rt_step_1_advise_fires_at_45_minutes_for_an_agent_with_outcomes() {
     let mut st = State::default();
     let (commit, _) = spend_cycle(&child, 0, n);
     append(&child, &commit);
-    rt_tick(&h, &child, &mut st, n + 20 * MIN, 1);
+    rt_tick(&h, &child, &mut st, n + MIN, 1); // the tracker sees the commit (the last outcome) a minute after it
     rt_tick(&h, &child, &mut st, n + 38 * MIN, 2);
     assert!(
         rt_texts(&h).is_empty() && rt_fired("advise") == 0,
@@ -4649,17 +4872,35 @@ fn rt_step_1_advise_fires_at_45_minutes_for_an_agent_with_outcomes() {
     assert!(st.nudges.get("abc").is_some_and(|x| x.trigger == "runtime"), "the nudge is a runtime nudge");
 }
 
-/// The token side of a step: 1.0 x the per-agent budget (1M) fires step 1 long before 45 minutes, even with outcomes.
+/// The token side of a step: 1.0 x the budget (1M) spent SINCE THE LAST OUTCOME fires step 1 long before 45 minutes.
 #[test]
 fn rt_step_1_fires_on_one_budget_of_tokens_before_45_minutes() {
     let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
     let (h, n, child) = nudge_home("rt687-tok");
     drained();
     let mut st = State::default();
-    append(&child, &[asst(n + 3 * MIN, "big", 1_100_000, 10, json!([{"type": "text", "text": "reading"}]), None)]);
-    append(&child, &[tool(n + 5 * MIN, "kc", 10, "gc", "Bash", json!({"command": "git commit -m done"})), result(n + 5 * MIN + 1000, "gc", "ok", false)]);
-    rt_tick(&h, &child, &mut st, n + 10 * MIN, 1);
-    assert_eq!(rt_fired("advise"), 1, "1.1M tokens >= 1.0 x budget fires step 1 at 15 minutes of running");
+    append(&child, &[tool(n + 3 * MIN, "kc", 10, "gc", "Bash", json!({"command": "git commit -m done"})), result(n + 3 * MIN + 1000, "gc", "ok", false)]);
+    rt_tick(&h, &child, &mut st, n + 4 * MIN, 1);
+    append(&child, &[asst(n + 5 * MIN, "big", 1_100_000, 10, json!([{"type": "text", "text": "reading"}]), None)]);
+    rt_tick(&h, &child, &mut st, n + 10 * MIN, 2);
+    assert_eq!(rt_fired("advise"), 1, "1.1M tokens since the last outcome >= 1.0 x budget fires step 1 at 10 minutes after it");
+}
+
+/// A productive agent (a fresh outcome every 30 minutes, 2M tokens spent in all) is never nudged on its total runtime or spend (#958).
+#[test]
+fn rt_a_productive_long_running_agent_is_not_nudged() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let (h, n, child) = nudge_home("rt958-productive");
+    drained();
+    let mut st = State::default();
+    for k in 0..6u64 {
+        let (commit, spend) = spend_cycle(&child, k, n + k * 30 * MIN);
+        append(&child, &commit);
+        append(&child, &spend);
+        rt_tick(&h, &child, &mut st, n + k * 30 * MIN + 5 * MIN, k);
+    }
+    assert_eq!(rt_fired("advise") + rt_fired("order") + rt_fired("block"), 0, "3 hours of running and 4M tokens, but an outcome every 30 minutes");
+    assert!(rt_texts(&h).is_empty(), "no runtime nudge: {:?}", rt_texts(&h));
 }
 
 /// Steps climb: advise, then order (90 min), then block (120 min). An extension moves the agent on to the next step (never back to
@@ -4678,7 +4919,7 @@ fn rt_steps_climb_extend_moves_on_and_block_gates_the_stop() {
         k += 1;
         rt_tick(&h, &child, st, n + m * MIN, k)
     };
-    at(&mut st, 20);
+    at(&mut st, 1); // the tracker sees the commit (the last outcome) a minute after it
     let e = at(&mut st, 46);
     assert_eq!(rt_fired("advise"), 1);
     let ans = e.dir().join(defaults::raw("agent_nudge.paths").str_field("answers"));
@@ -4723,7 +4964,7 @@ fn rt_block_step_blocks_every_stop_until_extended_and_never_says_advisory() {
         k += 1;
         rt_tick(&h, &child, st, n + m * MIN, k)
     };
-    at(&mut st, 20);
+    at(&mut st, 1); // the tracker sees the commit (the last outcome) a minute after it
     let e = at(&mut st, 123);
     assert_eq!(rt_fired("block"), 1, "the block step fired");
     at(&mut st, 124); // the escalation is published by the next follow
@@ -4749,7 +4990,7 @@ fn rt_snooze_without_a_reason_ignores_a_stale_reason() {
     let mut st = State::default();
     let (commit, _) = spend_cycle(&child, 0, n);
     append(&child, &commit);
-    rt_tick(&h, &child, &mut st, n + 20 * MIN, 1);
+    rt_tick(&h, &child, &mut st, n + MIN, 1); // the tracker sees the commit (the last outcome) a minute after it
     let e = rt_tick(&h, &child, &mut st, n + 46 * MIN, 2);
     let path = e.dir().join(defaults::raw("agent_nudge.paths").str_field("answers"));
     sinks::append(&path, &json!({"ts": e.now_ms, "child": "abc", "answer": "wrong", "text": "an old explanation", "min": 0})).unwrap();
@@ -4770,7 +5011,7 @@ fn rt_snooze_holds_a_reopened_runtime_nudge_until_it_runs_out() {
     let mut st = State::default();
     let (commit, _) = spend_cycle(&child, 0, n);
     append(&child, &commit);
-    rt_tick(&h, &child, &mut st, n + 20 * MIN, 1);
+    rt_tick(&h, &child, &mut st, n + MIN, 1); // the tracker sees the commit (the last outcome) a minute after it
     let e = rt_tick(&h, &child, &mut st, n + 46 * MIN, 2);
     let first = st.nudges.get("abc").expect("step 1 opens").ref_id.clone();
     let path = e.dir().join(defaults::raw("agent_nudge.paths").str_field("answers"));
@@ -4802,8 +5043,12 @@ fn a_closed_nudge_reports_its_outcome_against_the_jev_decisions_behind_it() {
     st.nudges.insert("abc".into(), nudge::Nudge { child: "abc".into(), jev, said_not_done: 1, ..nudge::Nudge::default() });
     nudge::close_finished(&e, &mut st, "abc");
     let rows: Vec<Value> = crate::jev::testkit::log_rows(&h).into_iter().filter(|r| r["type"] == "outcome").collect();
-    let got: Vec<(String, String, String, String)> =
-        rows.iter().map(|r| (r["id"].as_str().unwrap().into(), r["h"].as_str().unwrap().into(), r["outcome"].as_str().unwrap().into(), r["source"].as_str().unwrap().into())).collect();
+    let got: Vec<(String, String, String, String)> = rows
+        .iter()
+        .map(|r| {
+            (r["id"].as_str().unwrap().into(), r["h"].as_str().unwrap().into(), r["outcome"].as_str().unwrap().into(), r["source"].as_str().unwrap().into())
+        })
+        .collect();
     assert_eq!(
         got,
         vec![
@@ -4849,6 +5094,34 @@ fn health_snooze_holds_across_a_finished_close() {
     assert!(st.nudges.get("abc").is_none(), "held by the snooze; first ref was {}", first.ref_id);
 }
 
+/// #972 wave 2 (item 6): a snooze the parent gave a HEALTH nudge (`agents nudge <child> snooze 45`) holds every nag about the child, the
+/// runtime step too: no runtime nudge opens, and no open one refires or climbs, while it runs. Once it runs out the runtime step fires
+/// again (true positive).
+#[test]
+fn n972_a_health_snooze_holds_the_runtime_nudge_until_it_runs_out() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let (h, n, child) = nudge_home("n972-health-snooze-rt");
+    drained();
+    let mut st = State::default();
+    let (commit, _) = spend_cycle(&child, 0, n);
+    append(&child, &commit);
+    rt_tick(&h, &child, &mut st, n + MIN, 1); // the tracker sees the commit (the last outcome) a minute after it
+    // a 45-minute snooze recorded on a health nudge (waste), which has since closed
+    st.nudge_snooze.insert("abc|waste".into(), nudge::Snooze { until: n + 60 * MIN, snoozes: 1, min: 45, held: 0 });
+    rt_tick(&h, &child, &mut st, n + 46 * MIN, 2);
+    assert_eq!(rt_fired("advise"), 0, "the health snooze holds the runtime step: {:?}", rt_texts(&h));
+    assert!(!st.nudges.contains_key("abc"), "no runtime nudge opens inside the snooze");
+    // an open runtime nudge does not climb a step inside a snooze the parent gave a health nudge either
+    rt_tick(&h, &child, &mut st, n + 61 * MIN, 3);
+    assert_eq!(rt_fired("advise"), 1, "the snooze ran out: the runtime step fires (true positive)");
+    let delivered = rt_texts(&h).len();
+    st.nudge_snooze.insert("abc|waste".into(), nudge::Snooze { until: n + 200 * MIN, snoozes: 2, min: 120, held: 0 });
+    rt_tick(&h, &child, &mut st, n + 95 * MIN, 4);
+    rt_tick(&h, &child, &mut st, n + 125 * MIN, 5);
+    assert_eq!(rt_fired("order") + rt_fired("block"), 0, "no step climbs inside the snooze: {:?}", rt_texts(&h));
+    assert_eq!(rt_texts(&h).len(), delivered, "no refire inside the snooze: {:?}", rt_texts(&h));
+}
+
 /// Message answers are counted per step, and a `wrong` report is counted without closing or changing the nudge.
 #[test]
 fn rt_msg_and_wrong_are_counted_per_step() {
@@ -4858,7 +5131,7 @@ fn rt_msg_and_wrong_are_counted_per_step() {
     let mut st = State::default();
     let (commit, _) = spend_cycle(&child, 0, n);
     append(&child, &commit);
-    rt_tick(&h, &child, &mut st, n + 20 * MIN, 1);
+    rt_tick(&h, &child, &mut st, n + MIN, 1); // the tracker sees the commit (the last outcome) a minute after it
     let e = rt_tick(&h, &child, &mut st, n + 46 * MIN, 2);
     let path = e.dir().join(defaults::raw("agent_nudge.paths").str_field("answers"));
     sinks::append(&path, &json!({"ts": e.now_ms, "child": "abc", "answer": "wrong", "text": "it is waiting on CI", "min": 0})).unwrap();
@@ -4927,7 +5200,8 @@ fn run_waste(tag: &str, lines: Vec<String>, now_shift: u64) {
 fn a_turn_that_rebuilds_its_cache_after_an_idle_gap_is_cache_expiry_waste() {
     let n = now0();
     let text = json!([{"type": "text", "text": "ok"}]);
-    let call = |ts, mid: &str, usage| asst_cache(ts, mid, usage, json!([{"type": "tool_use", "id": "u1", "name": "Bash", "input": {"command": "sleep 400"}}]), None);
+    let call =
+        |ts, mid: &str, usage| asst_cache(ts, mid, usage, json!([{"type": "tool_use", "id": "u1", "name": "Bash", "input": {"command": "sleep 400"}}]), None);
     let dup = asst_cache(n - 10 * MIN, "m2", (10, 50, 2_000, 60_000), text.clone(), Some("end_turn"));
     run_waste(
         "cacheexp",
@@ -5133,6 +5407,46 @@ fn n923_stuck_on_names_only_a_call_that_ran_past_the_configured_time() {
     assert!(old.contains("stuck on: Bash mkdir out"), "a call quiet past the time is: {old}");
 }
 
+/// #958: a merge run with an env assignment, a timeout and nice in front counts like a bare `gh pr merge` (the commit and push patterns
+/// already allowed that prefix; the merge pattern did not, so a merging agent showed no outcome).
+#[test]
+fn a_merge_behind_an_env_timeout_and_nice_prefix_is_a_shipped_outcome() {
+    for (i, cmd) in
+        ["gh pr merge 5 --squash", "GH_TOKEN=x gh pr merge 5 --squash", "GH_TOKEN=x timeout 60 nice -n 10 gh pr merge 5 --squash"].into_iter().enumerate()
+    {
+        let h = home(&format!("merge-prefix-{i}"));
+        let n = now0();
+        write(
+            &sess(&h, "s1"),
+            &[
+                prompt(n - 9 * MIN, "/w"),
+                tool(n - 8 * MIN, "m1", 100, "u1", "Bash", json!({"command": cmd})),
+                result(n - 7 * MIN, "u1", "Merged pull request #5", false),
+            ],
+        );
+        let mut st = State::default();
+        ticks(&h, &mut st, &[n - 6 * MIN]);
+        assert_eq!(agent(&st, "s1").shipped, 1, "`{cmd}` is one shipped merge");
+    }
+}
+
+/// #951 (#958): a waste nudge about an agent that HAS outcomes says "no new outcome since flagged", never "0 outcomes", and shows the
+/// lifetime count, so the figure cannot be read as the agent's total.
+#[test]
+fn p951_the_waste_evidence_says_no_new_outcome_since_flagged_and_shows_the_lifetime_outcomes() {
+    let (h, n, _child) = nudge_home("p951-waste");
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n + MIN]);
+    let mut a = st.agents.get("abc").cloned().unwrap();
+    let s = |t: u64, tin: u64| Sample { t, tin, tout: 0, tcr: 0, tcw: 0, tools: 0, progress: 3 };
+    a.samples = vec![s(n, 0), s(n + 10 * MIN, 400_000)];
+    a.progress = 3;
+    let f = Flag { since: n, base_progress: 3, text: "waste".into(), ..Flag::default() };
+    let (ev, ..) = nudge::evidence_for_tests(&a, "waste", &f, n + 12 * MIN);
+    assert!(ev.contains("no new outcome since flagged (12m ago)") && ev.contains("3 outcomes in its lifetime"), "{ev}");
+    assert!(!ev.contains("0 outcomes"), "{ev}");
+}
+
 /// #923 item 3: a snooze recorded for a runtime nudge holds the next step until it runs out, then the step fires.
 #[test]
 fn n923_a_runtime_snooze_holds_the_next_step_until_it_runs_out() {
@@ -5142,7 +5456,7 @@ fn n923_a_runtime_snooze_holds_the_next_step_until_it_runs_out() {
     let mut st = State::default();
     let (commit, _) = spend_cycle(&child, 0, n);
     append(&child, &commit);
-    rt_tick(&h, &child, &mut st, n + 20 * MIN, 1);
+    rt_tick(&h, &child, &mut st, n + MIN, 1); // the tracker sees the commit (the last outcome) a minute after it
     let e = rt_tick(&h, &child, &mut st, n + 46 * MIN, 2);
     assert_eq!(rt_fired("advise"), 1);
     let path = e.dir().join(defaults::raw("agent_nudge.paths").str_field("answers"));
@@ -5185,11 +5499,1750 @@ fn n923_a_busy_health_hold_does_not_hold_a_runtime_step_and_the_tokens_are_label
     let mut st = State::default();
     let (commit, _) = spend_cycle(&child, 0, n);
     append(&child, &commit);
-    rt_tick(&h, &child, &mut st, n + 20 * MIN, 1);
+    rt_tick(&h, &child, &mut st, n + MIN, 1); // the tracker sees the commit (the last outcome) a minute after it
     st.nudge_hold.insert("abc".into(), n + 46 * MIN + 30_000); // a busy hold (within health_recheck_ms, so not read as a legacy done hold)
     rt_tick(&h, &child, &mut st, n + 46 * MIN, 2);
     assert_eq!(rt_fired("advise"), 1, "a busy health hold must not hold the runtime step");
     let pct = crate::agents::lim("cache_read_pct");
     let texts = rt_texts(&h);
     assert!(texts.iter().any(|t| t.contains(&format!("tokens (cache reads count {pct}%)"))), "the token figure is not labelled: {texts:?}");
+}
+
+#[test]
+fn a_task_with_a_stated_blocked_on_reason_is_held_not_negligence_in_every_tick_signal() {
+    let n = now0();
+    let late = [n, n + 16 * MIN, n + 17 * MIN];
+    let task = |m: Value| json!({"id": "1", "subject": "Choose disk items", "status": "in_progress", "owner": "", "blockedBy": [], "metadata": m});
+    // in progress with a reason: silent in inprogress_waiting and idle_no_agents
+    let h = home("ipw-held");
+    task_file(&h, SID, task(json!({"blockedOn": "owner: choose which disk items to delete"})));
+    working_session(&h, n, reads(n - 5 * MIN, 2, "r"));
+    let mut st = State::default();
+    ticks(&h, &mut st, &late);
+    assert!(compliance_rows(&h, "inprogress_waiting").is_empty(), "held: {:?}", queue(&h, SID));
+    // the same task with null / empty / blank blockedOn still fires
+    for (i, m) in [json!({"blockedOn": null}), json!({"blockedOn": ""}), json!({"blockedOn": "  "}), json!({})].into_iter().enumerate() {
+        let h = home(&format!("ipw-open-{i}"));
+        task_file(&h, SID, task(m.clone()));
+        working_session(&h, n, reads(n - 5 * MIN, 2, "r"));
+        let mut st = State::default();
+        ticks(&h, &mut st, &late);
+        assert_eq!(compliance_rows(&h, "inprogress_waiting").len(), 1, "{m}: {:?}", queue(&h, SID));
+    }
+    // idle main session: a held in-progress or pending task is not dispatchable, an unheld one is
+    let h = home("held-dispatch");
+    task_file(
+        &h,
+        SID,
+        json!({"id": "1", "subject": "Held pending", "status": "pending", "owner": "", "blockedBy": [], "metadata": {"blockedOn": "owner decision"}}),
+    );
+    task_file(&h, SID, task(json!({"blockedOn": "owner: pick"})));
+    main_session(&h, SID, n, 15, "done for now");
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n, n + MIN]);
+    assert!(queue(&h, SID).iter().all(|r| r["signal"] != "idle_no_agents" && r["signal"] != "underparallel"), "{:?}", queue(&h, SID));
+    let e = env(&h, n + 2 * MIN);
+    let ts = compliance::session_tasks(&e, SID);
+    assert!(ts.iter().all(|t| t.held));
+    assert!(compliance::dispatchable(&ts, &st, &st.agents[SID], e.now_ms).is_empty());
+    let h = home("unheld-dispatch");
+    task_file(&h, SID, json!({"id": "1", "subject": "Free pending", "status": "pending", "owner": "", "blockedBy": [], "metadata": {"blockedOn": null}}));
+    let e = env(&h, n);
+    let ts = compliance::session_tasks(&e, SID);
+    assert!(!ts[0].held);
+}
+
+// ---- lead waiting on finished teammates (GH #958, 2026-11-23 incident) ----
+
+/// A teammate of `parent` that finished its turn `done_min` minutes ago.
+fn finished_sub(h: &Path, parent: &str, n: u64, done_min: u64) {
+    write(
+        &sub_path(h, parent),
+        &[prompt(n - 80 * MIN, "/w"), asst(n - done_min * MIN, "s1", 5, 5, json!([{"type": "text", "text": "report: all green"}]), Some("end_turn"))],
+    );
+    std::fs::write(h.join(format!(".claude/projects/p/{parent}/subagents/agent-w1.meta.json")), r#"{"description":"gate worker"}"#).unwrap();
+}
+
+fn lead_rows(h: &Path, key: &str) -> Vec<Value> {
+    wake_rows(h, key).into_iter().filter(|r| r["signal"] == "lead_waiting_on_done").collect()
+}
+
+#[test]
+fn an_idle_lead_with_finished_teammates_and_blocked_on_tasks_is_woken_by_the_tick_alone_and_escalates_when_ignored() {
+    let n = now0();
+    let h = home("lead-wait");
+    // every open task carries a stated blockedOn reason and is owned by the finished teammate (the incident shape)
+    task_file(
+        &h,
+        SID,
+        json!({"id": "1", "subject": "Release pipeline", "status": "in_progress", "owner": "w1", "blockedBy": [], "metadata": {"blockedOn": "EXECUTING merge via the land flow"}}),
+    );
+    task_file(
+        &h,
+        SID,
+        json!({"id": "2", "subject": "Final verify", "status": "pending", "owner": "w1", "blockedBy": [], "metadata": {"blockedOn": "waits on the release"}}),
+    );
+    main_session(&h, SID, n, 20, "waiting on the lanes");
+    finished_sub(&h, SID, n, 15);
+    let mut st = State::default();
+    // N = min_ms 10 min idle + confirm_ticks 2: the wake row is there within 4 minutes of ticks, with no prompt
+    ticks(&h, &mut st, &[n, n + MIN, n + 2 * MIN]);
+    let first = lead_rows(&h, SID);
+    assert_eq!(first.len(), 1, "{:?}", wake_rows(&h, SID));
+    let t = first[0]["text"].as_str().unwrap();
+    assert!(t.contains("Do now:") && t.contains("gate worker") && t.contains("read their results"), "{t}");
+    // ignored: the same signal repeats every cooldown and turns into an order, never 8 hours of silence
+    let mut at = n + 2 * MIN;
+    for _ in 0..4 {
+        at += 21 * MIN;
+        ticks(&h, &mut st, &[at]);
+    }
+    let all = lead_rows(&h, SID);
+    assert!(all.len() >= 4, "{} rows", all.len());
+    assert!(all.last().unwrap()["text"].as_str().unwrap().contains("reminders unanswered"), "{:?}", all.last());
+    // tasks owned by a finished teammate are negligence even with a blockedOn reason
+    let e = env(&h, at);
+    let ts = compliance::session_tasks(&e, SID);
+    assert!(ts.iter().all(|t| t.held));
+    assert_eq!(compliance::dispatchable(&ts, &st, &st.agents[SID], e.now_ms).len(), 2);
+}
+
+#[test]
+fn a_lead_whose_teammates_still_run_is_not_told_to_stop_waiting() {
+    let n = now0();
+    let h = home("lead-wait-compliant");
+    task_file(
+        &h,
+        SID,
+        json!({"id": "1", "subject": "Release pipeline", "status": "in_progress", "owner": "w1", "blockedBy": [], "metadata": {"blockedOn": "EXECUTING merge"}}),
+    );
+    main_session(&h, SID, n, 30, "waiting on the lanes");
+    running_sub(&h, SID, n, 1);
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n, n + MIN, n + 2 * MIN, n + 40 * MIN]);
+    assert!(lead_rows(&h, SID).is_empty(), "{:?}", wake_rows(&h, SID));
+    let e = env(&h, n + 40 * MIN);
+    assert!(compliance::dispatchable(&compliance::session_tasks(&e, SID), &st, &st.agents[SID], e.now_ms).is_empty());
+}
+
+// ---- GH #958: no flag goes undelivered, no exemption lasts for ever ----
+
+fn compliance_count(sig: &str, outcome: &str) -> u64 {
+    crate::metrics::bumped_on_this_thread("compliance", &[("signal", sig), ("outcome", outcome)])
+}
+
+fn ticks_nudge(h: &Path, st: &mut State, sessions: &[&str], at: &[u64]) {
+    for n in at {
+        let e = nudge_env(h, *n, &[]);
+        for s in sessions {
+            arm_wake(&e, s);
+        }
+        tick(&e, st);
+    }
+}
+
+/// 2026-11-23 live incident: with the nudge loop on, an idle agent holding an open task raised idle_open_task, the loop "owned" it,
+/// and the loop only opens nudges for RUNNING children: the flag sat 6 hours and reached nobody.
+#[test]
+fn an_idle_open_task_flag_is_delivered_with_the_nudge_loop_on_never_left_to_sit() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let h = home("idle-open-nudge-on");
+    let n = now0();
+    idle_subagent(&h, n, 30);
+    let mut st = State::default();
+    ticks_nudge(&h, &mut st, &["parent"], &[n, n + MIN, n + 2 * MIN]);
+    assert!(agent(&st, "w1").flags.contains_key("idle_open_task"));
+    let rows: Vec<Value> = wake_rows(&h, "parent").into_iter().chain(queue(&h, "parent")).filter(|r| r["signal"] == "idle_open_task").collect();
+    assert!(!rows.is_empty(), "the flag was raised and delivered nowhere: {:?}", wake_rows(&h, "parent"));
+    assert!(compliance_count("idle_open_task", "undeliverable") == 0, "it was delivered, not undeliverable");
+}
+
+/// A workspace's own idle_open_task reaches the workspace itself through its wake feed.
+#[test]
+fn a_workspace_idle_on_an_open_task_hears_it_on_its_own_wake_feed() {
+    let h = home("ws-idle-open");
+    let n = now0();
+    devswarm(&h, n, Some(n));
+    let todo = json!({"todos": [{"content": "Port the gauge", "status": "in_progress", "activeForm": "Porting the gauge"}]});
+    write(
+        &h.join(".claude/projects/p/sessW.jsonl"),
+        &[
+            prompt(n - 80 * MIN, "/wt/x"),
+            tool(n - 70 * MIN, "s1", 5, "t1", "TodoWrite", todo),
+            result(n - 70 * MIN + 1000, "t1", "ok", false),
+            asst(n - 30 * MIN, "s2", 5, 5, json!([{"type": "text", "text": "done for now"}]), Some("end_turn")),
+        ],
+    );
+    let mut st = State::default();
+    ticks_nudge(&h, &mut st, &["sessW"], &[n, n + MIN, n + 2 * MIN]);
+    let a = agent(&st, "sessW");
+    assert_eq!(a.kind, kind_name("workspace"));
+    assert!(a.flags.contains_key("idle_open_task"), "open={} flags={:?}", a.open, a.flags.keys().collect::<Vec<_>>());
+    let own: Vec<Value> = wake_rows(&h, "sessW").into_iter().filter(|r| r["signal"] == "idle_open_task").collect();
+    assert_eq!(own.len(), 1, "{:?}", wake_rows(&h, "sessW"));
+}
+
+/// A rewritten blockedOn is the answer: the flag clears, the unanswered count restarts at zero (it was a 24 h sum across tasks before),
+/// and a second task keeps its own count.
+#[test]
+fn a_rewritten_blocked_on_resets_the_unanswered_count_per_task() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let n = now0();
+    let h = home("hold-rewrite");
+    let max = defaults::raw("nudges.hold").get("hold_max_ms").and_then(V::as_integer).unwrap() as u64;
+    let task = |id: &str, m: &str| json!({"id": id, "subject": format!("Task {id}"), "status": "pending", "owner": "", "blockedBy": [], "metadata": {"blockedOn": m}});
+    task_file(&h, SID, task("1", "waiting on the CI run one"));
+    main_session(&h, SID, n, 15, "waiting");
+    let mut st = State::default();
+    let rows = |h: &Path| -> Vec<Value> { queue(h, SID).into_iter().chain(wake_rows(h, SID)).filter(|r| r["signal"] == "hold_expired").collect() };
+    ticks(&h, &mut st, &[n, n + max + MIN]);
+    let mut at = n + max + MIN;
+    for _ in 0..5 {
+        at += 31 * MIN;
+        ticks(&h, &mut st, &[at]);
+    }
+    assert!(rows(&h).last().unwrap()["text"].as_str().unwrap().contains("reminders unanswered"));
+    assert!(agent(&st, SID).hold_n.values().any(|c| *c >= 3));
+    // rewrite: count gone, flag cleared, silent for a fresh hold_max, then advice again (not the order)
+    task_file(&h, SID, task("1", "waiting on the CI run two"));
+    at += MIN;
+    ticks(&h, &mut st, &[at]);
+    assert!(!agent(&st, SID).flags.contains_key("hold_expired"));
+    assert!(agent(&st, SID).hold_n.is_empty(), "{:?}", agent(&st, SID).hold_n);
+    let before = rows(&h).len();
+    ticks(&h, &mut st, &[at + max - MIN]);
+    assert_eq!(rows(&h).len(), before, "silent inside the restarted hold");
+    ticks(&h, &mut st, &[at + max + MIN]);
+    let all = rows(&h);
+    assert!(all.len() > before, "reminds again after the restarted hold");
+    assert!(!all.last().unwrap()["text"].as_str().unwrap().contains("reminders unanswered"), "{:?}", all.last());
+}
+
+/// A blocker that names the owner: the session is asked to confirm it once, then never again; the owner gets one notice per day per task.
+#[test]
+fn an_owner_held_blocker_notifies_the_owner_once_a_day_and_never_renags_the_session() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let n = now0();
+    let h = home("hold-owner");
+    let hold = defaults::raw("nudges.hold");
+    let max = hold.get("hold_max_ms").and_then(V::as_integer).unwrap() as u64;
+    let every = hold.get("owner_notice_ms").and_then(V::as_integer).unwrap() as u64;
+    let task = |m: &str| json!({"id": "1", "subject": "Ruleset change", "status": "pending", "owner": "", "blockedBy": [], "metadata": {"blockedOn": m}});
+    task_file(&h, SID, task("owner: GitHub release ruleset change only the owner can make"));
+    main_session(&h, SID, n, 15, "waiting on the owner");
+    let mut st = State::default();
+    // one reminder lands on both the queue and the wake feed with one id: count distinct ids
+    let agent_rows = |h: &Path| -> Vec<Value> {
+        let mut seen = std::collections::BTreeSet::new();
+        queue(h, SID).into_iter().chain(wake_rows(h, SID)).filter(|r| r["signal"] == "hold_expired" && seen.insert(r["id"].to_string())).collect()
+    };
+    let owner_rows = |h: &Path| -> Vec<String> {
+        let d = env(h, n).dir().join(defaults::raw("agent_tracker.paths").str_field("notices"));
+        std::fs::read_to_string(d).unwrap_or_default().lines().filter(|l| l.contains("hold_owner")).map(str::to_string).collect()
+    };
+    ticks(&h, &mut st, &[n, n + max + MIN]);
+    assert_eq!(agent_rows(&h).len(), 1, "the session confirms it once: {:?}", agent_rows(&h));
+    let mut at = n + max + MIN;
+    // 20 more hours of ticks with the reason rewritten each time (fresh text): the session hears nothing, the owner one notice
+    for i in 0..20 {
+        at += 61 * MIN;
+        task_file(&h, SID, task(&format!("owner: GitHub release ruleset change only the owner can make (checked {i})")));
+        ticks(&h, &mut st, &[at]);
+    }
+    assert_eq!(agent_rows(&h).len(), 1, "no re-nag: {:?}", agent_rows(&h));
+    assert_eq!(owner_rows(&h).len(), 1, "one owner notice a day: {:?}", owner_rows(&h));
+    assert!(owner_rows(&h)[0].contains("Ruleset change"));
+    at += every;
+    ticks(&h, &mut st, &[at]);
+    assert_eq!(owner_rows(&h).len(), 2, "the next day: another owner notice");
+    assert_eq!(agent_rows(&h).len(), 1);
+}
+
+/// A task held by a blockedOn reason is silent until nudges.hold.hold_max_ms, then told to confirm or clear it, and the reminder turns
+/// into an order when ignored (never silent for ever). Clearing it is counted with its reason.
+#[test]
+fn a_blocked_on_hold_is_silent_until_hold_max_then_nudges_and_escalates() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let n = now0();
+    let h = home("hold-bound");
+    let max = defaults::raw("nudges.hold").get("hold_max_ms").and_then(V::as_integer).unwrap() as u64;
+    let task = |m: Value| json!({"id": "1", "subject": "Choose disk items", "status": "pending", "owner": "", "blockedBy": [], "metadata": m});
+    task_file(&h, SID, task(json!({"blockedOn": "waiting on the CI run of the disk report"})));
+    main_session(&h, SID, n, 15, "waiting on the owner");
+    let mut st = State::default();
+    let rows = |h: &Path| -> Vec<Value> { queue(h, SID).into_iter().chain(wake_rows(h, SID)).filter(|r| r["signal"] == "hold_expired").collect() };
+    ticks(&h, &mut st, &[n, n + MIN, n + max - MIN]);
+    assert!(rows(&h).is_empty(), "silent while the hold is inside hold_max_ms: {:?}", rows(&h));
+    ticks(&h, &mut st, &[n + max + MIN]);
+    let first = rows(&h);
+    assert!(!first.is_empty(), "the expired hold said nothing");
+    let t = first[0]["text"].as_str().unwrap();
+    assert!(t.contains("Do now: confirm or clear the blocker on Choose disk items"), "{t}");
+    let mut at = n + max + MIN;
+    for _ in 0..5 {
+        at += 31 * MIN;
+        ticks(&h, &mut st, &[at]);
+    }
+    let all = rows(&h);
+    assert!(all.len() >= 4, "{} rows", all.len());
+    assert!(all.last().unwrap()["text"].as_str().unwrap().contains("reminders unanswered"), "{:?}", all.last());
+    // a changed reason is a confirmed blocker: the clock restarts and the flag clears, counted with its reason
+    task_file(&h, SID, task(json!({"blockedOn": "CI replied, waiting on the second disk report"})));
+    at += MIN;
+    ticks(&h, &mut st, &[at]);
+    assert!(!agent(&st, SID).flags.contains_key("hold_expired"));
+    let cleared: u64 =
+        ["acted_on", "condition_gone", "expired", "undelivered", "unexplained"].iter().map(|w| compliance_count("hold_expired", &format!("cleared:{w}"))).sum();
+    assert_eq!(cleared, 1, "an unexplained or explained clear is always counted");
+}
+
+/// Owner rule: every main session keeps a wake Monitor armed, even one with nothing running (monitor_unarmed stays silent there).
+/// After nudges.watcher.missing_ms with no live watcher the session is told the exact command and it is counted; an armed one is not.
+#[test]
+fn watcher_missing_fires_for_an_unarmed_session_and_stays_silent_for_an_armed_one() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let max = defaults::raw("nudges.watcher").get("missing_ms").and_then(V::as_integer).unwrap() as u64;
+    let n = now0();
+    let rows = |h: &Path| -> Vec<Value> { queue(h, "s1").into_iter().filter(|r| r["signal"] == "watcher_missing").collect() };
+    // unarmed, nothing running: silent inside missing_ms, then ordered to arm with the exact command, escalating when ignored
+    let h = idle_main_alone("watcher-missing", n);
+    let mut st = State::default();
+    ticks_unarmed(&h, &mut st, &[n, n + MIN, n + max - MIN]);
+    assert!(rows(&h).is_empty(), "{:?}", queue(&h, "s1"));
+    ticks_unarmed(&h, &mut st, &[n + max + MIN, n + max + 2 * MIN]);
+    let r = rows(&h);
+    assert_eq!(r.len(), 1, "{:?}", queue(&h, "s1"));
+    let t = r[0]["text"].as_str().unwrap();
+    assert!(t.contains("Do now: arm the wake Monitor") && t.contains("ah-engine agents wake-watch --auto"), "{t}");
+    assert!(compliance_count("watcher_missing", "fired") >= 1);
+    let mut at = n + max + 2 * MIN;
+    for _ in 0..4 {
+        take_queue(&h, "s1");
+        at += 21 * MIN;
+        ticks_unarmed(&h, &mut st, &[at]);
+    }
+    assert!(rows(&h).iter().any(|r| r["text"].as_str().unwrap().contains("reminders unanswered")), "{:?}", queue(&h, "s1"));
+    // armed (fresh stamp every tick): never flagged
+    let h2 = idle_main_alone("watcher-armed", n);
+    let mut st2 = State::default();
+    ticks(&h2, &mut st2, &[n, n + max + MIN, n + 2 * max]);
+    assert!(!agent(&st2, "s1").flags.contains_key("watcher_missing") && rows(&h2).is_empty());
+}
+
+/// A flag the nudge loop owns but never opens a nudge for (here: a standing busy hold) is delivered by the plain route once it has sat
+/// for limits.undelivered_ms, and counted undeliverable: no exemption silences a raised flag for ever.
+#[test]
+fn a_flag_the_nudge_loop_never_opens_is_delivered_after_undelivered_ms_and_counted() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let h = home("undelivered-watchdog");
+    let n = now0();
+    write(&sess(&h, "parent"), &[prompt(n - 30 * MIN, "/w"), asst(n - MIN, "p1", 5, 5, json!([{"type": "text", "text": "waiting"}]), Some("end_turn"))]);
+    let dir = h.join(".claude/projects/p/parent/subagents");
+    write(&dir.join("agent-abc.jsonl"), &[prompt(n - 40 * MIN, "/w"), asst(n - 35 * MIN, "s1", 5, 5, json!([{"type": "text", "text": "x"}]), None)]);
+    std::fs::write(dir.join("agent-abc.meta.json"), r#"{"description":"Identify skipped tests"}"#).unwrap();
+    register(&h, std::process::id(), "parent", "busy", n);
+    let limit = lim("undelivered_ms");
+    let hung = |h: &Path| -> Vec<Value> { queue(h, "parent").into_iter().chain(wake_rows(h, "parent")).filter(|r| r["signal"] == "hung").collect() };
+    let mut st = State::default();
+    let mut t = n;
+    while t <= n + limit + 20 * MIN {
+        let e = nudge_env(&h, t, &[]);
+        arm_wake(&e, "parent");
+        st.nudge_hold.insert("abc".into(), t + 10 * MIN); // the judge keeps calling it busy
+        tick(&e, &mut st);
+        if t < n + limit {
+            assert!(hung(&h).is_empty(), "the nudge loop owns it and it is on hold: nothing yet at +{} min: {:?}", (t - n) / MIN, hung(&h));
+        }
+        t += 10 * MIN;
+    }
+    assert!(agent(&st, "abc").flags.contains_key("hung"));
+    assert!(!hung(&h).is_empty(), "the flag sat past undelivered_ms and was never delivered");
+    assert_eq!(compliance_count("hung", "undeliverable"), 1, "counted once");
+}
+
+/// Owner rule (2026-11-23): a signal about a workspace session reaches its OWN wake feed while its watcher is armed, whatever the
+/// route table says (hung routes to the coordinator only); the parent's copy is additional.
+#[test]
+fn every_signal_about_a_workspace_reaches_its_own_wake_feed_when_armed() {
+    let h = home("ws-own-feed");
+    let n = now0();
+    devswarm(&h, n, Some(n));
+    write(&h.join(".claude/projects/p/sessW.jsonl"), &[prompt(n - 60 * MIN, "/wt/x"), asst(n - 40 * MIN, "w1", 5, 5, json!([{"type": "text", "text": "working"}]), None)]);
+    let mut st = State::default();
+    ticks_nudge(&h, &mut st, &["sessW"], &[n, n + MIN, n + 2 * MIN]);
+    let a = agent(&st, "sessW");
+    assert_eq!(a.kind, kind_name("workspace"));
+    assert!(a.flags.contains_key("hung"), "{:?}", a.flags.keys().collect::<Vec<_>>());
+    assert!(wake_rows(&h, "sessW").iter().any(|r| r["signal"] == "hung"), "{:?}", wake_rows(&h, "sessW"));
+}
+
+// ---- GH #959: hold bookkeeping (per-task unanswered count, idle_open_task inside a live hold, one owner matcher, total blocked time) ----
+
+fn hold_max() -> u64 {
+    defaults::raw("nudges.hold").get("hold_max_ms").and_then(V::as_integer).unwrap() as u64
+}
+
+/// #959 item 1 (live: a task's very first reminder read "7 reminders unanswered"): a confirmed owner-held task kept gaining a count on
+/// every reminder about OTHER tasks, and the text took the max over the whole session. A fresh task's first reminder carries no count,
+/// and the owner-held task's count stays at its one confirmation.
+#[test]
+fn n959_another_tasks_reminders_never_leak_into_a_fresh_tasks_unanswered_count() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let n = now0();
+    let h = home("n959-leak");
+    let max = hold_max();
+    let task = |id: &str, m: &str| json!({"id": id, "subject": format!("Task {id}"), "status": "pending", "owner": "", "blockedBy": [], "metadata": {"blockedOn": m}});
+    task_file(&h, SID, task("1", "NEEDS OWNER: the release ruleset"));
+    task_file(&h, SID, task("2", "waiting on the CI run of the disk report"));
+    main_session(&h, SID, n, 15, "waiting");
+    let mut st = State::default();
+    let rows = |h: &Path| -> Vec<Value> {
+        let mut seen = std::collections::BTreeSet::new();
+        queue(h, SID).into_iter().chain(wake_rows(h, SID)).filter(|r| r["signal"] == "hold_expired" && seen.insert(r["id"].to_string())).collect()
+    };
+    ticks(&h, &mut st, &[n, n + max + MIN]);
+    assert_eq!(rows(&h).len(), 1, "both holds expired together: one reminder {:?}", rows(&h));
+    // task 2's reason is rewritten (a confirmed blocker), task 1 stays owner-held and confirmed; the session is reminded about task 2 only
+    task_file(&h, SID, task("2", "CI replied, waiting on the second disk report"));
+    let mut at = n + max + 2 * MIN;
+    ticks(&h, &mut st, &[at]);
+    let k1 = |st: &State| agent(st, SID).hold_n.iter().filter(|(k, _)| k.starts_with("1#")).map(|(_, c)| *c).sum::<u64>();
+    assert_eq!(k1(&st), 1, "{:?}", agent(&st, SID).hold_n);
+    at += max;
+    ticks(&h, &mut st, &[at]);
+    let r = rows(&h);
+    assert_eq!(r.len(), 2, "{r:?}");
+    let t = r[1]["text"].as_str().unwrap();
+    assert!(t.contains("Task 2") && !t.contains("Task 1"), "{t}");
+    assert!(!t.contains("reminders unanswered"), "task 2's first reminder after its rewrite carried another task's count: {t}");
+    for _ in 0..3 {
+        at += 31 * MIN;
+        ticks(&h, &mut st, &[at]);
+    }
+    assert_eq!(k1(&st), 1, "the confirmed owner-held task gained counts from reminders about task 2: {:?}", agent(&st, SID).hold_n);
+    let k2: u64 = agent(&st, SID).hold_n.iter().filter(|(k, _)| k.starts_with("2#")).map(|(_, c)| *c).sum();
+    assert_eq!(k2, rows(&h).len() as u64 - 1, "task 2 counts exactly its own reminders");
+    let last = rows(&h).last().unwrap()["text"].as_str().unwrap().to_string();
+    assert!(last.contains(&format!("Task 2 ({} reminders unanswered)", k2 - 1)), "the order names task 2's own count: {last}");
+}
+
+/// #959 P1.3, several tasks named in ONE order: each carries its OWN unanswered count (one shared number misreported all but one).
+#[test]
+fn n959_tasks_named_together_each_show_their_own_unanswered_count() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let n = now0();
+    let h = home("n959-together");
+    let max = hold_max();
+    let task = |id: &str, m: &str| json!({"id": id, "subject": format!("Task {id}"), "status": "pending", "owner": "", "blockedBy": [], "metadata": {"blockedOn": m}});
+    task_file(&h, SID, task("1", "waiting on the CI run one"));
+    main_session(&h, SID, n, 15, "waiting");
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n, n + max + MIN, n + max + 32 * MIN, n + max + 63 * MIN]);
+    task_file(&h, SID, task("2", "waiting on the CI run two"));
+    let mut at = n + max + 64 * MIN;
+    ticks(&h, &mut st, &[at]);
+    at += max + MIN;
+    ticks(&h, &mut st, &[at]);
+    let a = agent(&st, SID);
+    let c = |p: &str| a.hold_n.iter().filter(|(k, _)| k.starts_with(p)).map(|(_, c)| *c).sum::<u64>();
+    assert!(c("1#") >= 3 && c("2#") == 1, "{:?}", a.hold_n);
+    assert_eq!(a.hold_due.len(), 2, "{:?}", a.hold_due);
+    let shown = super::compliance::hold_render(a, at).0;
+    assert!(shown.contains(&format!("Task 1 ({} reminders unanswered)", c("1#"))) && shown.contains("Task 2 (1 reminders unanswered)"), "{shown}");
+}
+
+/// #959 P1.2: a reminder names at most nudges.compliance.tasks_shown tasks, and only those are counted (the rest are not advanced
+/// for a reminder they never saw); the least reminded go first, so the next reminder names the others.
+#[test]
+fn n959_only_the_tasks_a_reminder_names_are_counted_and_the_rest_rotate_in() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let n = now0();
+    let h = home("n959-cap");
+    let max = hold_max();
+    let shown = defaults::raw("nudges.compliance").get("tasks_shown").and_then(V::as_integer).unwrap() as usize;
+    let total = shown + 2;
+    for i in 1..=total {
+        task_file(&h, SID, json!({"id": i.to_string(), "subject": format!("Task {i}"), "status": "pending", "owner": "", "blockedBy": [], "metadata": {"blockedOn": format!("waiting on CI run {i}")}}));
+    }
+    main_session(&h, SID, n, 15, "waiting");
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n, n + max + MIN]);
+    let counted = |st: &State| agent(st, SID).hold_n.values().filter(|c| **c > 0).count();
+    assert_eq!(counted(&st), shown, "only the named tasks count the reminder: {:?}", agent(&st, SID).hold_n);
+    ticks(&h, &mut st, &[n + max + 32 * MIN]);
+    assert_eq!(counted(&st), total, "the next reminder names the ones left out: {:?}", agent(&st, SID).hold_n);
+}
+
+/// #959 item 2: a workspace idle on an open task whose blockedOn sits inside a live bounded hold is waiting, not idle: idle_open_task
+/// stays down; past nudges.hold.hold_max_ms the exemption ends and it speaks.
+#[test]
+fn n959_idle_open_task_stays_silent_inside_a_live_hold_and_speaks_after_it() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let h = home("n959-idle-hold");
+    let n = now0();
+    devswarm(&h, n, Some(n));
+    let todo = json!({"todos": [{"content": "Port the gauge", "status": "in_progress", "activeForm": "Porting the gauge"}]});
+    write(
+        &h.join(".claude/projects/p/sessW.jsonl"),
+        &[
+            prompt(n - 80 * MIN, "/wt/x"),
+            tool(n - 70 * MIN, "s1", 5, "t1", "TodoWrite", todo),
+            result(n - 70 * MIN + 1000, "t1", "ok", false),
+            asst(n - 30 * MIN, "s2", 5, 5, json!([{"type": "text", "text": "done for now"}]), Some("end_turn")),
+        ],
+    );
+    task_file(&h, "sessW", json!({"id": "1", "subject": "Port the gauge", "status": "in_progress", "owner": "", "blockedBy": [], "metadata": {"blockedOn": "waiting on the CI run of the gauge PR"}}));
+    let mut st = State::default();
+    ticks_nudge(&h, &mut st, &["sessW"], &[n, n + MIN, n + 2 * MIN]);
+    let a = agent(&st, "sessW");
+    assert!(a.open && !a.flags.contains_key("idle_open_task"), "open={} flags={:?}", a.open, a.flags.keys().collect::<Vec<_>>());
+    assert!(!wake_rows(&h, "sessW").iter().any(|r| r["signal"] == "idle_open_task"));
+    // the hold runs out (its clock moved back past hold_max): the exemption is bounded
+    for v in st.agents.get_mut("sessW").unwrap().held_since.values_mut() {
+        *v = n + 3 * MIN - hold_max() - MIN;
+    }
+    ticks_nudge(&h, &mut st, &["sessW"], &[n + 3 * MIN]);
+    assert!(agent(&st, "sessW").flags.contains_key("idle_open_task"), "{:?}", agent(&st, "sessW").flags.keys().collect::<Vec<_>>());
+}
+
+/// #959 item 2, a subagent: an idle child is in state done, and a finished owner's blockedOn holds nothing (the 2026-11-23 rule), so a
+/// child owning a held task in its parent's list is still reported idle with its task open.
+#[test]
+fn n959_a_subagent_owning_a_held_task_is_still_idle_open_its_finished_hold_holds_nothing() {
+    let h = home("n959-child-hold");
+    let n = now0();
+    idle_subagent(&h, n, 30);
+    task_file(&h, "parent", json!({"id": "7", "subject": "Port the gauge", "status": "in_progress", "owner": "w1", "blockedBy": [], "metadata": {"blockedOn": "waiting on the CI run of the gauge PR"}}));
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n, n + MIN]);
+    assert!(agent(&st, "w1").flags.contains_key("idle_open_task"));
+}
+
+/// #959 item 3: one owner matcher, a word of dispatch_tier.owner_values anywhere in the reason; no partial word, no other word.
+#[test]
+fn n959_the_owner_matcher_takes_an_owner_word_anywhere_and_nothing_else() {
+    for yes in ["owner", "NEEDS OWNER: the ruleset", "owner: deferred until the release", "waiting on the user to log in", "human review"] {
+        assert!(super::owner_named(yes), "{yes}");
+    }
+    for no in ["", "waiting on the CI run", "ownership of the lane", "co-owners table", "the users table migration", "waiting on user-facing release build", "owner_tools refactor", "the human-readable log"] {
+        assert!(!super::owner_named(no), "{no}");
+    }
+}
+
+/// #959 item 4: the owner notice says how long the task has been blocked in total, from the first blockedOn on it, not since the
+/// latest rewrite ("blocked 0s").
+#[test]
+fn n959_the_owner_notice_shows_the_total_blocked_time_after_a_rewrite() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let n = now0();
+    let h = home("n959-owner-total");
+    let max = hold_max();
+    let task = |m: &str| json!({"id": "1", "subject": "Ruleset change", "status": "pending", "owner": "", "blockedBy": [], "metadata": {"blockedOn": m}});
+    task_file(&h, SID, task("waiting on the CI run of the ruleset PR"));
+    main_session(&h, SID, n, 15, "waiting on the owner");
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n, n + 30 * MIN]);
+    task_file(&h, SID, task("owner: GitHub release ruleset change"));
+    let r = n + 31 * MIN;
+    let at = n + max + MIN;
+    ticks(&h, &mut st, &[r, at, at + MIN]);
+    let d = env(&h, n).dir().join(defaults::raw("agent_tracker.paths").str_field("notices"));
+    let notices: Vec<String> = std::fs::read_to_string(d).unwrap_or_default().lines().filter(|l| l.contains("hold_owner")).map(str::to_string).collect();
+    assert_eq!(notices.len(), 1, "{notices:?}");
+    let want = format!("(blocked {})", super::sinks::age(at - n));
+    assert!(notices[0].contains(&want), "want {want}: {}", notices[0]);
+}
+
+/// #959 P2.3: state from before blocked_since (a held_since clock but no blocked_since entry) starts the total at the oldest clock.
+#[test]
+fn n959_blocked_since_is_seeded_from_old_held_clocks() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let n = now0();
+    let h = home("n959-migrate");
+    task_file(&h, SID, json!({"id": "1", "subject": "T", "status": "pending", "owner": "", "blockedBy": [], "metadata": {"blockedOn": "waiting on CI"}}));
+    main_session(&h, SID, n, 15, "waiting");
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n]);
+    let a = st.agents.get_mut(SID).unwrap();
+    let key = a.held_since.keys().next().unwrap().clone();
+    a.held_since.insert(key, n - 50 * MIN);
+    a.blocked_since.clear();
+    ticks(&h, &mut st, &[n + MIN]);
+    assert_eq!(agent(&st, SID).blocked_since.get("1"), Some(&(n - 50 * MIN)));
+}
+
+/// #959 P1.5: the hold clocks run whatever the compliance switch says, so with compliance off the idle exemption still ends at hold_max.
+#[test]
+fn n959_with_compliance_off_the_idle_exemption_still_ends_at_hold_max() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let h = home("n959-idle-compliance-off");
+    let n = now0();
+    devswarm(&h, n, Some(n));
+    let todo = json!({"todos": [{"content": "Port the gauge", "status": "in_progress", "activeForm": "Porting the gauge"}]});
+    write(
+        &h.join(".claude/projects/p/sessW.jsonl"),
+        &[
+            prompt(n - 80 * MIN, "/wt/x"),
+            tool(n - 70 * MIN, "s1", 5, "t1", "TodoWrite", todo),
+            result(n - 70 * MIN + 1000, "t1", "ok", false),
+            asst(n - 30 * MIN, "s2", 5, 5, json!([{"type": "text", "text": "done for now"}]), Some("end_turn")),
+        ],
+    );
+    task_file(&h, "sessW", json!({"id": "1", "subject": "Port the gauge", "status": "in_progress", "owner": "", "blockedBy": [], "metadata": {"blockedOn": "waiting on the CI run of the gauge PR"}}));
+    let mut st = State::default();
+    let off = |t: u64, st: &mut State| {
+        let e = nudge_env(&h, t, &[("ANTIHALL_NUDGES_COMPLIANCE", "false"), ("ANTIHALL_NUDGES_IDLE_WAKE", "true")]);
+        arm_wake(&e, "sessW");
+        tick(&e, st);
+    };
+    off(n, &mut st);
+    off(n + MIN, &mut st);
+    assert!(!agent(&st, "sessW").flags.contains_key("idle_open_task"), "inside the hold");
+    assert!(!agent(&st, "sessW").held_since.is_empty(), "the clock runs with compliance off");
+    for v in st.agents.get_mut("sessW").unwrap().held_since.values_mut() {
+        *v = n + 2 * MIN - hold_max() - MIN;
+    }
+    off(n + 2 * MIN, &mut st);
+    assert!(agent(&st, "sessW").flags.contains_key("idle_open_task"), "{:?}", agent(&st, "sessW").flags.keys().collect::<Vec<_>>());
+}
+
+
+/// #959 (Codex 2a, review round 2): the reminder text is capped (agent_tracker.spam.max_text). The renderer lists tasks one by one,
+/// shortening the one that does not fit whole, and stops before the cap: exactly the listed tasks are counted, the text it returns is
+/// the text delivered (the cap leaves it unchanged), and a task left out is not counted.
+#[test]
+fn n959_a_task_the_text_cap_cut_is_not_counted() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let n = now0();
+    let h = home("n959-textcap");
+    let max = hold_max();
+    let cap = spam_cap();
+    let long = |i: usize| format!("Task {i} {}", "x".repeat(cap * 2 / 5));
+    for i in 1..=3 {
+        task_file(&h, SID, json!({"id": i.to_string(), "subject": long(i), "status": "pending", "owner": "", "blockedBy": [], "metadata": {"blockedOn": format!("waiting on CI run {i}")}}));
+    }
+    main_session(&h, SID, n, 15, "waiting");
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n, n + max]);
+    // the render as of the reminder's tick, before it was counted
+    let (want, listed) = super::compliance::hold_render(agent(&st, SID), n + max + MIN);
+    ticks(&h, &mut st, &[n + max + MIN]);
+    let text = queue(&h, SID).into_iter().find(|r| r["signal"] == "hold_expired").expect("reminded")["text"].as_str().unwrap().to_string();
+    assert_eq!(text, want, "the delivered text is the rendered text, unchanged by the cap");
+    assert!(text.chars().count() <= cap, "{}", text.chars().count());
+    let ids: Vec<&str> = listed.iter().map(|d| d.id.as_str()).collect();
+    assert_eq!(ids, ["1", "2"], "task 1 whole, task 2 shortened, task 3 left out: {text}");
+    assert!(text.contains(&long(1)) && !text.contains(&long(2)) && text.contains("Task 2 xxx") && !text.contains("Task 3"), "{text}");
+    let a = agent(&st, SID);
+    for i in 1..=3 {
+        let c = a.hold_n.iter().filter(|(k, _)| k.starts_with(&format!("{i}#"))).map(|(_, c)| *c).sum::<u64>();
+        assert_eq!(c, u64::from(i < 3), "task {i}: {:?}", a.hold_n);
+    }
+}
+
+/// #959 (Codex 2b): when the session's own routes fail and only the owner fallback receives the reminder, the session was told nothing:
+/// no count, no confirmation.
+#[test]
+fn n959_an_owner_fallback_only_delivery_does_not_count_for_the_session() {
+    use std::os::unix::fs::PermissionsExt;
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let n = now0();
+    let h = home("n959-fallback");
+    let max = hold_max();
+    task_file(&h, SID, json!({"id": "1", "subject": "T", "status": "pending", "owner": "", "blockedBy": [], "metadata": {"blockedOn": "waiting on the CI run"}}));
+    main_session(&h, SID, n, 15, "waiting");
+    // the session's own channels (its queue and its wake feed) cannot be written
+    let dirs: Vec<PathBuf> = ["reminders", "wake"].iter().map(|k| env(&h, n).dir().join(defaults::raw("agent_tracker.paths").str_field(k))).collect();
+    for q in &dirs {
+        std::fs::create_dir_all(q).unwrap();
+        std::fs::set_permissions(q, std::fs::Permissions::from_mode(0o500)).unwrap();
+    }
+    let mut st = State::default();
+    for t in [n, n + max + MIN] {
+        let mut e = env(&h, t);
+        e.settings.env.insert("ANTIHALL_AGENT_OWNER_NOTIFY".into(), "true".into());
+        tick(&e, &mut st);
+    }
+    for q in &dirs {
+        std::fs::set_permissions(q, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let d = env(&h, n).dir().join(defaults::raw("agent_tracker.paths").str_field("notices"));
+    assert!(std::fs::read_to_string(&d).unwrap_or_default().contains("hold_expired"), "the owner fallback got it: notices={:?} queue={:?} wake={:?} flags={:?}", std::fs::read_to_string(&d).ok(), queue(&h, SID), wake_rows(&h, SID), agent(&st, SID).flags.keys().collect::<Vec<_>>());
+    assert!(agent(&st, SID).hold_n.values().all(|c| *c == 0), "the session was told nothing: {:?}", agent(&st, SID).hold_n);
+}
+
+/// #959 (Codex 2c): a session that rewrites an owner-named reason every hour never lets its per-reason clock lapse; the owner notice
+/// keys on the total blocked time, so the owner is still told.
+#[test]
+fn n959_rewriting_an_owner_reason_never_starves_the_owner_notice() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let n = now0();
+    let h = home("n959-owner-rewrite");
+    let max = hold_max();
+    let task = |m: &str| json!({"id": "1", "subject": "Ruleset change", "status": "pending", "owner": "", "blockedBy": [], "metadata": {"blockedOn": m}});
+    main_session(&h, SID, n, 15, "waiting on the owner");
+    let mut st = State::default();
+    let mut at = n;
+    for i in 0..6 {
+        task_file(&h, SID, task(&format!("owner: release ruleset change (checked {i})")));
+        ticks(&h, &mut st, &[at]);
+        at += 61 * MIN;
+    }
+    assert!(at - 61 * MIN - n >= max, "the test spans hold_max");
+    let d = env(&h, n).dir().join(defaults::raw("agent_tracker.paths").str_field("notices"));
+    let notices = std::fs::read_to_string(d).unwrap_or_default().lines().filter(|l| l.contains("hold_owner")).count();
+    assert_eq!(notices, 1, "the owner is told once despite the rewrites");
+}
+
+/// #959 (Codex 2d): the hold clocks are kept while every signal that reads the task list is off, so switching one back on finds the
+/// hold already old and speaks at once (no fresh interval).
+#[test]
+fn n959_switching_a_reader_back_on_grants_no_fresh_hold() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let n = now0();
+    let h = home("n959-readers-off");
+    let max = hold_max();
+    task_file(&h, SID, json!({"id": "1", "subject": "T", "status": "pending", "owner": "", "blockedBy": [], "metadata": {"blockedOn": "waiting on the CI run"}}));
+    main_session(&h, SID, n, 15, "waiting");
+    let mut st = State::default();
+    let run = |t: u64, on: &str, st: &mut State| {
+        let e = nudge_env(&h, t, &[("ANTIHALL_NUDGES_COMPLIANCE", on), ("ANTIHALL_NUDGES_IDLE_WAKE", "false"), ("ANTIHALL_NUDGES_PARALLEL", "false")]);
+        arm_all(&e);
+        tick(&e, st);
+    };
+    run(n, "false", &mut st);
+    run(n + max + MIN, "false", &mut st);
+    assert!(!agent(&st, SID).held_since.is_empty(), "the clock is kept with every reader off");
+    run(n + max + 2 * MIN, "true", &mut st);
+    assert!(agent(&st, SID).flags.contains_key("hold_expired"), "back on: the hold is already past hold_max");
+}
+
+/// #959 (Codex 2e): the Node fallback reads the owner values and subject pattern from the engine's TOML with a real TOML value parser
+/// (single-quoted literals and arrays included), never a hardcoded copy, and matches only an EXACT owner value: an owner word elsewhere
+/// in the reason is not exempt in Node (the fallback may nag more than the engine, never less).
+#[test]
+fn n959_node_reads_the_owner_matcher_config_from_the_engine_toml() {
+    if !std::process::Command::new("node").arg("--version").output().is_ok_and(|o| o.status.success()) {
+        return;
+    }
+    let dd = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall-node/hooks/lib/dispatch-demand.js");
+    let script = format!(
+        "const DD=require({dd:?});const q=(t)=>DD.isOwnerBlocked(Object.assign({{content:'t'}},t));\
+         console.log(JSON.stringify([DD.parseTomlValue(\"['reviewer']\"),q({{blockedOn:' Owner '}}),q({{blockedOn:'NEEDS OWNER: x'}}),q({{blockedOn:'waiting on user-facing release build'}}),q({{content:'OWNER: decide'}}),q({{content:'ownership refactor'}})]))",
+        dd = dd.to_string_lossy()
+    );
+    let h = home("n959-node-config");
+    let out = std::process::Command::new("node").arg("-e").arg(script).env("HOME", &h).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), r#"[["reviewer"],true,false,false,true,false]"#);
+    // the subject pattern Node uses is the engine's own value
+    let src = std::fs::read_to_string(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall-node/hooks/lib/dispatch-demand.js")).unwrap();
+    assert!(!src.contains("OWNER_SUBJECT_RE") && !src.contains("'owner', 'user'"), "no hardcoded owner words or subject pattern");
+}
+
+// ---- GH #959 review round 2: forward rendering of the hold reminder, own-target counting, owner notice interval, Node TOML layouts ----
+
+fn hold_rows(h: &Path) -> Vec<Value> {
+    let mut seen = std::collections::BTreeSet::new();
+    queue(h, SID).into_iter().chain(wake_rows(h, SID)).filter(|r| r["signal"] == "hold_expired" && seen.insert(r["id"].to_string())).collect()
+}
+
+fn counted(st: &State, id: &str) -> u64 {
+    agent(st, SID).hold_n.iter().filter(|(k, _)| k.starts_with(&format!("{id}#"))).map(|(_, c)| *c).sum()
+}
+
+fn spam_cap() -> usize {
+    defaults::raw("agent_tracker.spam").get("max_text").and_then(V::as_integer).unwrap() as usize
+}
+
+/// #959 P1-1: a short subject that sits inside a longer one ("API" in "Deploy API") must not count as shown when the reminder cut it.
+#[test]
+fn n959_a_cut_subject_is_not_counted_because_a_longer_shown_subject_contains_it() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let n = now0();
+    let h = home("n959-substring");
+    let max = hold_max();
+    let filler = format!("Filler {}", "y".repeat(spam_cap()));
+    for (id, subject) in [("1", "Deploy API".to_string()), ("2", filler), ("3", "API".to_string())] {
+        task_file(&h, SID, json!({"id": id, "subject": subject, "status": "pending", "owner": "", "blockedBy": [], "metadata": {"blockedOn": format!("waiting on CI run {id}")}}));
+    }
+    main_session(&h, SID, n, 15, "waiting");
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n, n + max + MIN]);
+    let r = hold_rows(&h);
+    assert_eq!(r.len(), 1, "{r:?}");
+    let text = r[0]["text"].as_str().unwrap();
+    assert!(text.contains("Deploy API"), "{text}");
+    assert_eq!(counted(&st, "1"), 1, "{:?}", agent(&st, SID).hold_n);
+    assert_eq!(counted(&st, "3"), 0, "task 3 (API) was never listed, only matched inside 'Deploy API': {text} {:?}", agent(&st, SID).hold_n);
+}
+
+/// #959 P1-1: a subject longer than the text cap is listed shortened and counted; it never holds a slot for ever, and the other tasks
+/// rotate in on the next reminders.
+#[test]
+fn n959_a_subject_longer_than_the_cap_is_listed_shortened_and_counted() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let n = now0();
+    let h = home("n959-longsubject");
+    let max = hold_max();
+    let cap = spam_cap();
+    let long = format!("Huge {}", "z".repeat(cap * 2));
+    task_file(&h, SID, json!({"id": "1", "subject": long, "status": "pending", "owner": "", "blockedBy": [], "metadata": {"blockedOn": "waiting on CI run 1"}}));
+    for id in ["2", "3"] {
+        task_file(&h, SID, json!({"id": id, "subject": format!("Task {id}"), "status": "pending", "owner": "", "blockedBy": [], "metadata": {"blockedOn": format!("waiting on CI run {id}")}}));
+    }
+    main_session(&h, SID, n, 15, "waiting");
+    let mut st = State::default();
+    let mut at = n + max + MIN;
+    ticks(&h, &mut st, &[n, at]);
+    let r = hold_rows(&h);
+    assert_eq!(r.len(), 1, "{r:?}");
+    let text = r[0]["text"].as_str().unwrap();
+    assert!(text.chars().count() <= cap && text.contains("Huge zzz"), "{text}");
+    assert_eq!(counted(&st, "1"), 1, "the shortened long subject was shown: {:?}", agent(&st, SID).hold_n);
+    for _ in 0..3 {
+        at += 31 * MIN;
+        ticks(&h, &mut st, &[at]);
+    }
+    for id in ["1", "2", "3"] {
+        assert!(counted(&st, id) >= 1, "task {id} starved: {:?}", agent(&st, SID).hold_n);
+    }
+}
+
+/// #959 P1-1: a subject with runs of whitespace (the text cap collapses them) is still counted when it is shown.
+#[test]
+fn n959_a_subject_with_runs_of_whitespace_is_counted() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let n = now0();
+    let h = home("n959-whitespace");
+    let max = hold_max();
+    task_file(&h, SID, json!({"id": "1", "subject": "Fix  the\tgauge", "status": "pending", "owner": "", "blockedBy": [], "metadata": {"blockedOn": "waiting on CI run 1"}}));
+    main_session(&h, SID, n, 15, "waiting");
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n, n + max + MIN]);
+    let r = hold_rows(&h);
+    assert_eq!(r.len(), 1, "{r:?}");
+    assert!(r[0]["text"].as_str().unwrap().contains("Fix the gauge"));
+    assert_eq!(counted(&st, "1"), 1, "{:?}", agent(&st, SID).hold_n);
+}
+
+/// #959 P1-2: among tasks with the same reminder count, the one reminded longest ago is named first, whatever its id.
+#[test]
+fn n959_equal_counts_rotate_by_the_oldest_last_reminder_not_by_id() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let n = now0();
+    let h = home("n959-rotate");
+    let max = hold_max();
+    let shown = defaults::raw("nudges.compliance").get("tasks_shown").and_then(V::as_integer).unwrap() as usize;
+    for i in 1..=shown + 1 {
+        task_file(&h, SID, json!({"id": i.to_string(), "subject": format!("Task {i}"), "status": "pending", "owner": "", "blockedBy": [], "metadata": {"blockedOn": format!("waiting on CI run {i}")}}));
+    }
+    main_session(&h, SID, n, 15, "waiting");
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n]);
+    // every task has one reminder; the highest id had it longest ago
+    let last = shown + 1;
+    {
+        let a = st.agents.get_mut(SID).unwrap();
+        let keys: Vec<String> = a.held_since.keys().cloned().collect();
+        for k in keys {
+            a.hold_n.insert(k.clone(), 1);
+            let id: u64 = k.split('#').next().unwrap().parse().unwrap();
+            a.hold_last.insert(k, if id as usize == last { n + MIN } else { n + 2 * MIN });
+        }
+    }
+    ticks(&h, &mut st, &[n + max + MIN]);
+    let due: Vec<String> = agent(&st, SID).hold_due.iter().map(|d| d.id.clone()).collect();
+    assert_eq!(due.first(), Some(&last.to_string()), "{due:?}");
+}
+
+/// #959 P1-3: only a delivery to the session's own queue, wake feed or own mesh row reached it; the Primary/parent fallback and the
+/// owner notices did not.
+#[test]
+fn n959_only_the_sessions_own_targets_count_as_reaching_it() {
+    use super::signals::{Target, own_target};
+    let mut a = Agent { id: "sessA".into(), kind: kind_name("workspace").into(), ..Default::default() };
+    a.ws = Some(Ws { id: "ws1".into(), ..Default::default() });
+    assert!(own_target(&a, &Target::Session("sessA".into())));
+    assert!(own_target(&a, &Target::Wake("sessA".into())));
+    assert!(own_target(&a, &Target::Mesh { ws: "ws1".into(), to_parent: false }));
+    assert!(!own_target(&a, &Target::Session("primary".into())), "the fallback to the Primary's queue");
+    assert!(!own_target(&a, &Target::Wake("primary".into())), "the fallback to the Primary's wake feed");
+    assert!(!own_target(&a, &Target::Mesh { ws: "ws1".into(), to_parent: true }));
+    assert!(!own_target(&a, &Target::Owner));
+}
+
+/// #959 P2-4: a short detour of the reason to a non-owner blocker does not restart the owner-notice interval.
+#[test]
+fn n959_a_detour_to_a_non_owner_reason_does_not_restart_the_owner_notice_interval() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let n = now0();
+    let h = home("n959-owner-detour");
+    let max = hold_max();
+    let task = |m: &str| json!({"id": "1", "subject": "Ruleset change", "status": "pending", "owner": "", "blockedBy": [], "metadata": {"blockedOn": m}});
+    task_file(&h, SID, task("owner: release ruleset change"));
+    main_session(&h, SID, n, 15, "waiting on the owner");
+    let mut st = State::default();
+    let at = n + max + MIN;
+    ticks(&h, &mut st, &[n, at]);
+    task_file(&h, SID, task("waiting on the CI run of the ruleset PR"));
+    ticks(&h, &mut st, &[at + MIN]);
+    task_file(&h, SID, task("owner: release ruleset change"));
+    ticks(&h, &mut st, &[at + 2 * MIN, at + 3 * 60 * MIN]);
+    let d = env(&h, n).dir().join(defaults::raw("agent_tracker.paths").str_field("notices"));
+    let notices: Vec<String> = std::fs::read_to_string(d).unwrap_or_default().lines().filter(|l| l.contains("hold_owner")).map(str::to_string).collect();
+    assert_eq!(notices.len(), 1, "the detour restarted the 24 h interval: {notices:?}");
+}
+
+/// #959 P2-6: after a detour to a non-owner reason the session IS reminded again, so the owner notice must not promise it never will be.
+#[test]
+fn n959_the_owner_notice_does_not_promise_the_session_is_never_reminded_again() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let n = now0();
+    let h = home("n959-owner-wording");
+    let max = hold_max();
+    let task = |m: &str| json!({"id": "1", "subject": "Ruleset change", "status": "pending", "owner": "", "blockedBy": [], "metadata": {"blockedOn": m}});
+    task_file(&h, SID, task("owner: release ruleset change"));
+    main_session(&h, SID, n, 15, "waiting on the owner");
+    let mut st = State::default();
+    let at = n + max + MIN;
+    ticks(&h, &mut st, &[n, at, at + MIN, at + 40 * MIN]);
+    let before = hold_rows(&h).len();
+    assert_eq!(before, 1, "the tracker reminds the session once to confirm, then not while the reason names the owner");
+    task_file(&h, SID, task("waiting on the CI run of the ruleset PR"));
+    ticks(&h, &mut st, &[at + 41 * MIN, at + 41 * MIN + max + MIN]);
+    assert!(hold_rows(&h).len() > before, "the session is reminded again once the reason no longer names the owner");
+    let d = env(&h, n).dir().join(defaults::raw("agent_tracker.paths").str_field("notices"));
+    let notice = std::fs::read_to_string(d).unwrap_or_default().lines().find(|l| l.contains("hold_owner")).map(str::to_string).expect("owner notice");
+    assert!(!notice.contains("will not be reminded again"), "{notice}");
+    // GH #964: confirm-once is the tracker's only; the Stop check still lists the task each time the hold runs out (one rule for both
+    // is later work), so the notice must not promise the session goes quiet
+    assert!(!notice.contains("then none while"), "the notice promises silence the Stop check does not keep: {notice}");
+    assert!(notice.contains("Stop check"), "the notice says what the Stop check still does: {notice}");
+}
+
+/// #959 P2-5: the Node fallback reads `value=[...]` without spaces, a multiline array (trailing comma, comments) and a trailing comment;
+/// an exact blockedOn "owner" is owner-blocked under each layout.
+#[test]
+fn n959_node_reads_every_toml_value_layout_of_the_owner_values() {
+    if !std::process::Command::new("node").arg("--version").output().is_ok_and(|o| o.status.success()) {
+        return;
+    }
+    let dd = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall-node/hooks/lib/dispatch-demand.js");
+    let layouts = [
+        "[dispatch_tier.owner_values]\ndoc = \"x\"\nvalue=[\"owner\",\"user\"]\n",
+        "[dispatch_tier.owner_values]\ndoc = \"x\"\nvalue = [\n  \"owner\", # the owner\n  \"user\",\n]\n\n[next]\nvalue = 1\n",
+        "[dispatch_tier.owner_values]\ndoc = \"x\"\nvalue = [\"owner\", \"user\"] # trailing comment\n",
+    ];
+    let script = format!(
+        "const DD=require({dd:?});const L={layouts};console.log(JSON.stringify(L.map((t)=>[DD.isOwnerBlocked({{content:'t',blockedOn:'owner'}},t),DD.isOwnerBlocked({{content:'t',blockedOn:'waiting on CI'}},t)])))",
+        dd = dd.to_string_lossy(),
+        layouts = serde_json::to_string(&layouts).unwrap()
+    );
+    let h = home("n959-node-layouts");
+    let out = std::process::Command::new("node").arg("-e").arg(script).env("HOME", &h).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "[[true,false],[true,false],[true,false]]");
+}
+
+// ---- GH #959 review round 3 (Codex P2s on db5fb8e8a) ----
+
+fn hold_cfg() -> (usize, String) {
+    let h = defaults::raw("nudges.hold");
+    (h.get("subject_min").and_then(V::as_integer).unwrap() as usize, h.str_field("subject_cut").to_string())
+}
+
+/// #959 r3 item 1: a task that cannot fit even at its shortest is skipped, and a later task that fits is still listed.
+#[test]
+fn n959_fit_skips_a_task_that_cannot_fit_and_lists_the_next() {
+    let cap = spam_cap();
+    let names = vec!["p".repeat(cap - 8), "c".repeat(30), "API".to_string()];
+    let (text, listed) = super::compliance::fit(&names, |shown| shown.iter().map(|(_, n)| n.as_str()).collect::<Vec<_>>().join("|"));
+    assert_eq!(listed, [0, 2], "{text}");
+    assert!(text.ends_with("|API"));
+}
+
+/// #959 r3 item 3: a shortened subject keeps at least subject_min visible characters after trimming.
+#[test]
+fn n959_a_cut_subject_keeps_subject_min_visible_chars_after_trimming() {
+    let cap = spam_cap();
+    let (min, cut) = hold_cfg();
+    let names = vec!["p".repeat(cap - 1 - (min + cut.chars().count())), format!("{} {}", "a".repeat(min - 1), "b".repeat(20))];
+    let (text, listed) = super::compliance::fit(&names, |shown| shown.iter().map(|(_, n)| n.as_str()).collect::<Vec<_>>().join("|"));
+    assert_eq!(listed, [0], "a cut with fewer than {min} visible chars was listed: {text}");
+}
+
+/// #959 r3 item 2: a whitespace-only subject is shown by its task id, and a subject holding a template placeholder is shown as written.
+#[test]
+fn n959_an_empty_or_placeholder_subject_is_shown_visibly_and_literally() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let n = now0();
+    let h = home("n959-subject-shapes");
+    let max = hold_max();
+    task_file(&h, SID, json!({"id": "1", "subject": "   ", "status": "pending", "owner": "", "blockedBy": [], "metadata": {"blockedOn": "waiting on CI run 1"}}));
+    task_file(&h, SID, json!({"id": "2", "subject": "{held} later {tasks}", "status": "pending", "owner": "", "blockedBy": [], "metadata": {"blockedOn": "waiting on CI run 2"}}));
+    main_session(&h, SID, n, 15, "waiting");
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n, n + max + MIN]);
+    let r = hold_rows(&h);
+    assert_eq!(r.len(), 1, "{r:?}");
+    let text = r[0]["text"].as_str().unwrap();
+    let by_id = defaults::render("msg.agent_hold_task_ref", &[("id", &"1")]);
+    assert!(text.contains(&by_id), "the empty subject is shown by its id ({by_id}): {text}");
+    assert!(text.contains("{held} later {tasks}"), "the subject's placeholders were expanded: {text}");
+    assert_eq!((counted(&st, "1"), counted(&st, "2")), (1, 1));
+}
+
+/// #959 r3 item 5: on the first tick after an upgrade, an old hold_owner notice time is carried into owner_noticed before any pruning,
+/// so a non-owner detour on that tick does not lead to a second owner notice within owner_notice_ms.
+#[test]
+fn n959_an_old_owner_notice_time_survives_a_detour_on_the_upgrade_tick() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let n = now0();
+    let h = home("n959-upgrade-detour");
+    let max = hold_max();
+    let task = |m: &str| json!({"id": "1", "subject": "Ruleset change", "status": "pending", "owner": "", "blockedBy": [], "metadata": {"blockedOn": m}});
+    task_file(&h, SID, task("owner: release ruleset change"));
+    main_session(&h, SID, n, 15, "waiting on the owner");
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n]);
+    {
+        // state as an older engine left it: the last owner notice in hold_owner, no owner_noticed
+        let a = st.agents.get_mut(SID).unwrap();
+        a.owner_noticed.clear();
+        a.hold_owner.insert("1".into(), n + MIN);
+    }
+    task_file(&h, SID, task("waiting on the CI run of the ruleset PR"));
+    ticks(&h, &mut st, &[n + 2 * MIN]);
+    task_file(&h, SID, task("owner: release ruleset change"));
+    ticks(&h, &mut st, &[n + max + 3 * MIN, n + max + 60 * MIN]);
+    let d = env(&h, n).dir().join(defaults::raw("agent_tracker.paths").str_field("notices"));
+    let notices = std::fs::read_to_string(d).unwrap_or_default().lines().filter(|l| l.contains("hold_owner")).count();
+    assert_eq!(notices, 0, "the owner was told again within owner_notice_ms of the old notice");
+}
+
+/// #959 r3 item 4 / r4: a raw newline inside a quoted string (escapes included) or a malformed \\u escape is malformed (no owner
+/// exemption); only a column-0 `value =` line is the key's value, so an indented example inside a doc string is never read.
+#[test]
+fn n959_node_rejects_malformed_strings_and_never_reads_an_indented_value() {
+    if !std::process::Command::new("node").arg("--version").output().is_ok_and(|o| o.status.success()) {
+        return;
+    }
+    let dd = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../plugins/anti-hall-node/hooks/lib/dispatch-demand.js");
+    let layouts = [
+        "[dispatch_tier.owner_values]\ndoc = \"x\"\nvalue = [\"owner\", \"bad\n  more\"]\n",
+        // an example `value =` inside a multiline doc string is not the key's own value (indented lines are not read)
+        "[dispatch_tier.owner_values]\ndoc = \"\"\"x\n  value = [\"owner\"]\n\"\"\"\nvalue = [\"user\"]\n",
+        "[dispatch_tier.owner_values]\ndoc = \"x\"\n  value = [\"owner\"]\n",
+        // a \\u escape that runs over a raw newline, and one whose digits are not hex
+        "[dispatch_tier.owner_values]\ndoc = \"x\"\nvalue = [\"owner\", \"\\u12\n34\"]\n",
+        "[dispatch_tier.owner_values]\ndoc = \"x\"\nvalue = [\"owner\", \"\\u4x41\"]\n",
+        "[dispatch_tier.owner_values]\ndoc = \"x\"\nvalue = [\"owner\", \"\\u0041\"]\n",
+    ];
+    let script = format!(
+        "const DD=require({dd:?});const L={layouts};console.log(JSON.stringify(L.map((t)=>DD.isOwnerBlocked({{content:'t',blockedOn:'owner'}},t))))",
+        dd = dd.to_string_lossy(),
+        layouts = serde_json::to_string(&layouts).unwrap()
+    );
+    let h = home("n959-node-strict");
+    let out = std::process::Command::new("node").arg("-e").arg(script).env("HOME", &h).output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    assert_eq!(String::from_utf8_lossy(&out.stdout).trim(), "[false,false,false,false,false,true]");
+}
+
+// ---- GH #962: tracker misfires on stopped agents and valid waits -----------------------------------------------------------
+
+/// A running workspace-kind row quiet past quiet_ms: no call in flight, not hung (it spoke a minute ago), stall window long open.
+fn quiet_workspace(n: u64, primary: bool) -> Agent {
+    Agent {
+        id: "ws962".into(),
+        kind: "workspace".into(),
+        running: true,
+        last_output_ms: n - MIN,
+        stall_since: n - stall_cfg("quiet_ms") - 5 * MIN,
+        ws: Some(Ws { id: if primary { "primary-962".into() } else { "ws-962".into() }, armed: Some(true), step: String::new(), done: 0, primary }),
+        ..Agent::default()
+    }
+}
+
+/// GH #962 item 5: the owner's own session (a Primary read as a workspace-kind row) waited on its own scheduled check and was told it
+/// is STALLED and should be re-dispatched; a Primary is never STALLED.
+#[test]
+fn n962_primary_session_is_never_stalled() {
+    let n = now0();
+    let h = home("n962-primary-stall");
+    let e = env(&h, n);
+    assert!(signals::stalled_for_tests(&e, &quiet_workspace(n, true), n).is_none(), "the Primary is the owner's session, nobody re-dispatches it");
+}
+
+/// The true positive stays: a quiet child workspace (not the Primary) is still STALLED.
+#[test]
+fn n962_child_workspace_still_stalls() {
+    let n = now0();
+    let h = home("n962-child-stall");
+    let e = env(&h, n);
+    assert!(signals::stalled_for_tests(&e, &quiet_workspace(n, false), n).is_some(), "a dispatched workspace quiet past quiet_ms is STALLED");
+}
+// ---- GH #962 review round --------------------------------------------------------------------------------------------------
+
+/// Review P2: the stall check exempts only a Primary checkout, not the escalation's exempt kinds: with `teammate` added to
+/// exempt_kinds (so the escalation leaves teammates alone), a quiet teammate still stalls.
+#[test]
+fn n962r_a_quiet_teammate_still_stalls() {
+    let n = now0();
+    let h = home("n962r-mate-stall");
+    let e = env(&h, n);
+    let mut a = quiet_workspace(n, false);
+    a.kind = "teammate".into();
+    a.ws = None;
+    a.parent = "lead".into();
+    let mut esc = escalate::cfg().to_json();
+    esc["exempt_kinds"] = json!(["main", "teammate"]);
+    defaults::set_overlay(&[("agent_tracker.escalate", esc)]);
+    let exempt = escalate::primary(&a);
+    let stalled = signals::stalled_for_tests(&e, &a, n).is_some();
+    defaults::set_overlay(&[]);
+    assert!(exempt, "the overlay makes teammates escalation-exempt");
+    assert!(stalled, "a quiet teammate is STALLED whatever exempt_kinds says");
+}
+
+/// GH #962 review: a child that kept a legacy `primary-<hash>` id after migration, but which the watcher classifies as no Primary
+/// (ws.primary = false), still stalls; only the classification exempts (n962_primary_session_is_never_stalled keeps the real Primary
+/// exempt).
+#[test]
+fn n962r_a_child_with_a_legacy_primary_id_still_stalls() {
+    let n = now0();
+    let h = home("n962r-legacy-id");
+    let e = env(&h, n);
+    let mut a = quiet_workspace(n, false);
+    if let Some(w) = a.ws.as_mut() {
+        w.id = "primary-abc".into();
+    }
+    assert!(signals::stalled_for_tests(&e, &a, n).is_some(), "a primary- prefix alone does not exempt");
+}
+
+// ---- GH #964: a deleted declared step ends the step ----
+
+/// A workspace whose transcript started task 30 ("UA ladder for the gauge") and then sent `then` (more transcript lines) before going
+/// idle 30 minutes; its DevSwarm plan has no open step, so the declared step comes from the task list calls only.
+fn ws_step_then(h: &Path, n: u64, then: &[String]) {
+    devswarm(h, n, Some(n));
+    std::fs::write(
+        h.join(".anti-hall/devswarm/plans/primary-1.json"),
+        r#"{"worktreePath":"/wt/x","steps":[{"n":1,"text":"Add the gauge","status":"done"}]}"#,
+    )
+    .unwrap();
+    let start = json!({"taskId": "30", "subject": "UA ladder for the gauge", "status": "in_progress"});
+    let mut lines = vec![prompt(n - 80 * MIN, "/wt/x"), tool(n - 70 * MIN, "s1", 5, "t1", "TaskUpdate", start), result(n - 70 * MIN + 1000, "t1", "ok", false)];
+    lines.extend_from_slice(then);
+    lines.push(asst(n - 30 * MIN, "s9", 5, 5, json!([{"type": "text", "text": "waiting on the lanes"}]), Some("end_turn")));
+    write(&h.join(".claude/projects/p/sessW.jsonl"), &lines);
+}
+
+fn idle_rows(h: &Path, sid: &str) -> Vec<Value> {
+    wake_rows(h, sid).into_iter().chain(queue(h, sid)).filter(|r| r["signal"] == "idle_open_task").collect()
+}
+
+/// #964 (live: "idle ... with its task still open (<task>)" named a task deleted 10 minutes earlier): a TaskUpdate that deletes the
+/// declared step task ends the step as completing it does, so the idle workspace is not reported with that task open. True positives:
+/// the same step still open fires naming it, and deleting ANOTHER task leaves the step open and the signal firing.
+#[test]
+fn n964_a_deleted_declared_step_is_never_reported_open_a_live_step_still_is() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let n = now0();
+    let del = |id: &str| [tool(n - 60 * MIN, "s2", 5, "t2", "TaskUpdate", json!({"taskId": id, "status": "deleted"})), result(n - 60 * MIN + 1000, "t2", "ok", false)];
+    let h = home("n964-deleted-step");
+    ws_step_then(&h, n, &del("30"));
+    let mut st = State::default();
+    ticks_nudge(&h, &mut st, &["sessW"], &[n, n + MIN, n + 2 * MIN]);
+    let a = agent(&st, "sessW");
+    assert!(!a.open && a.step.is_empty() && a.step_task.is_empty(), "open={} step={:?} task={:?}", a.open, a.step, a.step_task);
+    assert!(!a.flags.contains_key("idle_open_task") && idle_rows(&h, "sessW").is_empty(), "{:?}", idle_rows(&h, "sessW"));
+    assert_eq!(a.steps_done, 0, "a deleted task is no finished step");
+    for (tag, then) in [("n964-live-step", Vec::new()), ("n964-other-deleted", del("31").to_vec())] {
+        let h = home(tag);
+        ws_step_then(&h, n, &then);
+        let mut st = State::default();
+        ticks_nudge(&h, &mut st, &["sessW"], &[n, n + MIN, n + 2 * MIN]);
+        let t = idle_rows(&h, "sessW").first().and_then(|r| r["text"].as_str().map(str::to_string)).unwrap_or_default();
+        assert!(t.contains("UA ladder for the gauge"), "{tag}: the open idle step still fires: {t:?}");
+    }
+}
+
+/// #964 (Codex P1 on the minimal fix): completion is the transcript's own word, never a member of nudges.idle_wake.closed_statuses;
+/// with that list emptied by an override, completing the declared step still counts the step and ends it.
+#[test]
+fn n964_completing_the_step_counts_and_ends_it_even_with_closed_statuses_emptied() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let n = now0();
+    let h = home("n964-closed-empty");
+    let done = [tool(n - 60 * MIN, "s2", 5, "t2", "TaskUpdate", json!({"taskId": "30", "status": "completed"})), result(n - 60 * MIN + 1000, "t2", "ok", false)];
+    ws_step_then(&h, n, &done);
+    let mut iw = defaults::raw("nudges.idle_wake").to_json();
+    iw["closed_statuses"] = json!([]);
+    defaults::set_overlay(&[("nudges.idle_wake", iw)]);
+    let mut st = State::default();
+    ticks_nudge(&h, &mut st, &["sessW"], &[n, n + MIN]);
+    let (steps, open, step) = { let a = agent(&st, "sessW"); (a.steps_done, a.open, a.step.clone()) };
+    defaults::set_overlay(&[]);
+    assert_eq!(steps, 1, "the completion counted");
+    assert!(!open && step.is_empty(), "the completed step ended: open={open} step={step:?}");
+}
+
+// ---- #972 class 7: the tracker's wake-watch coverage follows the live lock, every tick -------------------------------
+
+/// The 2026-11-27 workspace layout: the session's own descriptor `primary-p1` (with an archive twin written long ago), the app's
+/// sessionless row `app-row` on the same checkout, and the watcher's live lock under `primary-p1` naming the session.
+fn sky_layout(h: &Path, n: u64, lock: bool) {
+    let d = h.join(".anti-hall/devswarm");
+    write(
+        &h.join(".claude/projects/p/sessP.jsonl"),
+        &[prompt(n - 5 * MIN, "/wt/sky"), asst(n - MIN, "p1", 5, 5, json!([{"type": "text", "text": "on it"}]), Some("end_turn"))],
+    );
+    for sub in ["workspaces", "plans", "locks", "archived"] {
+        std::fs::create_dir_all(d.join(sub)).unwrap();
+    }
+    std::fs::write(d.join("archived/primary-p1.json"), r#"{"id":"primary-p1","sessionId":"sessP","worktreePath":"/wt/sky"}"#).unwrap();
+    let old = std::time::SystemTime::now() - std::time::Duration::from_secs(90 * 24 * 3600);
+    std::fs::File::options().write(true).open(d.join("archived/primary-p1.json")).unwrap().set_modified(old).unwrap();
+    std::fs::write(d.join("workspaces/app-row.json"), r#"{"id":"app-row","sessionId":null,"worktreePath":"/wt/sky"}"#).unwrap();
+    std::fs::write(d.join("workspaces/primary-p1.json"), r#"{"id":"primary-p1","sessionId":"sessP","worktreePath":"/wt/sky"}"#).unwrap();
+    if lock {
+        sky_lock(h, n);
+    }
+}
+
+fn sky_lock(h: &Path, ts: u64) {
+    let d = h.join(".anti-hall/devswarm/locks/wake-watch-primary-p1.lock");
+    std::fs::write(d, json!({"ts": ts, "pid": std::process::id(), "sessionId": "sessP"}).to_string()).unwrap();
+}
+
+/// Ticks without arming the session wake stamp (the workspace path decides by the DevSwarm lock alone).
+fn ticks_bare(h: &Path, st: &mut State, at: &[u64]) {
+    for t in at {
+        tick(&env(h, *t), st);
+    }
+}
+
+#[test]
+fn n972_a_live_lock_under_the_sessions_own_descriptor_covers_it_despite_a_stale_archive_twin() {
+    let h = home("n972-sky");
+    let n = now0();
+    sky_layout(&h, n, true);
+    let mut st = State::default();
+    ticks_bare(&h, &mut st, &[n, n + MIN, n + 2 * MIN]);
+    let a = agent(&st, "sessP");
+    let w = a.ws.as_ref().expect("the session is a workspace");
+    assert_eq!((w.id.as_str(), w.armed), ("primary-p1", Some(true)), "bound to its own descriptor and covered: {w:?}");
+    assert!(escalate::primary(a), "its own descriptor says Primary");
+    assert!(!a.flags.contains_key("monitor_unarmed"), "{:?}", a.flags.keys().collect::<Vec<_>>());
+    assert!(queue(&h, "sessP").iter().all(|r| r["signal"] != "monitor_unarmed"), "{:?}", queue(&h, "sessP"));
+}
+
+#[test]
+fn n972_coverage_is_judged_again_every_tick_not_frozen_at_first_sight() {
+    // the row was first seen with no watcher (the flag went up); the watcher armed later and its lock is live: the next tick must see it
+    let h = home("n972-refresh");
+    let n = now0();
+    sky_layout(&h, n, false);
+    let mut st = State::default();
+    ticks_bare(&h, &mut st, &[n, n + 2 * MIN, n + 4 * MIN]);
+    assert_eq!(agent(&st, "sessP").ws.as_ref().and_then(|w| w.armed), Some(false), "no lock yet: not covered");
+    assert!(agent(&st, "sessP").flags.contains_key("monitor_unarmed"), "the true positive still fires");
+    sky_lock(&h, n + 5 * MIN);
+    ticks_bare(&h, &mut st, &[n + 5 * MIN, n + 6 * MIN]);
+    let a = agent(&st, "sessP");
+    assert_eq!(a.ws.as_ref().and_then(|w| w.armed), Some(true), "{:?}", a.ws);
+    assert!(!a.flags.contains_key("monitor_unarmed"), "the flag clears once the live lock covers it");
+}
+
+#[test]
+fn n972_a_sessionless_app_row_never_displaces_the_sessions_own_descriptor() {
+    // no archive twin, no lock: whichever order the rows are read in, the session-id match wins over the checkout match
+    let h = home("n972-order");
+    let n = now0();
+    sky_layout(&h, n, false);
+    std::fs::remove_file(h.join(".anti-hall/devswarm/archived/primary-p1.json")).unwrap();
+    let mut st = State::default();
+    ticks_bare(&h, &mut st, &[n, n + MIN, n + 2 * MIN]);
+    assert_eq!(agent(&st, "sessP").ws.as_ref().map(|w| w.id.as_str()), Some("primary-p1"));
+}
+
+// ---- #972 class 27: STALLED, drift and idle-open on waiting or Primary rows ------------------------------------------------
+
+/// Every compliant workspace keeps a wake-watch Monitor armed (owner rule), so an armed wake is no evidence of a stated wait: a quiet
+/// child workspace with its Monitor armed still stalls (the Primary is exempt by n962_primary_session_is_never_stalled).
+#[test]
+fn n972_an_armed_wake_watch_does_not_exempt_a_quiet_child_workspace_from_stalled() {
+    let n = now0();
+    let h = home("n972-stall-armed");
+    let e = env(&h, n);
+    let mut a = quiet_workspace(n, false);
+    a.armed_until = n + 20 * MIN;
+    assert!(signals::stalled_for_tests(&e, &a, n).is_some());
+}
+
+fn drifting(n: u64) -> Agent {
+    Agent {
+        id: "lead972".into(),
+        kind: "main".into(),
+        step: "T-53 stall on scheduled wait".into(),
+        step_task: "53".into(),
+        step_events: 50,
+        work: ["disk", "cleanup", "cargo", "target"].iter().map(|w| (*w).to_string()).collect(),
+        last_output_ms: n,
+        ..Agent::default()
+    }
+}
+
+#[test]
+fn n972_drift_skips_a_step_task_another_agent_owns_and_quotes_the_current_subject() {
+    let n = now0();
+    let a = drifting(n);
+    let mut st = State::default();
+    let task = |owner: &str| compliance::Task {
+        id: "53".into(),
+        subject: "T-53 tracker guard misfires on waits".into(),
+        status: "in_progress".into(),
+        owner: owner.into(),
+        ..compliance::Task::default()
+    };
+    // the true positive: the session's own step, renamed; the reminder names the current subject, not the old text
+    let own = signals::drift_for_tests(&a, &st, &[task("")]).expect("its own step still drifts");
+    assert_eq!(own.1, "T-53 tracker guard misfires on waits");
+    // the reported case: a live lane owns the task, so the coordinator's work elsewhere is no drift from it
+    st.agents.insert("lane962".into(), Agent { id: "lane962".into(), name: "lane-962".into(), kind: "teammate".into(), parent: "lead972".into(), ..Agent::default() });
+    assert!(signals::drift_for_tests(&a, &st, &[task("lane-962")]).is_none());
+    // an owner nobody tracks (a stale name) decides nothing
+    assert!(signals::drift_for_tests(&a, &st, &[task("ghost")]).is_some());
+}
+
+#[test]
+fn n972_idle_open_task_never_fires_on_a_primary_row() {
+    let n = now0();
+    let st = State::default();
+    let mut a = quiet_workspace(n, true);
+    a.running = false;
+    a.open = true;
+    a.last_output_ms = n - 30 * MIN;
+    assert!(signals::idle_open_task_for_tests(&a, &st, n).is_none(), "the Primary is the owner's session");
+    a.ws.as_mut().unwrap().primary = false;
+    assert!(signals::idle_open_task_for_tests(&a, &st, n).is_some(), "the true positive: an idle child workspace with its task open");
+}
+
+// ---- #972 class 2 / #961: a hold the session answered (wrote the task after a reminder named it) is confirmed -----------------
+
+fn confirm_ms() -> u64 {
+    defaults::raw("nudges.hold").get("confirm_ms").and_then(V::as_integer).unwrap() as u64
+}
+
+/// Set a task file's mtime to the simulated clock `at` (a real write's mtime is the time of the write).
+fn touch_task_at(h: &Path, sid: &str, id: &str, at: u64) {
+    let sid8: String = sid.chars().take(8).collect();
+    let p = h.join(".claude/tasks").join(format!("session-{sid8}")).join(format!("{id}.json"));
+    std::fs::File::options().write(true).open(p).unwrap().set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_millis(at)).unwrap();
+}
+
+/// Write a task file and, as the session would, the TaskUpdate call that saved its blocker (`metadata.blockedOn`) at the simulated
+/// clock `at` (the tracker compares the call's time with the tick time of the reminder).
+fn task_file_at(h: &Path, sid: &str, t: Value, at: u64) {
+    task_file(h, sid, t.clone());
+    let id = format!("tu{at}");
+    let input = json!({"taskId": t["id"], "metadata": t["metadata"]});
+    touch_task_at(h, sid, t["id"].as_str().unwrap(), at);
+    let p = sess(h, sid);
+    std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+    let mut f = std::fs::OpenOptions::new().create(true).append(true).open(&p).unwrap();
+    writeln!(f, "{}\n{}", tool(at, &format!("m{at}"), 5, &id, "TaskUpdate", input), result(at + 500, &id, "Updated task", false)).unwrap();
+}
+
+fn n972_hold_rows(h: &Path) -> Vec<Value> {
+    let mut seen = std::collections::BTreeSet::new();
+    queue(h, SID).into_iter().chain(wake_rows(h, SID)).filter(|r| r["signal"] == "hold_expired" && seen.insert(r["id"].to_string())).collect()
+}
+
+#[test]
+fn n972_a_hold_saved_again_after_its_reminder_is_confirmed_and_silent_for_confirm_ms() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let n = now0();
+    let h = home("n972-confirm");
+    let (max, conf) = (hold_max(), confirm_ms());
+    let task = json!({"id": "28", "subject": "Task 28", "status": "pending", "owner": "", "blockedBy": [], "metadata": {"blockedOn": "waiting on the store review"}});
+    task_file_at(&h, SID, task.clone(), n - MIN);
+    main_session(&h, SID, n, 15, "waiting");
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n, n + max + MIN]);
+    assert_eq!(n972_hold_rows(&h).len(), 1, "the true positive: an expired hold is reminded");
+    // the session answers: the same reason saved again, minutes after the reminder (the 2FA "refreshed minutes earlier" case)
+    task_file_at(&h, SID, task.clone(), n + max + 5 * MIN);
+    let mut at = n + max + 6 * MIN;
+    while at < n + max + conf {
+        ticks(&h, &mut st, &[at]);
+        at += 31 * MIN;
+    }
+    assert_eq!(n972_hold_rows(&h).len(), 1, "confirmed: silent for confirm_ms, not every cooldown {:?}", n972_hold_rows(&h));
+    // bounded: past confirm_ms it speaks again
+    ticks(&h, &mut st, &[n + max + 6 * MIN + conf + MIN]);
+    assert_eq!(n972_hold_rows(&h).len(), 2, "the confirmation runs out");
+}
+
+#[test]
+fn n972_an_unanswered_hold_keeps_its_cooldown_and_a_new_reason_runs_the_plain_clock() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let n = now0();
+    let h = home("n972-unanswered");
+    let max = hold_max();
+    let task = |m: &str| json!({"id": "69", "subject": "Task 69", "status": "pending", "owner": "", "blockedBy": [], "metadata": {"blockedOn": m}});
+    task_file_at(&h, SID, task("waiting on the CI run"), n - MIN);
+    main_session(&h, SID, n, 15, "waiting");
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n, n + max + MIN, n + max + 32 * MIN]);
+    assert_eq!(n972_hold_rows(&h).len(), 2, "no answer: reminded again after the cooldown");
+    // answered with a new reason: confirmed, tied to that reason
+    task_file_at(&h, SID, task("CI green, waiting on the reviewer"), n + max + 40 * MIN);
+    ticks(&h, &mut st, &[n + max + 41 * MIN]);
+    let k = agent(&st, SID).hold_confirmed.get("69").map(|c| c.0.clone()).expect("confirmed");
+    // a later reason no reminder named is a fresh hold on the plain clock, not covered by the old confirmation
+    task_file_at(&h, SID, task("reviewer replied, waiting on the deploy window"), n + max + 50 * MIN);
+    ticks(&h, &mut st, &[n + max + 51 * MIN]);
+    let before = n972_hold_rows(&h).len();
+    ticks(&h, &mut st, &[n + max + 51 * MIN + max + MIN]);
+    assert_eq!(agent(&st, SID).hold_confirmed.get("69").map(|c| c.0.clone()), Some(k), "the confirmation stays tied to the reason it confirmed");
+    assert_eq!(n972_hold_rows(&h).len(), before + 1, "the new reason expired on the plain clock and was reminded");
+}
+
+// ---- #972 class 1: a stopped or snoozed child stays stopped or snoozed --------------------------------------------------------
+
+/// A parent that stopped subagent `abc` 30 min ago (answered TaskStop) and a child transcript that ended mid-turn.
+fn stopped_child(h: &Path, n: u64) {
+    write(
+        &sess(h, "parent"),
+        &[
+            prompt(n - 60 * MIN, "/w"),
+            tool(n - 30 * MIN, "p1", 5, "toolu_stop1", "TaskStop", json!({"task_id": "abc"})),
+            result(n - 30 * MIN + 1000, "toolu_stop1", "Successfully stopped task: abc (Docs-drift review)", false),
+        ],
+    );
+    write(
+        &h.join(".claude/projects/p/parent/subagents/agent-abc.jsonl"),
+        &[prompt(n - 70 * MIN, "/w"), asst(n - 65 * MIN, "s1", 5, 5, json!([{"type": "text", "text": "The gate is still running in the background, I will report."}]), None)],
+    );
+    register(h, std::process::id(), "parent", "busy", n);
+}
+
+#[test]
+fn n972_a_stop_outlives_the_launching_transcripts_tail_window() {
+    let h = home("n972-sticky-stop");
+    let n = now0();
+    stopped_child(&h, n);
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n, n + MIN]);
+    assert_eq!(signals::state_of(agent(&st, "abc")), "done", "the answered stop ends it");
+    // the parent keeps working: its transcript grows far past the scan's tail window, so the stop is no longer visible there
+    let filler: Vec<String> = (0..400).map(|i| asst(n + 2 * MIN + i, &format!("f{i}"), 5, 5, json!([{"type": "text", "text": "x".repeat(2000)}]), None)).collect();
+    let mut tb = defaults::raw("agent_scan.tail_bytes").to_json();
+    tb = json!(tb.as_u64().unwrap().min(200_000));
+    defaults::set_overlay(&[("agent_scan.tail_bytes", tb)]);
+    append(&sess(&h, "parent"), &filler);
+    ticks(&h, &mut st, &[n + 10 * MIN, n + 40 * MIN, n + 80 * MIN]);
+    let (state, flags) = (signals::state_of(agent(&st, "abc")), agent(&st, "abc").flags.keys().cloned().collect::<Vec<_>>());
+    defaults::set_overlay(&[]);
+    assert_eq!(state, "done", "the stop is kept after it left the window");
+    assert!(flags.iter().all(|f| !["hung", "false_claim", "idle_open_task", "stalled"].contains(&f.as_str())), "no live-agent row about a stopped child: {flags:?}");
+}
+
+#[test]
+fn n972_a_stopped_child_that_writes_again_is_tracked_again() {
+    let h = home("n972-resume");
+    let n = now0();
+    stopped_child(&h, n);
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n, n + MIN]);
+    assert!(agent(&st, "abc").stopped_at > 0);
+    append(&h.join(".claude/projects/p/parent/subagents/agent-abc.jsonl"), &[asst(n + 5 * MIN, "s2", 5, 5, json!([{"type": "text", "text": "resumed"}]), None)]);
+    ticks(&h, &mut st, &[n + 6 * MIN]);
+    assert_eq!(agent(&st, "abc").stopped_at, 0, "output written well after the stop resumes it");
+}
+
+#[test]
+fn n972_a_snoozed_teammate_gets_no_false_claim_until_the_snooze_runs_out() {
+    let n = now0();
+    let h = home("n972-snooze-claim");
+    main_session(&h, "parent", n, 1, "waiting");
+    write(
+        &sub_path(&h, "parent"),
+        &[
+            prompt(n - 30 * MIN, "/w"),
+            tool(n - 20 * MIN, "s1", 5, "t1", "Read", json!({"file_path": "/w/a"})),
+            result(n - 20 * MIN + 500, "t1", "ok", false),
+            asst(n - 10 * MIN, "s2", 5, 5, json!([{"type": "text", "text": "The gate is still running in the background, I will report."}]), Some("end_turn")),
+        ],
+    );
+    let mut st = State::default();
+    st.nudge_snooze.insert("w1|false_claim".into(), nudge::Snooze { until: n + 240 * MIN, snoozes: 1, min: 240, held: 0 });
+    let claims = |h: &Path| queue(h, "parent").into_iter().filter(|r| r["signal"] == "false_claim").count();
+    ticks(&h, &mut st, &[n, n + MIN, n + 60 * MIN]);
+    assert_eq!(claims(&h), 0, "snoozed by its parent");
+    ticks(&h, &mut st, &[n + 241 * MIN, n + 242 * MIN]);
+    assert_eq!(claims(&h), 1, "bounded: once the snooze runs out the claim is reported");
+}
+
+// ---- #972 class 3: outcomes the health nudge missed ---------------------------------------------------------------------------
+
+/// A subagent of `parent` that ran `calls` (each answered ok) and is still in its turn.
+fn sub_with_calls(h: &Path, n: u64, calls: &[(&str, Value)]) {
+    main_session(h, "parent", n, 1, "waiting");
+    let mut lines = vec![prompt(n - 30 * MIN, "/w")];
+    for (i, (name, input)) in calls.iter().enumerate() {
+        let id = format!("t{i}");
+        lines.push(tool(n - 20 * MIN + i as u64 * 1000, &format!("s{i}"), 5, &id, name, input.clone()));
+        lines.push(result(n - 20 * MIN + i as u64 * 1000 + 500, &id, "ok", false));
+    }
+    write(&sub_path(h, "parent"), &lines);
+}
+
+#[test]
+fn n972_a_merge_after_a_cd_is_an_outcome() {
+    let n = now0();
+    let h = home("n972-merge");
+    sub_with_calls(&h, n, &[("Bash", json!({"command": "cd /w/repo && gh pr merge 840 --squash"})), ("Bash", json!({"command": "cd /w/repo && echo gh pr merge 841"}))]);
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n]);
+    let a = agent(&st, "w1");
+    assert_eq!((a.shipped, a.progress), (1, weight("merge")), "the merge in the second segment counts, the quoted one in an echo does not");
+}
+
+#[test]
+fn n972_a_childs_report_to_its_lead_is_an_outcome_a_message_to_a_peer_is_not() {
+    let n = now0();
+    let h = home("n972-report");
+    let report = "Findings, round 3: P1 the hold clock restarts on a same-text save; P2 the owner notice shows 0s; P2 drift quotes old text.";
+    sub_with_calls(
+        &h,
+        n,
+        &[
+            ("SendMessage", json!({"to": "main", "message": report})),
+            ("SendMessage", json!({"to": "lane-x", "message": report})),
+            ("SendMessage", json!({"to": "main", "message": "still working"})),
+        ],
+    );
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n]);
+    let a = agent(&st, "w1");
+    assert_eq!((a.reports, a.progress), (1, weight("report")), "one report to the lead; the peer message and the short ping are no outcome");
+}
+
+#[test]
+fn n972_a_session_whose_descriptor_is_gone_is_a_main_session_again_covered_by_its_own_stamp() {
+    let h = home("n972-unbind");
+    let n = now0();
+    sky_layout(&h, n, true);
+    std::fs::remove_file(h.join(".anti-hall/devswarm/archived/primary-p1.json")).unwrap();
+    let mut st = State::default();
+    ticks_bare(&h, &mut st, &[n, n + MIN]);
+    assert_eq!(agent(&st, "sessP").kind, kind_name("workspace"));
+    // the app archived both rows: the session is no workspace any more; its own session wake stamp is armed and a child runs
+    let d = h.join(".anti-hall/devswarm/workspaces");
+    std::fs::remove_file(d.join("primary-p1.json")).unwrap();
+    std::fs::remove_file(d.join("app-row.json")).unwrap();
+    running_sub(&h, "sessP", n + 5 * MIN, 1);
+    ticks(&h, &mut st, &[n + 5 * MIN, n + 6 * MIN, n + 7 * MIN]);
+    let a = agent(&st, "sessP");
+    assert!(a.ws.is_none() && a.kind == kind_name("main"), "kind={} ws={:?}", a.kind, a.ws);
+    assert!(escalate::primary(a), "the main session is exempt from the runtime ladder");
+    assert!(!a.flags.contains_key("monitor_unarmed"), "its own armed stamp covers it: {:?}", a.flags.keys().collect::<Vec<_>>());
+}
+
+/// Codex #838 P1.1: the old stop notice stays in the parent's tail while the resumed child keeps working; over several ticks the old
+/// notice must never re-latch the stop.
+#[test]
+fn n972r_a_resumed_child_is_not_re_latched_by_its_old_stop_notice_over_several_ticks() {
+    let h = home("n972r-relatch");
+    let n = now0();
+    stopped_child(&h, n);
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n, n + MIN]);
+    assert_eq!(signals::state_of(agent(&st, "abc")), "done", "the true positive: the answered stop ends it");
+    let child = h.join(".claude/projects/p/parent/subagents/agent-abc.jsonl");
+    for (i, t) in [5u64, 6, 7, 8].iter().enumerate() {
+        append(&child, &[tool(n + t * MIN, &format!("r{i}"), 5, &format!("rt{i}"), "Read", json!({"file_path": "/w/a"}))]);
+        ticks(&h, &mut st, &[n + t * MIN + 1000]);
+        let a = agent(&st, "abc");
+        assert!(a.stopped_at == 0 && !a.finished, "tick {i}: re-latched by the stop at n-30min: stopped_at={} finished={}", a.stopped_at, a.finished);
+    }
+}
+
+/// Codex #838 P1.2: a live lock that names the session but belongs to another workspace (another checkout, another inbox) does not
+/// cover the workspace the session is bound to.
+#[test]
+fn n972r_a_lock_naming_the_session_under_another_checkout_does_not_cover_it() {
+    let h = home("n972r-other-inbox");
+    let n = now0();
+    devswarm(&h, n, None);
+    let d = h.join(".anti-hall/devswarm");
+    std::fs::write(d.join("workspaces/wsB.json"), r#"{"id":"wsB","sessionId":"other","worktreePath":"/wt/b"}"#).unwrap();
+    std::fs::write(d.join("locks/wake-watch-wsB.lock"), json!({"ts": n, "pid": std::process::id(), "sessionId": "sessW"}).to_string()).unwrap();
+    let mut st = State::default();
+    ticks_bare(&h, &mut st, &[n, n + MIN]);
+    assert_eq!(agent(&st, "sessW").ws.as_ref().map(|w| (w.id.as_str(), w.armed)), Some(("ws1", Some(false))), "B's watcher reads B's inbox");
+    // the true positive of coverage: a lock under its own row
+    std::fs::write(d.join("locks/wake-watch-ws1.lock"), json!({"ts": n + 2 * MIN, "pid": std::process::id(), "sessionId": "sessW"}).to_string()).unwrap();
+    ticks_bare(&h, &mut st, &[n + 2 * MIN]);
+    assert_eq!(agent(&st, "sessW").ws.as_ref().and_then(|w| w.armed), Some(true));
+}
+
+/// Codex #838 P1.3: the same status message sent again earns nothing; only distinct reports are outcomes.
+#[test]
+fn n972r_a_repeated_report_earns_no_fresh_progress() {
+    let n = now0();
+    let h = home("n972r-repeat-report");
+    let status = "Status: still working on the hold bookkeeping, tests pending, ETA about thirty minutes from now, no blockers so far.";
+    let other = "Findings, round 4: P1 the stop notice re-latches; P2 the drift dedupe keys the old text; P2 an unrelated write confirms.";
+    sub_with_calls(
+        &h,
+        n,
+        &[
+            ("SendMessage", json!({"to": "main", "message": status})),
+            ("SendMessage", json!({"to": "main", "message": status})),
+            ("SendMessage", json!({"to": "main", "message": format!("  {status}  ")})),
+            ("SendMessage", json!({"to": "main", "message": other})),
+        ],
+    );
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n]);
+    let a = agent(&st, "w1");
+    assert_eq!((a.reports, a.progress), (2, 2 * weight("report")), "two distinct reports, the repeats earn nothing");
+}
+
+/// Codex #838 P1.3 (merge): a merge segment the shell may skip (after `||`), or whose failure the call's success does not rule out (a
+/// `;` or `|` after it), earns no shipping credit; one the whole call's success proves ran does.
+#[test]
+fn n972r_a_merge_credits_only_when_the_calls_success_proves_it_ran() {
+    let n = now0();
+    for (tag, cmd, want) in [
+        ("or", "true || gh pr merge 42", 0),
+        ("semi-after", "gh pr merge 42 ; true", 0),
+        ("pipe", "gh pr merge 42 | tee /dev/null", 0),
+        ("and", "cd /w/repo && gh pr merge 42 && echo merged", 1),
+        ("semi-before", "cd /w/repo ; gh pr merge 42", 1),
+    ] {
+        let h = home(&format!("n972r-merge-{tag}"));
+        sub_with_calls(&h, n, &[("Bash", json!({"command": cmd}))]);
+        let mut st = State::default();
+        ticks(&h, &mut st, &[n]);
+        assert_eq!(agent(&st, "w1").shipped, want, "{tag}: {cmd}");
+    }
+}
+
+/// Codex #838 P2.4: a write of the task that does not touch its blocker (a subject fix) is no answer to the hold reminder.
+#[test]
+fn n972r_an_unrelated_task_write_does_not_confirm_the_hold() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let n = now0();
+    let h = home("n972r-subject-write");
+    let max = hold_max();
+    let task = |subj: &str| json!({"id": "75", "subject": subj, "status": "pending", "owner": "", "blockedBy": [], "metadata": {"blockedOn": "waiting on the store review"}});
+    task_file_at(&h, SID, task("Task 75"), n - MIN);
+    main_session(&h, SID, n, 15, "waiting");
+    append(&sess(&h, SID), &[tool(n - MIN, "m0", 5, "tu0", "TaskUpdate", json!({"taskId": "75", "metadata": {"blockedOn": "waiting on the store review"}})), result(n - MIN + 500, "tu0", "Updated task", false)]);
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n, n + max + MIN]);
+    assert_eq!(n972_hold_rows(&h).len(), 1);
+    // a subject fix after the reminder: the file changes, the blocker does not
+    task_file(&h, SID, task("Task 75 (renamed)"));
+    touch_task_at(&h, SID, "75", n + max + 5 * MIN);
+    append(&sess(&h, SID), &[tool(n + max + 5 * MIN, "m1", 5, "tu1", "TaskUpdate", json!({"taskId": "75", "subject": "Task 75 (renamed)"})), result(n + max + 5 * MIN + 500, "tu1", "Updated task", false)]);
+    ticks(&h, &mut st, &[n + max + 6 * MIN, n + max + 32 * MIN]);
+    assert!(!agent(&st, SID).hold_confirmed.contains_key("75"), "no blocker field was written");
+    assert_eq!(n972_hold_rows(&h).len(), 2, "unanswered: reminded again after the cooldown");
+}
+
+/// Codex #838 P2.5: the once-per-step dedupe of drift keys on the step the reminder is about (the task's current subject), so a rename
+/// is a new step that may be reminded again.
+#[test]
+fn n972r_a_renamed_step_is_a_new_step_for_the_drift_dedupe() {
+    let n = now0();
+    let h = home("n972r-drift-rename");
+    let task = |subj: &str| json!({"id": "53", "subject": subj, "status": "in_progress", "owner": "", "blockedBy": []});
+    task_file(&h, SID, task("T-53 stall on scheduled wait"));
+    let mut lines = vec![prompt(n - 60 * MIN, "/w"), tool(n - 50 * MIN, "u0", 5, "tu", "TaskUpdate", json!({"taskId": "53", "status": "in_progress", "subject": "T-53 stall on scheduled wait"})), result(n - 50 * MIN + 500, "tu", "Updated task", false)];
+    for i in 0..12u64 {
+        let id = format!("b{i}");
+        lines.push(tool(n - 40 * MIN + i * 1000, &format!("c{i}"), 5, &id, "Bash", json!({"command": format!("du -sh /cache/derived/data{i} && rm -rf /cache/derived/data{i}")})));
+        lines.push(result(n - 40 * MIN + i * 1000 + 500, &id, "ok", false));
+    }
+    lines.push(asst(n - 30 * MIN, "e", 5, 5, json!([{"type": "text", "text": "cleaned"}]), Some("end_turn")));
+    write(&sess(&h, SID), &lines);
+    let drifts = |h: &Path| queue(h, SID).into_iter().filter(|r| r["signal"] == "drift").count();
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n, n + MIN]);
+    assert_eq!(drifts(&h), 1, "the true positive: drift from the declared step");
+    take_queue(&h, SID);
+    task_file(&h, SID, task("T-53 tracker guard misfires on waits"));
+    ticks(&h, &mut st, &[n + 70 * MIN, n + 71 * MIN]);
+    assert_eq!(drifts(&h), 2, "the renamed step is a new step: reminded again after the cooldown");
+}
+
+// ---- #972 round 3 (Codex #839) ----------------------------------------------------------------------------------------
+
+/// A teammate stopped by name (answered TaskStop at n-50, still in the parent's tail) with `extra` appended to its transcript.
+fn stopped_mate(h: &Path, n: u64, extra: &[String]) {
+    write(&sess(h, "parent"), &[prompt(n - 80 * MIN, "/w")]);
+    append(&sess(h, "parent"), &[
+        json!({"type": "user", "timestamp": iso(n - 60 * MIN), "toolUseResult": {"status": "teammate_spawned", "name": "ax", "agent_id": "ax-1"},
+               "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "toolu_a", "content": "Spawned successfully."}]}}).to_string(),
+        tool(n - 50 * MIN, "p3", 5, "toolu_s", "TaskStop", json!({"task_id": "ax"})),
+        result(n - 50 * MIN + 1000, "toolu_s", "{\"message\":\"Successfully stopped task: t1 (x)\",\"task_id\":\"t1\"}", false),
+    ]);
+    let mut lines = vec![prompt(n - 70 * MIN, "/w"), asst(n - 46 * MIN, "s1", 5, 5, json!([{"type": "text", "text": "working"}]), None)];
+    lines.extend_from_slice(extra);
+    mate(h, "ax-1", "ax", "team-e", &lines);
+    roster(h, "team-e", &["ax"]);
+    register(h, std::process::id(), "parent", "busy", n);
+}
+
+/// Codex #839 P1.1: a teammate the lead resumes after an answered TaskStop (a new inbound message after the stop opens a new turn) is
+/// running again on every tick; the killed turn's late tail (output with no inbound message after the stop) stays done.
+#[test]
+fn n972r3_a_teammate_resumed_by_a_new_message_after_its_stop_is_running_again() {
+    let n = now0();
+    let h = home("n972r3-mate-resume");
+    stopped_mate(&h, n, &[
+        json!({"type": "user", "timestamp": iso(n - 10 * MIN), "message": {"role": "user", "content": "<teammate-message teammate_id=\"team-lead\">continue with item 2</teammate-message>"}}).to_string(),
+        tool(n - 9 * MIN, "s2", 5, "r1", "Read", json!({"file_path": "/w/a"})),
+    ]);
+    let mut st = State::default();
+    for t in [n, n + MIN, n + 2 * MIN] {
+        ticks(&h, &mut st, &[t]);
+        let a = agent(&st, "ax-1");
+        assert!(!a.finished && signals::state_of(a) == "running", "resumed by the lead's message after the stop: {} finished={}", signals::state_of(a), a.finished);
+    }
+    // the killed turn's tail (no inbound message after the stop) stays done
+    let h2 = home("n972r3-mate-tail");
+    stopped_mate(&h2, n, &[asst(n - 45 * MIN, "s3", 5, 5, json!([{"type": "text", "text": "late line"}]), None)]);
+    let mut st2 = State::default();
+    ticks(&h2, &mut st2, &[n, n + MIN, n + 2 * MIN]);
+    assert_eq!(signals::state_of(agent(&st2, "ax-1")), "done");
+}
+
+/// Codex #839 P1.2: a TaskUpdate of the blocker whose result is an error did not write anything and confirms nothing.
+#[test]
+fn n972r3_a_failed_blocker_update_does_not_confirm_the_hold() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let n = now0();
+    let h = home("n972r3-failed-update");
+    let max = hold_max();
+    task_file(&h, SID, json!({"id": "81", "subject": "Task 81", "status": "pending", "owner": "", "blockedBy": [], "metadata": {"blockedOn": "waiting on the store review"}}));
+    main_session(&h, SID, n, 15, "waiting");
+    let mut st = State::default();
+    ticks(&h, &mut st, &[n, n + max + MIN]);
+    assert_eq!(n972_hold_rows(&h).len(), 1);
+    let at = n + max + 5 * MIN;
+    append(&sess(&h, SID), &[
+        tool(at, "mf", 5, "tuf", "TaskUpdate", json!({"taskId": "81", "metadata": {"blockedOn": "waiting on the store review"}})),
+        result(at + 500, "tuf", "Error: task list is locked", true),
+    ]);
+    ticks(&h, &mut st, &[n + max + 6 * MIN, n + max + 32 * MIN]);
+    assert!(!agent(&st, SID).hold_confirmed.contains_key("81"), "an errored update confirms nothing");
+    assert_eq!(n972_hold_rows(&h).len(), 2, "still unanswered: reminded again after the cooldown");
 }

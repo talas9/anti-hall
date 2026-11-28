@@ -145,7 +145,7 @@ mod tests {
         for want in defaults::list("notice_turn.skip_checks") {
             assert!(ids.iter().any(|i| base(i) == want), "{want} is not a UserPromptSubmit entry");
         }
-        assert!(skips("verify-first") && skips("task-tracker#2") && skips("switch-notice:host=claude"));
+        assert!(skips("procwatch-advisory") && skips("task-tracker#2") && skips("switch-notice:host=claude"));
         assert!(!skips("idle-agent-sweep") && !skips("agent-reminders") && !skips("devswarm-parent-inbox") && !skips("auto-handover"));
     }
 
@@ -153,14 +153,14 @@ mod tests {
     fn notice_turn_the_daemon_counts_only_listed_kinds_and_checks() {
         let seen = |kind: &str, skipped: &[&str]| Seen { kind: kind.into(), skipped: skipped.iter().map(|s| s.to_string()).collect() };
         let mut m = Metrics::default();
-        count(&mut m, &seen("peer", &["verify-first", "task-tracker#2", "idle-agent-sweep", "made-up"]));
-        count(&mut m, &seen("not-a-kind", &["verify-first"]));
+        count(&mut m, &seen("peer", &["procwatch-advisory", "task-tracker#2", "idle-agent-sweep", "made-up"]));
+        count(&mut m, &seen("not-a-kind", &["procwatch-advisory"]));
         let v = |name: &str, l: &[(&str, &str)]| m.counter(name, l);
         assert_eq!(v("notice_turn_matched", &[("kind", "peer")]), 1);
-        assert_eq!(v("notice_turn_skipped", &[("kind", "peer"), ("check", "verify-first")]), 1);
+        assert_eq!(v("notice_turn_skipped", &[("kind", "peer"), ("check", "procwatch-advisory")]), 1);
         assert_eq!(v("notice_turn_skipped", &[("kind", "peer"), ("check", "task-tracker")]), 1, "a variant suffix is ignored");
         assert_eq!(v("notice_turn_skipped", &[("kind", "peer"), ("check", "idle-agent-sweep")]), 0, "a check outside the list is not counted");
-        assert_eq!(v("notice_turn_matched", &[("kind", "not-a-kind")]) + v("notice_turn_skipped", &[("kind", "not-a-kind"), ("check", "verify-first")]), 0);
+        assert_eq!(v("notice_turn_matched", &[("kind", "not-a-kind")]) + v("notice_turn_skipped", &[("kind", "not-a-kind"), ("check", "procwatch-advisory")]), 0);
     }
 
     #[test]

@@ -73,6 +73,7 @@ The DevSwarm role, gate and wake guards.
 - `devswarm.inboxGraceSec` = 120: Grace period for fresh unread mail, seconds
 - `devswarm.maintainerNotice.show` = true: Show unseen maintainer notices
 - `devswarm.archiveRequestRenagHours` = 24: Hours before repeating an archive request
+- `devswarm.rosterOrders` = true: Roster orders (#844)
 - `devswarm.skipClosedEnrichment` = true: Skip activity, finish and transcript enrichment when every child roster row is explicitly closed...
 - `devswarm.orphanWarningOnce` = true: Warn once per orphan set per session
 - `devswarm.parkedDisplay` = true: Quiet stale flags on deliberately parked rows

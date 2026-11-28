@@ -1,7 +1,7 @@
 // check = "task-tracker" (UserPromptSubmit; the Claude and the Codex entry). On every prompt the hook keeps the task-list discipline in
-// front of the model without repeating it every turn: the full directive on the first prompt of a session, again when its window
-// elapses or the transcript has grown by the growth threshold, a short reminder in between that the injection keepalive rations, plus
-// one line about the open tasks. It also asks Jev (integration `newRequest`) to label the prompt, and scores the previous turn's
+// front of the model without repeating it: the full directive once per context epoch (the first prompt of a session and the first one after
+// a context loss), a short reminder only on evidence (a substantive prompt while no task is open; rationed by untracked_prompts), and, only
+// while task_tracker.lines_setting is on, one line about the open tasks and the per-turn DISPATCH NOW line (the engine tick judges negligence). It also asks Jev (integration `newRequest`) to label the prompt, and scores the previous turn's
 // dispatch demand, and names the tasks nobody is on in the per-turn DISPATCH NOW line (annotated with the cached dispatchTier verdict of
 // Jev). First everything is read and decided, and every point at which this script cannot answer exactly is counted and decided
 // natively (a payload, a state file or a transcript timestamp in a shape only V8 reads); only then the effects are performed, in Node's order: the Jev ask, the
@@ -39,8 +39,10 @@ function ttFull(codex) {
 
 function ttFinite(v) { return typeof v === 'number' && isFinite(v); }
 
-// `pickMessage`: read the state of this session and choose; nothing is written here. {full: bool, size}.
-function ttPick(home, rel, tp, now) {
+// `pickMessage`: read the state of this session and choose; nothing is written here. {full: bool, size}. The full directive goes out once
+// per context epoch: the first prompt of the session, and the first one after a context loss (the SessionStart reset marker of the
+// emit-dedupe store, written on /compact, resume, clear and startup, is newer than the last directive). No clock window, no growth rule.
+function ttPick(home, rel, tp, now, dsid) {
   var size = tp !== null ? ah.fs.size(tp) : null;
   if (size === null) size = -1;
   var lastFull = 0, lastSize = -1;
@@ -57,11 +59,12 @@ function ttPick(home, rel, tp, now) {
       }
     }
   }
-  var fresh = now - lastFull < ttN('window_ms');
-  // a transcript that grows by the threshold on every turn would re-send the full directive each turn: growth re-sends it only once the
-  // minimum gap since the last full directive has passed (the window still re-sends it on expiry)
-  var grew = size >= 0 && lastSize >= 0 && size - lastSize >= ttN('growth_bytes') && now - lastFull >= ttN('growth_min_gap_ms');
-  return { full: !(fresh && !grew), size: size, lastFull: lastFull, lastSize: lastSize };
+  var resetAt = 0;
+  if (typeof dsid === 'string' && dsid !== '' && !dedupe.disabled()) {
+    var rk = dedupe.readState(dedupe.stateRel(dsid))[ah.cfg('emit_dedupe.reset_key')];
+    if (rk && ttFinite(rk.resetAt)) resetAt = rk.resetAt;
+  }
+  return { full: lastFull === 0 || lastFull < resetAt, size: size, lastFull: lastFull, lastSize: lastSize };
 }
 
 // The Jev ask for a prompt (`askDetached` of integration `newRequest`): the spec (a cut through a surrogate pair drops the half pair).
@@ -84,7 +87,7 @@ function ttJevSpec(p, prompt, sessionRaw) {
 // `isOwnerBlocked(t)`: a task waiting on the owner (the `blockedOn` marker or an `OWNER:` subject) is not work the agent can close.
 function ttOwnerBlocked(t) {
   if (!ah.settings.bool('dispatch_tier.owner_marker_setting')) return false;
-  if (ah.cfg('dispatch_tier.owner_values').indexOf(tk.blockedOnText(t)) >= 0) return true;
+  if (tk.ownerHeld(t)) return true;
   return new RegExp(ah.cfg('dispatch_tier.owner_subject_re'), 'i').test(t.content);
 }
 
@@ -383,10 +386,10 @@ function ttFresh(home, tp, sessionRaw, p) {
   var pruneLine = '', pruneAfter = ah.settings.num('task_guard.prune_setting'), doneCount = tasks.filter(tk.isDone).length;
   if (isFinite(pruneAfter) && pruneAfter > 0 && doneCount > pruneAfter) pruneLine = text.render(ttT('prune_line'), { n: doneCount, limit: String(pruneAfter) });
   var open = tasks.filter(tk.isOpen);
-  if (open.length === 0) return { tasks: tasks, demand: '', openLine: '', pruneLine: pruneLine, plan: plan };
+  if (open.length === 0) return { tasks: tasks, open: 0, demand: '', openLine: '', pruneLine: pruneLine, plan: plan };
   // the per-turn DISPATCH NOW line: it counts running agents, asks Jev for a tier and records a demand
-  var demand = '';
-  if (ah.settings.bool('task_tracker.dd_setting')) {
+  var demand = '', lines = ah.settings.bool('task_tracker.lines_setting');
+  if (lines && ah.settings.bool('task_tracker.dd_setting')) {
     var actionable = ttActionable(open, tasks);
     var stopped = ah.settings.bool('task_tracker.stop_setting') && sd.spawnStop(p) !== null; // the weekly-usage spawn stop: nothing can be dispatched
     if (actionable.length >= 1 && !stopped) {
@@ -436,7 +439,7 @@ function ttFresh(home, tp, sessionRaw, p) {
   var line = counted.length === 0
     ? text.render(ttT('open_zero'), { blocked: blockedTail })
     : text.render(ttT('open_some'), { n: counted.length, blocked: blockedTail, tail: tail });
-  return { tasks: tasks, demand: demand, openLine: line, pruneLine: pruneLine, plan: plan };
+  return { tasks: tasks, open: open.length, demand: demand, openLine: lines ? line : '', pruneLine: pruneLine, plan: plan };
 }
 
 // `sessionKey(sid)` of hooks/lib/dispatch-demand.js.
@@ -532,21 +535,20 @@ function decide(p) {
   // ---- decide: nothing below this line writes until the effects block ----
   var stateName = ttT('state_prefix') + tk.safeKey(session) + ttT('state_suffix');
   var stateRel = ah.cfg('paths.base_dir') + '/' + stateName;
-  var chosen = ttPick(home, stateRel, tp, now);
+  var chosen = ttPick(home, stateRel, tp, now, dsid);
   var full = ttFull(codex), short = ttShort();
   var fresh = ttFresh(home, tp, sessionRaw, p);
-  // change-only: the short reminder speaks when the open-task list changed, or after `untracked_prompts` unchanged prompts (a request may
-  // be untracked); otherwise it is withheld. The full directive keeps its own window.
+  // evidence only: the short reminder speaks when this prompt holds a request no task can cover (a substantive prompt while no task is
+  // open), then again after `untracked_prompts` such prompts. A compliant session (a task for the work, a short follow-up) hears nothing.
   var ch = { hash: '', quiet: 0, hold: false, track: false };
-  if (fresh !== null) {
-    ch.hash = ttListHash(fresh.tasks);
-    ch.track = true;
-    if (!chosen.full && ah.settings.bool('task_tracker.change_setting')) {
-      var prev = ttChangeState(home, stateRel);
-      var changed = prev.hash !== ch.hash;
-      ch.quiet = changed ? 0 : prev.quiet + 1;
-      ch.hold = !changed && ch.quiet < ah.settings.num('task_tracker.untracked_prompts');
-      if (!ch.hold) ch.quiet = 0;
+  if (fresh !== null) { ch.hash = ttListHash(fresh.tasks); ch.track = true; }
+  if (!chosen.full && ah.settings.bool('task_tracker.change_setting')) {
+    var evidence = fresh !== null && fresh.open === 0 && typeof p.prompt === 'string' && p.prompt.trim().length >= ttN('untracked_min_chars');
+    if (!evidence) ch.hold = true;
+    else {
+      var prevQ = ttChangeState(home, stateRel).quiet;
+      ch.hold = prevQ > 0 && prevQ < ah.settings.num('task_tracker.untracked_prompts');
+      ch.quiet = ch.hold ? prevQ + 1 : 1;
     }
   }
   // #709: a cron-delivered turn with an unchanged open-task list gets no note and no Jev ask. The list hash is the one the change gate keeps.

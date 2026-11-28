@@ -224,7 +224,11 @@ fn a_cursor_file_round_trips_per_role_and_carries_a_newer_builds_members_through
     let st = State { last_total: 4.0, last_total2: 9.0, last_broadcast: 2.0, ..State::default() };
     assert!(read::save_seen(&h, "w1", &st, false));
     let text = std::fs::read_to_string(read::seen_path(&h, "w1")).unwrap();
-    assert_eq!(text, "{\"lastTotal\":4,\"lastTotal2\":9,\"lastBroadcastUnread\":2,\"meshTotal\":9,\"ndjsonTotal\":4}");
+    // GH #845: a known broadcast watermark is written with the cursor file version (the default state knows it: 0)
+    assert_eq!(
+        text,
+        "{\"lastTotal\":4,\"lastTotal2\":9,\"lastBroadcastUnread\":2,\"lastBroadcastWakeSeq\":0,\"seenVersion\":2,\"meshTotal\":9,\"ndjsonTotal\":4}"
+    );
     let back = read::load_seen(&h, "w1", false);
     assert_eq!((back.last_total, back.last_total2, back.last_broadcast), (4.0, 9.0, 2.0));
     assert!(!back.total_missing && !back.total2_missing && !back.broadcast_missing);
@@ -373,4 +377,144 @@ fn a_restarted_watcher_still_re_wakes_mail_that_was_held_before_the_restart() {
     // coalescing off: nothing is seeded
     let (st, _) = tick(&saved, &mail(5.0, Some(2.0), 1_000.0, None));
     assert!(!st.held_pending);
+}
+
+/// GH #845 phase 0: each tick reports how many wake lines it printed per channel (mail, broadcast) for the `mesh_wake_lines` counter;
+/// the arm line and a held (coalesced) wake are not counted, and the counts reset every tick.
+#[test]
+fn each_tick_counts_its_wake_lines_per_channel() {
+    let armed = State { armed: true, last_total: 1.0, last_total2: 2.0, last_broadcast: 0.0, ..State::default() };
+    let (st, lines) = tick(&armed, &child(1.0, Some(3.0), Some(2.0)));
+    assert_eq!(lines.len(), 2, "{lines:?}");
+    assert_eq!((st.woke_mail, st.woke_broadcast), (1, 1));
+    let (st, lines) = tick(&st, &child(1.0, Some(3.0), Some(2.0)));
+    assert!(lines.is_empty());
+    assert_eq!((st.woke_mail, st.woke_broadcast), (0, 0), "nothing moved: the counts reset");
+    let fresh = State { total_missing: true, total2_missing: true, broadcast_missing: true, ..State::default() };
+    let (st, lines) = tick(&fresh, &child(1.0, Some(3.0), Some(2.0)));
+    assert_eq!(lines.len(), 1, "only the arm line: {lines:?}");
+    assert_eq!((st.woke_mail, st.woke_broadcast), (0, 0), "the arm line is not a wake");
+}
+
+fn bc(seq: Option<f64>, pending: f64) -> Snapshot {
+    Snapshot { bc_seq: Some(seq), bc_pending: Some(pending), ..child(1.0, Some(1.0), Some(pending)) }
+}
+
+/// GH #845 (Codex P0-1): the broadcast channel wakes on the watermark, so a drain followed by a new arrival between two polls (the
+/// unread count stays 1) still wakes.
+#[test]
+fn a_drain_plus_a_new_arrival_between_polls_still_wakes() {
+    let st = State { armed: true, last_total: 1.0, last_total2: 1.0, last_bc_seq: 0.0, ..State::default() };
+    let (st, lines) = tick(&st, &bc(Some(100.0), 1.0));
+    assert_eq!((lines.len(), st.last_bc_seq), (1, 100.0));
+    // the reader drained seq 100 and seq 105 arrived before the next poll: pending is 1 again, the seq moved
+    let (st, lines) = tick(&st, &bc(Some(105.0), 1.0));
+    assert_eq!((lines.len(), st.last_bc_seq), (1, 105.0), "{lines:?}");
+    // drained, nothing new: the watermark never goes down and nothing prints
+    let (st, lines) = tick(&st, &bc(None, 0.0));
+    assert_eq!((lines.len(), st.last_bc_seq), (0, 105.0));
+    let (_, lines) = tick(&st, &bc(Some(105.0), 1.0));
+    assert!(lines.is_empty(), "a row at or under the watermark was already woken for");
+}
+
+/// A fresh or pre-watermark watcher wakes once for pending eligible mail instead of seeding it away, and seeds silently when none.
+#[test]
+fn a_missing_watermark_reconciles_pending_mail_instead_of_seeding_it() {
+    let st = State { armed: true, last_total: 1.0, last_total2: 1.0, bc_seq_missing: true, ..State::default() };
+    let (after, lines) = tick(&st, &bc(Some(42.0), 2.0));
+    assert_eq!((lines.len(), after.last_bc_seq, after.bc_seq_missing), (1, 42.0, false));
+    let (after, lines) = tick(&st, &bc(None, 0.0));
+    assert_eq!((lines.len(), after.bc_seq_missing), (0, false));
+}
+
+/// A summary row without the watermark field (an older writer) keeps the legacy count channel.
+#[test]
+fn a_row_without_the_watermark_uses_the_legacy_count() {
+    let st = State { armed: true, last_total: 1.0, last_total2: 1.0, last_broadcast: 0.0, ..State::default() };
+    let (_, lines) = tick(&st, &child(1.0, Some(1.0), Some(2.0)));
+    assert_eq!(lines.len(), 1);
+}
+
+/// The watermark survives a restart only in a cursor file of this version.
+#[test]
+fn the_watermark_round_trips_through_the_cursor_file() {
+    let h = home("bcseq");
+    let st = State { last_total: 3.0, last_total2: 4.0, last_bc_seq: 77.0, ..State::default() };
+    assert!(read::save_seen(&h, "w1", &st, false));
+    let back = read::load_seen(&h, "w1", false);
+    assert_eq!((back.last_bc_seq, back.bc_seq_missing), (77.0, false));
+    let unknown = State { bc_seq_missing: true, ..st };
+    assert!(read::save_seen(&h, "w2", &unknown, false));
+    assert!(read::load_seen(&h, "w2", false).bc_seq_missing, "an unknown watermark is never saved as 0");
+}
+
+/// Review P1-1: an ack that leaves eligible broadcasts unread (the drain held some back past its caps) wakes again, so the
+/// backlog is drained; a drain that leaves the count unchanged (it listed the held rows) does not.
+#[test]
+fn an_ack_that_leaves_eligible_rows_unread_wakes_again() {
+    let st = State { armed: true, last_total: 1.0, last_total2: 1.0, last_bc_seq: 0.0, ..State::default() };
+    let (st, lines) = tick(&st, &bc(Some(120.0), 120.0));
+    assert_eq!(lines.len(), 1);
+    // the drain acked 100 of them, 20 remain unread at or under the watermark
+    let (st, lines) = tick(&st, &bc(Some(120.0), 20.0));
+    assert_eq!((lines.len(), st.woke_broadcast), (1, 1), "a re-wake for the rest: {lines:?}");
+    let (st, lines) = tick(&st, &bc(Some(120.0), 20.0));
+    assert!(lines.is_empty(), "no new ack, no new line");
+    let (_, lines) = tick(&st, &bc(None, 0.0));
+    assert!(lines.is_empty(), "all read");
+}
+
+/// Review P1-2: a (re)armed watcher whose saved watermark already covers pending eligible broadcasts still prints once, so a
+/// line lost to a closed pipe or a restart is not lost for good.
+#[test]
+fn arming_with_pending_eligible_broadcasts_prints_once() {
+    let st = State { last_total: 1.0, last_total2: 1.0, last_bc_seq: 50.0, ..State::default() };
+    let (st, lines) = tick(&st, &bc(Some(50.0), 2.0));
+    assert_eq!((lines.len(), st.woke_broadcast), (2, 1), "the arm line and one broadcast line: {lines:?}");
+    let (_, lines) = tick(&st, &bc(Some(50.0), 2.0));
+    assert!(lines.is_empty());
+    let quiet = State { last_total: 1.0, last_total2: 1.0, last_bc_seq: 50.0, ..State::default() };
+    let (_, lines) = tick(&quiet, &bc(None, 0.0));
+    assert_eq!(lines.len(), 1, "only the arm line when nothing is pending");
+}
+
+/// Review P1-2: when a broadcast line could not be printed, the watermark it advanced is rolled back and marked unknown, so it is
+/// neither saved nor trusted: the next tick prints again.
+#[test]
+fn a_failed_broadcast_print_does_not_advance_the_watermark() {
+    let before = State { armed: true, last_total: 1.0, last_total2: 1.0, last_bc_seq: 10.0, ..State::default() };
+    let (after, lines) = tick(&before, &bc(Some(20.0), 1.0));
+    assert_eq!((lines.len(), after.last_bc_seq), (1, 20.0));
+    let kept = super::edge::undo_unprinted(&before, after.clone(), true);
+    assert_eq!(kept.last_bc_seq, 20.0, "printed: kept");
+    let undone = super::edge::undo_unprinted(&before, after, false);
+    assert_eq!((undone.last_bc_seq, undone.bc_seq_missing), (10.0, true));
+    let (_, lines) = tick(&undone, &bc(Some(20.0), 1.0));
+    assert_eq!(lines.len(), 1, "the next tick prints it again");
+}
+
+/// Re-review N-3: an ack that moved the cursor over rows that do not wake the reader (so pending is unchanged) while wake-eligible
+/// rows stay unread past the drain's budget wakes again.
+#[test]
+fn an_ack_that_moves_the_cursor_with_eligible_rows_left_wakes_again() {
+    let at = |cursor: f64| Snapshot { bc_cursor: Some(cursor), ..bc(Some(200.0), 60.0) };
+    let st = State { armed: true, last_total: 1.0, last_total2: 1.0, last_bc_seq: 0.0, ..State::default() };
+    let (st, lines) = tick(&st, &at(0.0));
+    assert_eq!(lines.len(), 1);
+    let (st, lines) = tick(&st, &at(0.0));
+    assert!(lines.is_empty(), "nothing moved");
+    let (_, lines) = tick(&st, &at(50.0));
+    assert_eq!(lines.len(), 1, "the cursor moved, 60 eligible rows still unread: {lines:?}");
+}
+
+/// Re-review N-4: an arm whose first read fails (or lacks the watermark field) still owes its broadcast print, and pays it on the
+/// first read that has the field.
+#[test]
+fn the_arm_print_survives_a_failed_first_read() {
+    let st = State { last_total: 1.0, last_total2: 1.0, last_bc_seq: 50.0, ..State::default() };
+    let (st, _) = tick(&st, &Snapshot { ok: false, error: Some("x".into()), ..snap("child", None) });
+    assert!(st.bc_arm_due);
+    let (st, lines) = tick(&st, &bc(Some(50.0), 2.0));
+    assert_eq!((lines.len(), st.woke_broadcast), (1, 1), "the owed arm print: {lines:?}");
+    assert!(!st.bc_arm_due);
 }

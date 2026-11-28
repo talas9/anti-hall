@@ -261,3 +261,31 @@ fn real_unread_mail_blocks_and_the_read_clears_it() {
     let stop = e.stop();
     assert!(!neglects(&stop), "after the read the gate clears too, got: {stop:?}");
 }
+
+/// #965 item 5: `read-primary` prints strict JSON whatever control characters a message body holds (newline, tab, escape, DEL, a C1
+/// byte): every string goes through the JSON serializer, so no raw character below U+0020 reaches stdout and a strict parser reads it.
+/// The live "Invalid control character" came from the reader: `echo "$out" | python3` under zsh, whose builtin echo turns the escape
+/// `\n` back into a raw newline. The contrast is shown when zsh is installed.
+#[test]
+fn read_primary_prints_strict_json_for_a_body_with_control_characters() {
+    let e = Env::new("ctrl");
+    let body = "line one\nline two\ttabbed \u{1b}[31mred\u{1b}[0m \u{7f} \u{85} \r\n end";
+    e.inbox_lines(&[mail_line(body)], 0);
+    let mut c = e.cmd(&e.child_wt);
+    c.args(["mesh", "inbox", "read-primary", CHILD]).stdin(Stdio::null());
+    let o = c.output().unwrap();
+    let out = String::from_utf8(o.stdout).expect("UTF-8 stdout");
+    let text = out.strip_suffix('\n').expect("one line, newline-terminated");
+    assert!(!text.chars().any(|ch| (ch as u32) < 0x20), "no raw control character in the JSON text: {text:?}");
+    let v: serde_json::Value = serde_json::from_str(text).unwrap_or_else(|err| panic!("strict JSON: {err}: {text}"));
+    assert!(v.to_string().contains("line two") && text.contains("\\n") && text.contains("\\u001b"), "the body is escaped, not dropped: {text}");
+    // the reader-side cause: zsh's builtin echo decodes the JSON escapes; printf '%s\n' keeps the text exact
+    let Ok(zsh) = Command::new("zsh").arg("-c").arg("echo \"$1\"; printf '%s\\n' \"$1\"").arg("zsh").arg(text).output() else { return };
+    if !zsh.status.success() {
+        return;
+    }
+    let both = String::from_utf8_lossy(&zsh.stdout).to_string();
+    let printed = both.lines().last().unwrap_or_default();
+    assert_eq!(printed, text, "printf keeps the JSON exact");
+    assert!(serde_json::from_str::<serde_json::Value>(&both[..both.len() - printed.len() - 1]).is_err(), "zsh echo breaks the same JSON: {both}");
+}

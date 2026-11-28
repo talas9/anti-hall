@@ -698,18 +698,26 @@ fn repair_one(runner: &dyn Runner, f: &Failure, text: &str, branch: &str, sub_pa
         }
         let bl = format!("{}{b}", t("devswarm_cli.sp_wt_line_branch"));
         let other = blocks.iter().find(|(_, blk)| blk.contains(&format!("{bl}\n")) || blk.ends_with(&bl));
+        // the branch is checked out in another worktree (#844 item 5): a submodule checkout at the superproject's pinned commit is
+        // what `git submodule update` makes anyway, so the worktree is added detached there; with no pinned commit it stays a failure
+        let mut detached = false;
         if let Some((d, _)) = other
             && d != p
             && *d != real_p
             && Path::new(d).exists()
         {
-            return Err(tpl("devswarm_cli.sp_err_branch_elsewhere", &[("branch", &b)]));
+            if sha.is_none() {
+                return Err(tpl("devswarm_cli.sp_err_branch_elsewhere", &[("branch", &b)]));
+            }
+            detached = true;
         }
         let head_ref = format!("{}{b}", t("devswarm_cli.sp_heads_prefix"));
-        let exists = git_in(runner, &mod_git_s, &with(&tl("devswarm_cli.sp_git_branch_exists"), &[&head_ref]), long).status == Some(0);
+        let exists = !detached && git_in(runner, &mod_git_s, &with(&tl("devswarm_cli.sp_git_branch_exists"), &[&head_ref]), long).status == Some(0);
         let add = tl("devswarm_cli.sp_git_wt_add");
         let new_b = t("devswarm_cli.sp_git_new_branch");
+        let detach = t("devswarm_cli.sp_git_detach");
         let args: Vec<&str> = match (&sha, exists) {
+            (Some(sh), _) if detached => with(&add, &[detach, p, sh]),
             (_, true) => with(&add, &[p, &b]),
             (Some(sh), false) => with(&add, &[new_b, &b, p, sh]),
             (None, false) => with(&add, &[new_b, &b, p]),
@@ -767,6 +775,10 @@ fn repair_one(runner: &dyn Runner, f: &Failure, text: &str, branch: &str, sub_pa
         }
         let mut o = Obj::default();
         o.put("path", s(p)).put("branch", s(&b)).put("sha", s_or_null(sha.as_deref())).put("reusedBranch", OVal::Bool(exists)).put("movedBack", strs(&moved));
+        if detached {
+            o.put("detached", OVal::Bool(true)).put("note", s(&tpl("devswarm_cli.sp_detached_note", &[("branch", &b)])));
+            warnings.push(tpl("devswarm_cli.sp_detached_note", &[("branch", &b)]));
+        }
         if !identical.is_empty() {
             o.put("identical", strs(&identical));
         }

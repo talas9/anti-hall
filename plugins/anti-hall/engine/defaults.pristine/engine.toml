@@ -230,6 +230,10 @@ value = "daemon.loadhold.since"
 doc = "The daemon's liveness heartbeat: names the daemon's process generation, one field per line (pid, start time and executable as the operating system reports them, and the state dir) and, as a fifth line, the progress age in ms (zero-padded to a fixed width) of the daemon's longest-silent busy worker, or the idle marker (ten `i` characters, not a number) when no worker is busy; the watchdog thread rewrites that line and touches the modification time at the start of every daemon.watchdog_tick_ms tick, before any maintenance, apart from request handling. A client past its deadline reads it to tell a slow daemon (heartbeat fresh) from a stopped or wedged one (stale, see client.heartbeat_stale_ms), and a daemon that is working (progress age under client.progress_stale_ms) from one that is not. A call fails open on an idle marker only when a beat NEWER than the first idle one it saw is still idle (an idle beat can predate the worker picking the request up); with no newer beat the stale-heartbeat bound applies."
 value = "daemon.heartbeat"
 
+[files.heartbeat_peers]
+doc = "#969: per-request progress beside files.heartbeat: one line per busy worker, the pid of the client whose request it serves and the ms since that worker's last progress on it, rewritten by the watchdog on each daemon.watchdog_tick_ms tick it changed. A client past its deadline judges the worker on ITS request by this (plus the file's age) against client.progress_stale_ms; a client not listed (its request not picked up yet) keeps the daemon-wide figure of files.heartbeat. Before it, one worker silent in a long check failed every waiting client open."
+value = "daemon.heartbeat.peers"
+
 [files.heartbeat_suspect]
 doc = "Client suspicion carried between hook calls: when a stale heartbeat (client.heartbeat_stale_ms) was first seen (monotonic clock), and which heartbeat (modification time and generation). A later call confirms the hang only when that same heartbeat is still unchanged client.heartbeat_confirm_ms later."
 value = "daemon.heartbeat.suspect"
@@ -249,6 +253,10 @@ value = "last-crash.json"
 [files.cli_crash]
 doc = "Last panic of a non-daemon process (a CLI verb or the hook client). Kept apart from last-crash.json so it never counts as a daemon crash or restart."
 value = "cli-crash.json"
+
+[files.hung_kill]
+doc = "R0 (#969 hardening): the tombstone a client leaves just before it ends a hung daemon (client.heartbeat_stale_ms): that daemon's pid and the load per core at the kill. The next start's reap reads it once: a kill under load (health.load_exit_per_core_permille) is logged as health.hung_kill_kind, not as a crash."
+value = "daemon.hung-kill.json"
 
 [files.reaped_prefix]
 doc = "Prefix of the temporary name a stale run marker is renamed to when it is claimed (the pid is appended)."
@@ -467,19 +475,19 @@ env = "AH_ENGINE_RSS_CHECK_MS"
 unit = "ms"
 
 [daemon.stuck_ms]
-doc = "A worker that makes no progress on its request for longer than this trips a drain and exit (a hung worker). Progress is a check starting or finishing and the script interpreter running, so a worker a loaded machine only slows down is not stuck; the time without progress is what a blocked host call (a lock, a child process, a disk sync) adds."
+doc = "A worker that makes no progress on its request for longer than this trips a drain and exit (a hung worker). Progress is a check starting or finishing and the script interpreter running, so a worker a loaded machine only slows down is not stuck; the time without progress is what a blocked host call (a lock, a child process, a disk sync) adds. R0: multiplied by the watchdog's load factor (daemon.watchdog_load_scale_max_permille); an exit taken under load (health.load_exit_per_core_permille) does not count toward the crash-loop rule."
 value = 8000
 env = "AH_ENGINE_STUCK_MS"
 unit = "ms"
 
 [daemon.stall_ms]
-doc = "An accept loop silent for longer than this trips a drain and exit."
+doc = "An accept loop silent for longer than this trips a drain and exit. R0: multiplied by the watchdog's load factor (daemon.watchdog_load_scale_max_permille), as daemon.stuck_ms is."
 value = 5000
 env = "AH_ENGINE_STALL_MS"
 unit = "ms"
 
 [daemon.start_stall_ms]
-doc = "How long a starting daemon may take from its start to the accept loop's first round (database open, spool drain, scheduler and wiring start) before the watchdog calls it stalled and restarts it. Longer than daemon.stall_ms because start-up work is not the accept loop and a loaded machine slows it; once the loop has run, daemon.stall_ms applies, and a loop that has returned (a clean drain) is never judged."
+doc = "How long a starting daemon may take from its start to the accept loop's first round (database open, spool drain, scheduler and wiring start) before the watchdog calls it stalled and restarts it. Longer than daemon.stall_ms because start-up work is not the accept loop and a loaded machine slows it; once the loop has run, daemon.stall_ms applies, and a loop that has returned (a clean drain) is never judged. R0: multiplied by the watchdog load factor (daemon.watchdog_load_scale_max_permille), as daemon.stall_ms is."
 value = 60000
 env = "AH_ENGINE_START_STALL_MS"
 unit = "ms"
@@ -554,9 +562,54 @@ value = "fds"
 doc = "Detail of the fds state line. {open} descriptors open, {limit} the soft limit, {watch} the descriptors the file watcher holds."
 value = "open={open} limit={limit} watch={watch}"
 
+[daemon.qos]
+doc = "#969: the macOS quality-of-service class of the threads every tool call waits on: the request workers, the accept loop, the watchdog that writes the heartbeat a waiting client reads, and the hook client while it waits. A name from daemon.qos_classes (user-interactive, the shipped default: the daemon is on the critical path of every tool call and lost the CPU at nice 0 among about 1,250 other processes on a machine at load 50-100), or any other word (off) to leave the threads as the system starts them. Set without root (pthread_set_qos_class_self_np); a thread a request thread starts inherits it. No effect on other systems. Read when a thread starts: a change applies at the next daemon start."
+value = "user-interactive"
+
+[daemon.qos_classes]
+doc = "#969: the class names daemon.qos may take, with the value of the system's qos_class_t for each (sys/qos.h). A name not listed means no class (the threads keep the one they were started with)."
+value = { "user-interactive" = 33, "user-initiated" = 25, "default" = 21, "utility" = 17 }
+
+[daemon.qos_refused_msg]
+doc = "#969: logged (kind qos) when the system refuses the class of daemon.qos for a thread. Placeholder: {rc}, the error number."
+value = "the system refused the configured QoS class (error {rc}); the thread keeps its class"
+
+[metric.qos_threads]
+doc = "#969: request threads (workers, the accept loop, the watchdog) that asked for the daemon.qos class at start, by outcome: set, off (no class configured, or not macOS), refused (the system said no; logged as qos)."
+value = { kind = "counter", unit = "threads", labels = ["outcome"] }
+
+[daemon.load_scale_max_permille]
+doc = "#969: the most a loaded machine stretches a guard's wall time, in permille (2000 = twice). Under load a guard check needs more wall time, not a hold: for an event in daemon.load_scale_events the request's hard ceiling (daemon.request_hard_ms or its daemon.request_hard_event_ms row) and the late-reply wait (client.slow_fallback_max_ms or its row; the client and the ah-hook watchdog alike) are multiplied by the 1-minute load average per core, clamped to [1000, this] and rounded down to daemon.load_scale_step_permille; client.deadline_ms (the fail-fast wait) never moves. Scaling both by one factor keeps hard + diagnostics.deadline_grace_cap_ms within slow_fallback - client.slow_wait_margin_ms. Bound: the launcher lowers the factor per call until the whole plan fits the outer bound (daemon.load_scale_env), so no wait outlives the hook: with the shipped numbers PreToolUse and PermissionRequest (3000 ms) grow to at most 2x within their 10 s wrapper cap even on a cold start, and Stop (9000 ms in the same 10 s cap) does not grow at all; a test holds every listed event to it. A wait that still does not fit (Stop's 9000 ms after a cold start) is shortened by the launcher to what is left of the bound less both kill graces and launcher.wall_hard_margin_ms, and the daemon fits a request's factor to the same bound again, so a request that skipped the launcher can not stretch its ceiling either. 1000 (or less) = off. Each request served with a factor above 1000 is counted (deadline_load_scaled)."
+value = 2000
+min = 0
+max = 3000
+unit = "permille"
+
+[daemon.watchdog_load_scale_max_permille]
+doc = "R0 (#969 hardening): the most a loaded machine stretches the watchdog's daemon.stall_ms and daemon.stuck_ms, in permille (4000 = four times). The watchdog samples the 1-minute load average per core itself on every tick (it serves no request, so no launcher factor reaches it), clamps it to [1000, this] and rounds it down to daemon.load_scale_step_permille. A worker a starved machine only slows is then not called stuck: at load 80 on 16 cores a host call blocked for 8 s no longer drains the daemon. Not bounded by any hook timeout: past client.deadline_ms a call keeps waiting only while the daemon shows progress (client.progress_stale_ms), so a stuck worker's client has already failed open (client.rs stalled()); it must stay above client.deadline_ms x daemon.load_scale_max_permille (test the_time_bounds_nest). 1000 (or less) = off."
+value = 4000
+min = 0
+max = 10000
+unit = "permille"
+
+[daemon.load_scale_step_permille]
+doc = "#969: the step daemon.load_scale_max_permille's factor is rounded down to (250 = 1, 1.25, 1.5 ...), so the daemon, the client and the ah-hook watchdog, which each read the load average a moment apart, land on the same factor. 0 = no rounding."
+value = 250
+min = 0
+max = 1000
+unit = "permille"
+
+[daemon.load_scale_env]
+doc = "#969: the environment variable through which the ah-hook launcher passes the load factor (permille) it fitted for a call to the hook client, which carries it to the daemon in the request (load_permille). The factor is sampled once, in the launcher: it reads the load per core, clamps it (daemon.load_scale_max_permille, daemon.load_scale_step_permille) and lowers it until the call's whole plan fits its outer bound, min(the hooks.json timeout, client.wrapper_default_timeout_s) less client.cold_guard_wait_ms, both client.wrapper_kill_grace_ms and launcher.wall_hard_margin_ms. The client and the daemon never sample the load, so they can not disagree across a step; with no launcher (the variable unset) nothing scales."
+value = "AH_ENGINE_LOAD_PERMILLE"
+
+[daemon.load_scale_events]
+doc = "#969: the hook events whose deadlines scale with load (daemon.load_scale_max_permille): the guard events, whose late answer is worth waiting for; every other event keeps its deadlines: SubagentStop's late wait (9000 ms) is already 90 % of its 10 s hook timeout and SessionEnd's hook timeout is 5 s, so neither has room."
+value = ["PreToolUse", "PermissionRequest", "Stop"]
+
 [daemon.nice]
-doc = "`nice` increment applied to the daemon process."
-value = 5
+doc = "`nice` increment applied to the daemon process. 0 (the default) = normal priority: the daemon is on the critical path of every tool call (each guard waits on its answer), so a positive value makes it lose the CPU to the very load it must stay ahead of, misses guard deadlines (deadline_cut shed and hard_deadline) and sends calls down the capacity path. Raise it only on a machine where the engine must yield to other work."
+value = 0
 env = "AH_ENGINE_NICE"
 min = 0
 max = 19
@@ -755,7 +808,7 @@ value = { Stop = 9000, SubagentStop = 9000 }
 unit = "ms"
 
 [client.progress_stale_ms]
-doc = "A hook call past client.deadline_ms keeps waiting for a late reply only while the daemon shows progress: the age of its longest-silent busy worker's last progress (a check started or finished, the interpreter ran, a bounded host call is running), written into the heartbeat file (files.heartbeat) on every daemon.watchdog_tick_ms tick, plus the heartbeat's own age, stays below this. Older, or no progress figure at all (no heartbeat, a build from before it), or the idle marker on two successive beats (no worker busy: the request was not picked up), means the daemon is not working on the request in a way anyone can see: the call fails open at once, however much of its late-reply bound is left. 0 turns the gate off (the call waits the whole bound)."
+doc = "A hook call past client.deadline_ms keeps waiting for a late reply only while the daemon shows progress on its request (#969: the worker serving that request, from files.heartbeat_peers; for a request no worker has picked up, the longest-silent busy worker; the bound is multiplied by the launcher's load factor for an event in daemon.load_scale_events, as the late wait is): the age of that worker's last progress (a check started or finished, the interpreter ran, a bounded host call is running), written into the heartbeat file (files.heartbeat) on every daemon.watchdog_tick_ms tick, plus the heartbeat's own age, stays below this. Older, or no progress figure at all (no heartbeat, a build from before it), or the idle marker on two successive beats (no worker busy: the request was not picked up), means the daemon is not working on the request in a way anyone can see: the call fails open at once, however much of its late-reply bound is left. 0 turns the gate off (the call waits the whole bound)."
 value = 1000
 min = 0
 unit = "ms"
@@ -788,6 +841,13 @@ env = "AH_ENGINE_DOWN_REQUIRES_GONE"
 min = 0
 max = 1
 
+[client.crashloop_hold_max_ms]
+doc = "R0 (#969 hardening review): for this long after a crash-loop trip (client.crash_n within client.crash_window_s), a hook call is treated as load, not as a daemon that is gone: a guard call in a dispatch.capacity_hold class (a push, merge, delete, deploy) is held and anything else passes. Past it the rest of the cooldown (client.crash_cooldown_s) passes everything, so a broken install never blocks every push for the whole cooldown. 0 = never hold (the cooldown passes everything)."
+value = 600000
+min = 0
+env = "AH_ENGINE_CRASHLOOP_HOLD_MAX_MS"
+unit = "ms"
+
 [client.load_hold_max_ms]
 doc = "#905: the longest run, with no OK reply in it, during which a daemon that is there but unusable (client.down_requires_gone: a failed exchange or a hung daemon whose process is still there, an open breaker with the daemon there; and a daemon that answers late, client.slow_fallback_max_ms: every late reply, whether or not it trips client.slow_down_n, #910) holds risky calls (files.load_hold_since). Past it the daemon is treated as down (the down marker, counted with reason hold_expired; the open breaker passes everything), so a live but broken daemon cannot hold every push forever. 0 = no cap."
 value = 300000
@@ -807,7 +867,7 @@ env = "AH_ENGINE_SLOW_WINDOW_MS"
 unit = "ms"
 
 [client.heartbeat_stale_ms]
-doc = "A hook call past client.deadline_ms keeps waiting for a late reply (client.slow_fallback_max_ms) only while the daemon's heartbeat (files.heartbeat) is younger than this. Older means the daemon may be stopped or wedged, not slow: the call fails open at once and marks it down (client.down_marker_ttl_ms). One stale sample only raises a suspicion (files.heartbeat_suspect); the client ends that daemon only once the same heartbeat stayed unchanged for client.heartbeat_confirm_ms, and only when it is the pid holding the singleton lock, verified as this engine's daemon, of this state dir, and still the process generation the heartbeat recorded (start time and executable from the operating system, re-read immediately before the signal); single-flight and under the crash-loop rule. Then it starts a new one. A heartbeat that names another pid or is missing counts as alive. Keep it well above daemon.watchdog_tick_ms and below client.slow_fallback_max_ms less client.slow_wait_margin_ms, so a stop is detected within the first slow call. 0 disables the check."
+doc = "A hook call past client.deadline_ms keeps waiting for a late reply (client.slow_fallback_max_ms) only while the daemon's heartbeat (files.heartbeat) is younger than this. Older means the daemon may be stopped or wedged, not slow: the call fails open at once and marks it down (client.down_marker_ttl_ms). One stale sample only raises a suspicion (files.heartbeat_suspect); the client ends that daemon only once the same heartbeat stayed unchanged for client.heartbeat_confirm_ms, and only when it is the pid holding the singleton lock, verified as this engine's daemon, of this state dir, and still the process generation the heartbeat recorded (start time and executable from the operating system, re-read immediately before the signal); single-flight and under the crash-loop rule. Then it starts a new one. A heartbeat that names another pid or is missing counts as alive. Keep it well above daemon.watchdog_tick_ms and below client.slow_fallback_max_ms less client.slow_wait_margin_ms, so a stop is detected within the first slow call. R0: for the kill itself it is multiplied by the watchdog load factor (daemon.watchdog_load_scale_max_permille), and the kill leaves a tombstone (files.hung_kill). 0 disables the check."
 value = 1500
 env = "AH_ENGINE_HEARTBEAT_STALE_MS"
 min = 0
@@ -1016,6 +1076,24 @@ value = ["client_spawn_attempt", "supervised_start"]
 [health.judged_kinds]
 doc = "Event kinds that mark a crash-loop judgement (a trip, a reset by a new binary, an operator reset): crashes and daemon starts logged before the latest of them no longer count toward the next trip."
 value = ["crashloop", "crashloop_reset", "reset"]
+
+[health.load_exit_per_core_permille]
+doc = "R0 (#969 hardening): a watchdog stall or stuck exit taken while the 1-minute load average per core is above this (permille; 1500 = 1.5 runnable threads per core) is logged as health.load_exit_kind instead of watchdog. It is still a restart (the degraded summary shows it; metric watchdog_exits counts it by kind and code) but it never counts toward the crash-loop rule (client.crash_n): four such exits in ten minutes used to latch the engine off for client.crash_cooldown_s with every guard passing. The spawn-rate rule (client.spawn_n) still applies. No load reading = not a load exit."
+value = 1500
+min = 0
+unit = "permille"
+
+[health.load_exit_kind]
+doc = "R0 (#969 hardening): the event-log kind of a watchdog exit taken under load (health.load_exit_per_core_permille). It must not be listed in health.crashy_kinds."
+value = "watchdog_load"
+
+[health.hung_kill_kind]
+doc = "R0 (#969 hardening): the event-log kind the reap of a daemon a client ended as hung (files.hung_kill) logs when the load per core at the kill was above health.load_exit_per_core_permille. Not in health.crashy_kinds: a client ending a daemon a starved machine made look hung must not latch the crash-loop cooldown. On an idle machine the same kill is logged as a crash with this code, so a daemon that really wedges still latches."
+value = "hung_kill"
+
+[health.rss_load_kind]
+doc = "R0 (#969 hardening): the event-log kind of an rss-cap exit (daemon.rss_cap_kb) taken while the load per core is above health.load_exit_per_core_permille: more requests run at once under load and memory rises with them, so the trip is the load, not a leak. Not in health.crashy_kinds, so it can not latch the crash-loop cooldown; the degraded summary still names it. At or under the bar (or with no load reading) the trip stays the crash-loop kind rss."
+value = "rss_load"
 
 [health.crashy_kinds]
 doc = "Event kinds that count toward the crash-loop threshold."
@@ -2911,6 +2989,14 @@ value = { kind = "counter", unit = "requests", labels = [] }
 doc = "Graceful drains started by SIGINT (the same drain as SIGTERM)."
 value = { kind = "counter", unit = "drains", labels = [] }
 
+[metric.watchdog_exits]
+doc = "R0 (#969 hardening): watchdog-forced exits by kind (watchdog = counts toward the crash-loop rule; health.load_exit_kind = taken under load, does not) and code (stall, stuck)."
+value = { kind = "counter", unit = "exits", labels = ["kind", "code"] }
+
 [metric.daemon_exits]
 doc = "Daemon exits begun, by kind (health.exit_kinds): idle, rss, memory, handoff, sigterm, stall, and the rest. Counted when the drain begins."
 value = { kind = "counter", unit = "exits", labels = ["kind"] }
+
+[metric.deadline_load_scaled]
+doc = "#969: guard requests whose deadlines a loaded machine stretched (daemon.load_scale_max_permille), by hook event."
+value = { kind = "counter", unit = "requests", labels = ["event"] }

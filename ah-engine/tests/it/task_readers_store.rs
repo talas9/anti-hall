@@ -138,7 +138,8 @@ fn tasklist_hygiene_counts_the_open_tasks_of_the_store() {
     s.store(&vec!["pending"; 13]);
     let tr = s.transcript("completed");
     let payload = json!({"hook_event_name": "PostToolUse", "tool_name": "TaskCreate", "session_id": SID, "cwd": s.dir.join("proj"), "transcript_path": tr, "tool_input": {"subject": "one more"}});
-    let out = s.check("tasklist-hygiene", &payload, &[]);
+    // the budget line is the open-task limit with the task window off; with it on (the default, GH #982) the window size is the limit
+    let out = s.check("tasklist-hygiene", &payload, &[("ANTIHALL_TASK_WINDOW", "0")]);
     assert!(out.contains("14 open tasks (budget 12)"), "13 pending in the store plus the new one: {out}");
 }
 

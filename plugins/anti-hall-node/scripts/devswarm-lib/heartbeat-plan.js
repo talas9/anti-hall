@@ -36,7 +36,7 @@ function cmdPlan(sub, id, flags, ctx) {
     if (!found) return { ok: false, action: 'plan', sub, id, reason: 'no-plan' };
     return { ok: true, action: 'plan', sub, id, key: found.key, label: planLib.finishLabel(found.plan, now), plan: found.plan };
   }
-  if (sub !== 'set') return { ok: false, action: 'plan', error: 'usage: devswarm.js plan set <id> --steps "1. …\\n2. …"|--steps-file <path> [--scope glob,glob] | plan show <id>' };
+  if (sub !== 'set') return { ok: false, action: 'plan', error: 'usage: devswarm.js plan set <id> --steps $\'1. …\\n2. …\'|--steps-file <path> [--scope glob,glob] | plan show <id>' };
   let text = one(flags, 'steps');
   const file = one(flags, 'steps-file');
   if (text === undefined && file !== undefined) {
@@ -153,7 +153,7 @@ function applyHeartbeatPlan(id, flags, ctx, now) {
   const found = planLib.findPlan(home, planRefFor(home, id, ctx));
   if (!found) {
     if (stepRaw === undefined) return undefined;
-    return { ok: false, reason: 'no-plan', hint: 'no step plan for ' + id + ' — run `devswarm.js plan set ' + id + ' --steps "1. …\\n2. …"` first; the heartbeat itself was recorded' };
+    return { ok: false, reason: 'no-plan', hint: 'no step plan for ' + id + ' — run `devswarm.js plan set ' + id + ' --steps $\'1. …\\n2. …\'` first; the heartbeat itself was recorded' };
   }
   const status = one(flags, 'status') !== undefined ? String(one(flags, 'status')) : 'doing';
   let out = null;

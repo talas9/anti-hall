@@ -459,7 +459,7 @@ mod tests {
         let seen = on.notice.clone().unwrap_or_else(|| panic!("a notice turn is noted"));
         let mut skipped: Vec<&str> = seen.skipped.iter().map(|i| i.split([':', '#']).next().unwrap_or(i)).collect();
         skipped.sort_unstable();
-        let mut gone = vec!["verify-first", "task-tracker", "procwatch-advisory", "gh-rt-advisory", "switch-notice"];
+        let mut gone = vec!["task-tracker", "procwatch-advisory", "gh-rt-advisory", "switch-notice"];
         gone.sort_unstable();
         assert_eq!((seen.kind.as_str(), skipped), ("notification", gone));
         // switched off: still noted (measured before the switch is turned on), nothing dropped
@@ -467,7 +467,7 @@ mod tests {
         assert!(human.notice.is_none());
         let kept: Vec<String> = on.items.iter().map(|i| i.entry.id.clone()).collect();
         let skipped: Vec<String> = on.dropped.iter().filter(|(_, o)| matches!(o, Outcome::SkippedPredicate)).map(|(id, _)| id.clone()).collect();
-        for gone in ["verify-first", "task-tracker", "procwatch-advisory", "gh-rt-advisory", "switch-notice"] {
+        for gone in ["task-tracker", "procwatch-advisory", "gh-rt-advisory", "switch-notice"] {
             assert!(!kept.iter().any(|k| k.starts_with(gone)), "{gone} still planned: {kept:?}");
             assert!(skipped.iter().any(|k| k.starts_with(gone)), "{gone} not recorded as skipped: {skipped:?}");
         }

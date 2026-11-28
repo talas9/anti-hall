@@ -33,6 +33,21 @@ use std::path::{Path, PathBuf};
 /// (file suffix, substring of the offending line, reason it is structural).
 const ALLOW: &[(&str, &str, &str)] = &[
     (
+        "src/meshw/stages.rs",
+        "static STAGES",
+        "the thread-local record of one mesh send's stage times (GH #845), off (None) until the CLI front arms it: an initial empty state, not a tunable",
+    ),
+    (
+        "src/meshw/send.rs",
+        "static LAST_ACK",
+        "a thread-local flag that the append just stored an explicit ack, so the native wake after it is skipped (GH #845): an initial false, not a tunable",
+    ),
+    (
+        "src/loadscale.rs",
+        "static TEST_LOAD",
+        "the test-only stand-in for the load average (cfg(test), none = no load) so a loaded test machine moves no deadline: test state, not a tunable",
+    ),
+    (
         "src/transcript/scan.rs",
         "static FREED",
         "the condition variable that wakes a request waiting for its turn at reading a transcript window: synchronisation state, not a tunable",
@@ -46,6 +61,11 @@ const ALLOW: &[(&str, &str, &str)] = &[
         "src/transcript/scan.rs",
         "static PEAK",
         "an empty thread-local high-water mark of the bytes this thread held for transcript reads until the check's cost is observed: an initial zero, not a tunable",
+    ),
+    (
+        "src/overload.rs",
+        "static SHED",
+        "a thread-local flag: whether the request this worker serves runs in shed mode (#969), set per request; an initial false, not a tunable",
     ),
     (
         "src/transcript/scan.rs",
@@ -244,6 +264,7 @@ const ALLOW: &[(&str, &str, &str)] = &[
     ("src/memdiag.rs", "static ARRIVED", "a condition variable the snapshot waits on: a language construct, not a value"),
     ("src/memdiag.rs", "static REPORTED", "a thread-local marker initialised to zero (which snapshot this worker already answered): state, not a tunable"),
     ("src/script/tasks_cache.rs", "let mut b = [0u8; 1]", "a one-byte read buffer for the byte before a window start: structural, not a tunable"),
+    ("src/script/tasks_cache.rs", "static DIGEST_READ", "a test-only thread-local byte counter initialised to zero (the verification reads a measurement test counts): state, not a tunable"),
     ("src/script/evidence_walk.rs", "static MINE", "a thread-local handle initialised to zero (the walk this worker made last): state, not a tunable"),
     ("src/load.rs", "static SCAN_BYTES", "a thread-local counter initialised to zero: state, not a tunable"),
     ("src/load.rs", "static CHECK_SCAN_BYTES", "a thread-local counter initialised to zero: state, not a tunable"),
@@ -273,6 +294,7 @@ const ALLOW: &[(&str, &str, &str)] = &[
     ),
     ("src/checks/scripted.rs", "const fn new(", "the constructor signature of the registry identity above"),
     ("src/script/mod.rs", "static POOL", "a thread-local slot for the worker's interpreter, initialised empty: state, not a tunable"),
+    ("src/script/mod.rs", "static CALL", "a thread-local slot for the tool call being decided, initialised empty: state, not a tunable"),
     ("src/script/mod.rs", "static POLLS", "a thread-local count of the interpreter's interrupt polls, starting at the type's default: state, not a tunable"),
     ("src/script/host.rs", "static CLOCK", "a thread-local clock override slot initialised empty (tests inject time): state, not a tunable"),
     (
@@ -351,6 +373,7 @@ const ALLOW: &[(&str, &str, &str)] = &[
         "a thread-local slot initialised empty (which code path and cause the probe reads of this thread are attributed to): state, not a tunable",
     ),
     ("src/deadline.rs", "static REQ", "a thread-local slot initialised empty (the request being served): state, not a tunable"),
+    ("src/deadline.rs", "static LOAD", "a thread-local slot initialised empty (#969: the load factor the request carries): state, not a tunable"),
     ("src/deadline.rs", "static EVENT", "a thread-local slot initialised empty (the hook event of the request being served): state, not a tunable"),
     ("src/deadline.rs", "static STAGED", "a thread-local list initialised empty (the state writes a request staged): state, not a tunable"),
     ("src/deadline.rs", "static PEER", "a thread-local slot initialised empty (the connection of the request being served): state, not a tunable"),

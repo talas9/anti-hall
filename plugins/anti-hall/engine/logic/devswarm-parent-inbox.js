@@ -537,7 +537,7 @@ function piRoster(ctx, summary) {
   if (Array.isArray(ws)) { ah.unable('devswarm-parent-inbox:workspaces_array'); ws = null; }
   var summaryWorkspaces = ws !== null && typeof ws === 'object' ? ws : {};
   var ids = Object.keys(summaryWorkspaces);
-  var out = { rows: [], attention: [], archiveList: [], idleCands: [], idleKeep: [], stallCands: [], stallKeep: [], stallSince: {}, stallSinceRel: null, ownExtra: 0, ownExtraSig: [], ownExtraUrgency: null, deferral: null, snapUnreadable: false };
+  var out = { rows: [], attention: [], archiveList: [], idleCands: [], idleKeep: [], stallCands: [], stallKeep: [], stallSince: {}, flagCands: [], stallSinceRel: null, ownExtra: 0, ownExtraSig: [], ownExtraUrgency: null, deferral: null, snapUnreadable: false };
   var prevSince = {};
   if (idleOrder.stallEnabled() && ctx.key) { out.stallSinceRel = idleOrder.rel(ah.cfg('idle_order.kind_since'), ctx.key); prevSince = idleOrder.read(out.stallSinceRel); }
   // the DevSwarm app's database, read once
@@ -717,13 +717,20 @@ function piRoster(ctx, summary) {
     if (archiveReadyQuiet && !archivedRow && !archivedSuperseded && ds.label === piLabel('not_draining').label) {
       ds = piDisplayStatus(archiveReady, status, activityTs, now, dormant, false, idleAlive, idleMs);
     }
-    var finishCell = piDoneState(entry, heartbeat), planOpen = false;
+    var finishCell = piDoneState(entry, heartbeat), planOpen = false, rowPlanKey = null, working = /^working\b/.test(finishCell);
     // GH #744: idleness is proven only by a plan state that was actually read: tracking off, or a plan the host could not read, is unknown
     var planUnknown = gates.setting('devswarm_prompt.plan_tracking_setting', true, ctx.pluginRoot) === false || !enrich;
     if (enrich && /^working\b/.test(finishCell) && !planUnknown) {
       var pf = JSON.parse(ahHost.piFinish(id, wtPath, now));
       if (pf.unsure) { ah.unable('devswarm-parent-inbox:row_finish'); pf = { label: null }; planUnknown = true; }
-      if (pf.label !== null) { planOpen = !piPlanDone(pf.label); finishCell = piPlanCell(home, pf, dormant, finishCell, rowParked, ctx.sid); }
+      if (pf.label !== null) { planOpen = !piPlanDone(pf.label); rowPlanKey = pf.key; finishCell = piPlanCell(home, pf, dormant, finishCell, rowParked, ctx.sid); }
+    }
+    // #844 item 4: roster flags the Primary must act on (an order line and a parent Stop-gate count, not only a table cell)
+    // (only a child still active: one idle past the idle-order threshold gets the idle order instead, never both)
+    if (enrich && working && !archivedRow && !appArchivedRow && !archivedSuperseded && !rowParked && !dormant && !closedRow
+      && activityTs !== null && now - activityTs < idleOrder.afterMs()) {
+      var flags = piRowFlags(home, id, wtPath, rowPlanKey, heartbeat, entry, now);
+      if (flags.length) out.flagCands.push({ id: id, label: (rowWs && rowWs.label) || piReadName(home, id) || id, reasons: flags });
     }
     // GH #744: a live, unarchived child idle past guards.idleOrderAfterMin with no open plan, no unread mail and no done ruling is a candidate for the idle order
     if (idleOrder.enabled() && !archivedRow && !appArchivedRow && !archivedSuperseded && activityTs !== null && now - activityTs >= idleOrder.afterMs()) {
@@ -1234,6 +1241,37 @@ function piTokens(n) {
   if (v >= ah.cfgNum('devswarm_parent.tokens_million_at')) return text.render(ah.cfg('devswarm_parent.tokens_million'), { v: Math.round(v / (ah.cfgNum('devswarm_parent.tokens_million_at') / 10)) / 10 });
   if (v >= ah.cfgNum('devswarm_parent.tokens_thousand_at')) return text.render(ah.cfg('devswarm_parent.tokens_thousand'), { v: Math.round(v / ah.cfgNum('devswarm_parent.tokens_thousand_at')) });
   return String(Math.round(v));
+}
+
+// #844 item 4: why a working child needs the Primary to ask it (each threshold in devswarm_parent.flag_*): an active straying warning
+// (token burn, drift, ...), a heartbeat older than flag_stale_ms, commits unpushed with the newest older than flag_unpushed_ms.
+function piRowFlags(home, id, wtPath, planKey, heartbeat, entry, now) {
+  if (!ah.settings.bool('devswarm_parent.set_roster_orders')) return [];
+  var out = [], minMs = ah.cfgNum('devswarm_role.pg_ms_per_min');
+  if (piSafeId(planKey)) {
+    var stray = piJson(piDevswarmDir(home) + '/' + ah.cfg('devswarm_parent.dir_stray') + '/' + planKey + '.json');
+    var active = stray && Array.isArray(stray.active) ? stray.active.filter(function (a) { return a && typeof a.signal === 'string'; }) : [];
+    if (active.length) out.push(text.render(ah.cfg('devswarm_parent.flag_reason_straying'), { signals: Array.from(new Set(active.map(function (a) { return a.signal; }))).join('+') }));
+  }
+  var beat = heartbeat && piFinite(heartbeat.ts) ? heartbeat.ts : null;
+  if (beat !== null && beat <= now && now - beat >= ah.cfgNum('devswarm_parent.flag_stale_ms')) {
+    out.push(text.render(ah.cfg('devswarm_parent.flag_reason_stale'), { min: String(Math.floor((now - beat) / minMs)) }));
+  }
+  if (wtPath && piFinite(entry.unpushed) && entry.unpushed > 0) {
+    var sp = JSON.parse(ahHost.piProgress(wtPath));
+    if (!sp.unsure && piFinite(sp.commitMs) && sp.commitMs <= now && now - sp.commitMs >= ah.cfgNum('devswarm_parent.flag_unpushed_ms')) {
+      out.push(text.render(ah.cfg('devswarm_parent.flag_reason_unpushed'), { n: String(entry.unpushed), min: String(Math.floor((now - sp.commitMs) / minMs)) }));
+    }
+  }
+  return out;
+}
+
+// The order line for the flagged children, and the record the parent Stop gate counts (devswarm_parent.dir_flags/<key>.json).
+function piFlagOrder(cands, cliPath) {
+  var max = ah.cfgNum('devswarm_parent.flag_list_max');
+  var list = cands.slice(0, max).map(function (c) { return text.render(ah.cfg('devswarm_parent.flag_item'), { title: c.label, reasons: c.reasons.join(ah.cfg('devswarm_parent.flag_reason_sep')) }); });
+  var more = cands.length > max ? text.render(ah.cfg('devswarm_parent.flag_more'), { n: String(cands.length - max) }) : '';
+  return text.render(ah.cfg('devswarm_parent.msg_flag_order'), { n: String(cands.length), list: list.join(ah.cfg('devswarm_parent.flag_item_sep')) + more, cli: cliPath, id: cands[0].id });
 }
 
 // The finish cell of a working row whose workspace has a step plan: the label with the token burn, the tagged extras and a straying warning.
@@ -1773,6 +1811,16 @@ function piDecide(p, opts) {
       if (g[0].length) pending.push({ kind: 'plain', rank: 156, text: text.render(ah.cfg(g[1]), { n: g[0].length, list: idleOrder.list(g[0], 'idle_order.item_stall'), cli: cliPath, id: g[0][0].id }) });
     });
   }
+  // #844 item 4: the flagged children as an order, and the record the parent Stop gate counts (written every turn the roster is read)
+  var flagRec = null;
+  if (roster !== null && key && cliPath !== null && ah.settings.bool('devswarm_parent.set_roster_orders')) {
+    flagRec = { rel: piRel(ah.cfg('devswarm_parent.dir_flags') + '/' + key + '.json'), body: JSON.stringify({ at: now, ws: roster.flagCands }) };
+    if (roster.flagCands.length) {
+      var fo = piFlagOrder(roster.flagCands, cliPath);
+      pending.push({ kind: 'dedupe', rank: 157, o: { sessionId: sid, key: ah.cfg('devswarm_parent.flag_dedupe_key'), content: fo, transcriptPath: tp, keepaliveTurns: ah.cfgNum('devswarm_parent.nudge_keepalive') }, text: fo });
+      ah.metric('devswarm_roster_flags', ['action', 'ordered'], roster.flagCands.length);
+    }
+  }
   // every dedupe record must be decidable before the first write
   var dedupeOn = sid !== null && !dedupe.disabled();
   for (var i = 0; i < pending.length; i++) {
@@ -1783,6 +1831,7 @@ function piDecide(p, opts) {
   if (syncNotes !== null) syncNotes.writes.forEach(function (w) { ah.state.writeAtomic(w.rel, JSON.stringify({ at: now, ids: w.ids })); });
   if (broadcastRows !== null && broadcastRows.seen !== null) ah.state.writeAtomic(piBroadcastSeenRel(jx.isObj(p) ? p.session_id : undefined), JSON.stringify({ keys: broadcastRows.seen.slice(-ah.cfgNum('devswarm_parent.broadcast_seen_max')) }));
   if (derived !== null) ah.state.writeAtomic(piRel(ah.cfg('devswarm_role.pg_dir_summaries') + '/' + key + '.json'), derived);
+  if (flagRec !== null) ah.state.writeAtomic(flagRec.rel, flagRec.body);
   if (cronCtl !== null && cronCtl.rec !== null) {
     dwCronCtlWrite(sid, cronCtl.rec);
     if (cronCtl.text !== null) ah.metric('devswarm_cron_ctl', ['action', 'delete_ordered']);

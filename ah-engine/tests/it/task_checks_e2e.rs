@@ -738,21 +738,21 @@ fn idle_rule_skips_tasks_named_in_a_running_agents_prompt() {
     let tasks = || vec![idle_task(1, "[P1] port the flutter client", "pending"), idle_task(2, "[P1] port the dart client", "pending")];
     let with_prompt = |t: String, prompt: &str| t.replace("\"prompt\":\"p\"", &format!("\"prompt\":{}", serde_json::json!(prompt)));
     // the brief names #1 and #2
-    let by_ref = with_prompt(idle_transcript(&tasks(), &[("skyflutter impl", Some("skyflutter-impl"))]), "Work on #1 and #2 in the repo.");
+    let by_ref = with_prompt(idle_transcript(&tasks(), &[("app-repo impl", Some("app-repo-impl"))]), "Work on #1 and #2 in the repo.");
     assert!(idle_stop("ir-prompt-ref-on", &by_ref, true, None).is_none(), "on: the prompt names #1 and #2");
     // the brief quotes the subject
-    let by_subj = with_prompt(idle_transcript(&tasks(), &[("skyflutter impl", None)]), "Task: [P1] port the flutter client and [P1] port the dart client.");
+    let by_subj = with_prompt(idle_transcript(&tasks(), &[("app-repo impl", None)]), "Task: [P1] port the flutter client and [P1] port the dart client.");
     assert!(idle_stop("ir-prompt-subj-on", &by_subj, true, None).is_none(), "on: the prompt quotes both subjects");
     // the twin: a brief that names neither leaves both idle
-    let none = with_prompt(idle_transcript(&tasks(), &[("skyflutter impl", None)]), "Build the thing.");
+    let none = with_prompt(idle_transcript(&tasks(), &[("app-repo impl", None)]), "Build the thing.");
     let still = idle_stop("ir-prompt-none-on", &none, true, None).expect("a brief naming no task attends none");
     assert!(still.contains("#1") && still.contains("#2"), "{still}");
     // the twin: a brief that names only #1 leaves #2 idle
-    let one = with_prompt(idle_transcript(&tasks(), &[("skyflutter impl", None)]), "Work on #1 only.");
+    let one = with_prompt(idle_transcript(&tasks(), &[("app-repo impl", None)]), "Work on #1 only.");
     let r = idle_stop("ir-prompt-one-on", &one, true, None).expect("#2 is still unattended");
     assert!(r.contains("#2") && !r.contains("#1"), "{r}");
     // the twin: GitHub references in the brief are not task numbers (PR #1, issues #1 and #2, owner/repo#2)
-    let gh = with_prompt(idle_transcript(&tasks(), &[("skyflutter impl", None)]), "Review PR #1, then issues #1 and #2 in acme/app#2.");
+    let gh = with_prompt(idle_transcript(&tasks(), &[("app-repo impl", None)]), "Review PR #1, then issues #1 and #2 in acme/app#2.");
     let g = idle_stop("ir-prompt-gh-on", &gh, true, None).expect("GitHub references attend no task");
     assert!(g.contains("#1") && g.contains("#2"), "{g}");
 }
@@ -772,6 +772,44 @@ fn idle_rule_does_not_treat_actionable_text_as_clock_waiting_or_blocked() {
         t.description = desc;
         assert!(idle_stop(&format!("ir-tw-{i}"), &idle_transcript(&[t], &[]), true, None).is_none(), "{desc:?} is a stated wait");
     }
+}
+
+/// One teammate spawn (an Agent call with a `name`, answered by a `teammate_spawned` result) at `ts`, plus an idle report at `idle`.
+fn teammate_spawn(description: &str, name: &str, ts: &str, idle: Option<&str>) -> String {
+    use serde_json::json;
+    let call = json!({"type": "assistant", "timestamp": ts, "message": {"role": "assistant", "content": [{"type": "tool_use", "id": format!("toolu_tm_{name}"), "name": "Agent",
+        "input": {"description": description, "name": name, "prompt": "p", "run_in_background": "true"}}]}});
+    let result = json!({"type": "user", "timestamp": ts, "toolUseResult": {"status": "teammate_spawned", "name": name, "agent_id": format!("a{name}-7cd4945d444f4701")},
+        "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": format!("toolu_tm_{name}"), "content": [{"type": "text", "text": "Spawned successfully.\nThe agent is now running and will receive instructions via mailbox."}]}]}});
+    let mut out = format!("{call}\n{result}\n");
+    if let Some(at) = idle {
+        let body = json!({"type": "idle_notification", "from": name, "timestamp": at, "idleReason": "available"});
+        let report = json!({"type": "user", "timestamp": at, "message": {"role": "user", "content": format!("Another Claude session sent a message:\n<teammate-message teammate_id=\"{name}\">\n{body}\n</teammate-message>")}});
+        out.push_str(&format!("{report}\n"));
+    }
+    out
+}
+
+/// #965 item 6: a teammate spawned for a pending task ("#4 …" in its description) works on its spawn prompt before any message is
+/// sent to it; the transcript scan listed a teammate only after a send, so the idle check named #4 while its agent ran.
+#[test]
+fn idle_rule_skips_a_pending_task_named_by_a_teammate_busy_on_its_spawn_prompt() {
+    let base = || idle_transcript(&[idle_task(4, "[P1] land the trades work", "pending")], &[]);
+    let fresh = "2999-01-01T00:00:00.000Z";
+    let busy = base() + &teammate_spawn("#4 Land trades work", "land-trades", fresh, None);
+    assert!(idle_stop("ir-tm-busy", &busy, true, None).is_none(), "a teammate busy on its spawn prompt attends #4");
+    // true positive: the teammate reported idle (finished its prompt), so #4 is idle again
+    let done = base() + &teammate_spawn("#4 Land trades work", "land-trades", fresh, Some("2999-01-01T00:00:05.000Z"));
+    let r = idle_stop("ir-tm-done", &done, true, None).expect("a teammate that went idle no longer attends #4");
+    assert!(r.contains("#4"), "{r}");
+    // true positive: a teammate silent past agent_scan.pending_silence_ms no longer counts as running
+    let stale = base() + &teammate_spawn("#4 Land trades work", "land-trades", "2000-01-01T00:00:00.000Z", None);
+    let r = idle_stop("ir-tm-stale", &stale, true, None).expect("a silent teammate does not attend #4");
+    assert!(r.contains("#4"), "{r}");
+    // true positive: a busy teammate that names another task leaves #4 idle
+    let other = base() + &teammate_spawn("#5 something else", "other-work", fresh, None);
+    let r = idle_stop("ir-tm-other", &other, true, None).expect("a teammate naming #5 does not attend #4");
+    assert!(r.contains("#4"), "{r}");
 }
 
 // ---- #390: the task snapshot through two real Stops ----

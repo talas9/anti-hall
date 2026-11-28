@@ -102,7 +102,13 @@ pub enum Exch {
 /// The longest one exchange waits for its reply: the deadline, extended to the event's `client.slow_fallback_max_ms` less `client.slow_wait_margin_ms` (a daemon
 /// that is alive answers late rather than never; the wrapper's watchdog waits for the whole `client.slow_fallback_max_ms`).
 fn wait_window(deadline: Duration) -> Duration {
-    let max = CALL_EVENT.with(|e| Duration::from_millis(defaults::num_for_event("client.slow_fallback_max_ms", "client.slow_fallback_event_ms", &e.borrow())));
+    // #969: a loaded machine stretches a guard event's late wait by the factor the launcher fitted; the request carries the same one
+    // to the daemon, so its ceiling moves with it
+    let max = CALL_EVENT.with(|e| {
+        let e = e.borrow();
+        let ms = defaults::num_for_event("client.slow_fallback_max_ms", "client.slow_fallback_event_ms", &e);
+        Duration::from_millis(crate::loadscale::scale(ms, crate::deadline::client_load_factor(&e)))
+    });
     let ends = if max.is_zero() { Duration::ZERO } else { max.saturating_sub(defaults::millis("client.slow_wait_margin_ms")) };
     deadline.max(ends)
 }
@@ -159,7 +165,9 @@ fn stalled(idle_seen: &mut Option<u128>) -> Option<Stall> {
     if GATE_OFF.get() {
         return None;
     }
-    let limit = defaults::millis("client.progress_stale_ms");
+    // #969: a loaded machine stretches the progress bound by the factor the launcher fitted, as it does the late wait
+    let factor = CALL_EVENT.with(|e| crate::deadline::client_load_factor(&e.borrow()));
+    let limit = Duration::from_millis(crate::loadscale::scale(defaults::num("client.progress_stale_ms"), factor));
     if limit.is_zero() {
         return None;
     }
@@ -183,7 +191,9 @@ fn stalled(idle_seen: &mut Option<u128>) -> Option<Stall> {
         return Some(Stall::Idle(defaults::render("msg.client_no_progress", &[("age", &"idle"), ("limit", &limit.as_millis())])));
     }
     *idle_seen = None;
-    let age = hb.and_then(|hb| hb.progress_ms.map(|p| Duration::from_millis(p) + hb.age));
+    // #969: the worker serving THIS call's request, when the daemon names it (files.heartbeat_peers); else the longest-silent busy
+    // worker's figure (one slow check elsewhere then still fails this call open, as before)
+    let age = health::peer_progress(std::process::id()).or_else(|| hb.and_then(|hb| hb.progress_ms.map(|p| Duration::from_millis(p) + hb.age)));
     if age.is_some_and(|a| a < limit) {
         return None;
     }
@@ -596,6 +606,13 @@ fn daemon_gone(sock: &Path) -> Option<&'static str> {
 
 /// #905: while the breaker is open, is a daemon process still there? The same proof as [`mark_unusable`] (`client.down_requires_gone`
 /// 0 = never: the open breaker passes everything, as before). A crash loop or the down marker still passes everything.
+/// R0 (#969 hardening review): whether a crash-loop cooldown of `cooldown` with `left` remaining still holds risky calls: the trip is
+/// younger than `client.crashloop_hold_max_ms` (0 = never hold).
+fn crashloop_holds(cooldown: Duration, left: Duration) -> bool {
+    let max = defaults::millis("client.crashloop_hold_max_ms");
+    !max.is_zero() && cooldown.saturating_sub(left) < max
+}
+
 fn breaker_daemon_there() -> bool {
     defaults::num("client.down_requires_gone") != 0
         && health::crashloop_remaining().is_none()
@@ -955,6 +972,22 @@ fn attempt_with(payload: &[u8], cfg: &ClientConfig, answer_now: bool, hold_wait_
     // #905: an open breaker with a daemon process still there (loaded, stopped) is load, as the slow marker is: risky calls are
     // held below; it passes everything only once the daemon is provably gone (a broken install must not block every push)
     let breaker_load = health::breaker_remaining().is_some() && breaker_daemon_there();
+    // R0 (#969 hardening review): a crash-loop cooldown used to pass every call for client.crash_cooldown_s, so a latch was a silent
+    // guard outage. For its first client.crashloop_hold_max_ms it is treated as load: a guard call in a dispatch.capacity_hold
+    // class (a push, merge, delete, deploy) is held and anything else passes; past that backstop it passes everything, so a broken
+    // install never blocks every push for the whole cooldown.
+    let crashloop_hold = !breaker_load && health::crashloop_remaining().is_some_and(|left| crashloop_holds(cfg.crash_cooldown, left));
+    if crashloop_hold {
+        note_unavailable();
+        LAST_SLOW.set(true);
+        health::log_event("client_skip", "daemon", defaults::text("msg.client_skip_crashloop_hold"));
+        crate::obs::counters::handback_why(
+            crate::obs::counters::Handback::Abandoned,
+            "client:crashloop_hold",
+            defaults::text("msg.client_skip_crashloop_hold"),
+        );
+        return None;
+    }
     if !breaker_load && (health::breaker_remaining().is_some() || health::crashloop_remaining().is_some() || daemon_down_marked()) {
         note_unavailable();
         health::log_event("client_skip", "daemon", defaults::text("msg.client_skip"));
@@ -1211,10 +1244,14 @@ fn replace_hung_daemon(cfg: &ClientConfig, why: &str) -> bool {
         return false;
     }
     let Some(_spawn_lock) = spawn_lock() else { return false };
-    let stale = defaults::millis("client.heartbeat_stale_ms");
+    // R0 second path: a starved machine makes a working daemon's heartbeat old too; the kill bound stretches with the load as the
+    // watchdog's do, and the kill leaves a tombstone so the reap does not log it as a crash when the load caused it
+    let load = crate::loadscale::per_core();
+    let stale = Duration::from_millis(crate::loadscale::scale(defaults::num("client.heartbeat_stale_ms"), health::watchdog_factor(load)));
     let still_hung = |hb: &health::Heartbeat| hb.age > stale && health::hang_confirmed(hb);
     let Some(hb) = health::heartbeat_of_lock_holder().filter(|hb| still_hung(hb)) else { return false };
     let pid = hb.pid;
+    health::note_hung_kill(pid, load);
     let unchanged = || health::heartbeat_of_lock_holder().is_some_and(|now| now.ident == hb.ident && now.mtime_ns == hb.mtime_ns && still_hung(&now));
     let killed = pid != std::process::id()
         && hb.generation().is_some()
@@ -1225,6 +1262,7 @@ fn replace_hung_daemon(cfg: &ClientConfig, why: &str) -> bool {
         // running, and the client must be descheduled exactly across that moment.
         && crate::procid::signal_verified(pid, libc::SIGKILL, || hb.names_running() && unchanged());
     if !killed {
+        health::clear_hung_kill(); // the daemon lives on: a later death of its own must not be read as this kill
         health::log_event("client_hung_spared", "daemon", &defaults::render("msg.log_hung_spared", &[("pid", &pid), ("why", &why)]));
         return false;
     }
@@ -1459,6 +1497,8 @@ fn env_advisory_output(raw: &str, existing: &str) -> Option<String> {
 
 /// `engine hook`: read stdin, print the result and exit with its code (0 when the engine answered or could not).
 pub fn hook_main(args: &[String]) -> i32 {
+    // #969: the hook call waits on the daemon's answer; on a loaded machine it runs in the daemon's QoS class (daemon.qos)
+    crate::qos::apply_self("client");
     let res = std::panic::catch_unwind(|| {
         let max = defaults::num("client.max_stdin");
         let mut raw = Vec::new();
@@ -1845,6 +1885,18 @@ mod tests {
         assert_eq!(st.count(kind, Some(defaults::text("units.kickstart_miss"))), 1);
         assert_eq!(st.count(kind, Some(defaults::text("units.kickstart_fallback"))), 1);
         assert!(supervisor_unhealthy_marked(), "later calls skip the ask");
+    }
+
+    /// R0 (#969 hardening review): a crash-loop cooldown holds risky calls only for its first client.crashloop_hold_max_ms.
+    #[test]
+    fn a_crash_loop_cooldown_holds_only_for_its_backstop() {
+        let max = defaults::millis("client.crashloop_hold_max_ms");
+        let cooldown = defaults::secs("client.crash_cooldown_s");
+        assert!(!max.is_zero() && max < cooldown, "the shipped backstop is shorter than the cooldown");
+        assert!(crashloop_holds(cooldown, cooldown), "a trip this moment holds");
+        assert!(crashloop_holds(cooldown, cooldown - max + Duration::from_millis(1)), "just inside the backstop holds");
+        assert!(!crashloop_holds(cooldown, cooldown - max), "at the backstop it passes");
+        assert!(!crashloop_holds(cooldown, Duration::from_secs(1)), "late in the cooldown it passes");
     }
 
     #[test]

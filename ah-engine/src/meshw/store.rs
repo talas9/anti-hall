@@ -222,6 +222,58 @@ impl MeshStore {
         Ok(Appended { inserted: true, seq })
     }
 
+    /// [`append_mesh_row`](Self::append_mesh_row) with the GH #845 columns (`chat_kind`, `wake_audience`, `sender_kind`) set in the SAME
+    /// transaction, so no reader ever sees the row without them. A store whose ALTER at open failed has no such columns: the row is
+    /// kept (the extras are dropped, counted as `mesh_extras_dropped`), as a legacy row every reader classifies on read.
+    pub fn append_mesh_row_with(&self, m: &MeshRow, chat_kind: Option<&str>, audience: Option<&str>, sender_kind: Option<&str>) -> Res<Appended> {
+        if chat_kind.is_none() && audience.is_none() && sender_kind.is_none() {
+            return self.append_mesh_row(m);
+        }
+        let c = self.conn();
+        let out = retry_busy(|| {
+            c.execute_batch(sql::MESHW_BEGIN_IMMEDIATE)?;
+            let r = (|| -> rusqlite::Result<Appended> {
+                let q = if m.hash.is_some() { sql::MESHW_APPEND_OR_IGNORE } else { sql::MESHW_APPEND };
+                let changes = c.prepare_cached(q)?.execute(params![
+                    m.workspace_id,
+                    m.ts,
+                    m.hash,
+                    m.body,
+                    m.sender,
+                    m.recipient,
+                    m.mtype,
+                    m.urgency,
+                    i64::from(m.is_heartbeat),
+                    i64::from(m.needs_reply),
+                    m.orig_hash,
+                    m.instance_nonce
+                ])?;
+                if changes == 0 {
+                    return Ok(Appended { inserted: false, seq: None });
+                }
+                let id = c.last_insert_rowid();
+                match c.prepare_cached(sql::MESHW_SET_EXTRAS).and_then(|mut s| s.execute(params![chat_kind, audience, sender_kind, id])) {
+                    Ok(_) => {}
+                    Err(e) if is_busy(&e) => return Err(e),
+                    Err(_) => crate::metrics::bump_shared("mesh_extras_dropped", &[]),
+                }
+                let seq: Option<i64> = c.prepare_cached(sql::MESHW_SEQ_OF_ID)?.query_row(params![id], |r| r.get(0)).ok();
+                Ok(Appended { inserted: true, seq })
+            })();
+            match r {
+                Ok(v) => {
+                    c.execute_batch(sql::MESHW_COMMIT)?;
+                    Ok(v)
+                }
+                Err(e) => {
+                    crate::discard::harmless(c.execute_batch(sql::MESHW_ROLLBACK)); // keep: the failure itself is returned
+                    Err(e)
+                }
+            }
+        })?;
+        Ok(out)
+    }
+
     /// `appendMessage(m)` (the native-ingest insert): `Ok(true)` when a row was inserted, `Ok(false)` for a duplicate hash.
     pub fn append_message(&self, workspace_id: &str, ts: i64, hash: Option<&str>, body: &str) -> Res<bool> {
         self.append_message_from(workspace_id, ts, hash, body, None)
@@ -302,12 +354,25 @@ impl MeshStore {
         Ok(())
     }
 
+    /// Raise `id`'s broadcast cursor to `target` (never past the broadcast head, never down) in one statement, so two readers that
+    /// ack at once cannot move it back (review P2-7). The cursor after the write.
+    pub fn raise_broadcast_cursor(&self, id: &str, target: i64, now: i64) -> Res<i64> {
+        self.conn().prepare_cached(sql::MESHW_RAISE_BROADCAST_CURSOR)?.execute(params![id, target, now])?;
+        Ok(self.reader().broadcast_cursor(id)? as i64)
+    }
+
     /// `advanceBroadcastCursor(id)`: move `id`'s broadcast cursor to the head of the broadcast partition; returns it.
     pub fn advance_broadcast_cursor(&self, id: &str, now: i64) -> Res<i64> {
         let head: Option<f64> = self.conn().prepare_cached(sql::MESHW_BROADCAST_HEAD)?.query_row([], |r| r.get::<_, Option<f64>>(0))?;
         let head = head.filter(|f| f.is_finite()).map(|f| f as i64).unwrap_or(0);
         self.conn().prepare_cached(sql::MESHW_SET_BROADCAST_CURSOR)?.execute(params![id, head, now])?;
         Ok(head)
+    }
+
+    /// The highest broadcast seq in the store (0 when none).
+    pub fn broadcast_head(&self) -> Res<i64> {
+        let head: Option<f64> = self.conn().prepare_cached(sql::MESHW_BROADCAST_HEAD)?.query_row([], |r| r.get::<_, Option<f64>>(0))?;
+        Ok(head.filter(|f| f.is_finite()).map_or(0, |f| f as i64))
     }
 
     /// `readerCursorTxn`: write every record in ONE `BEGIN IMMEDIATE` transaction (retried whole on SQLITE_BUSY).

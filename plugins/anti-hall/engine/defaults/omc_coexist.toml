@@ -1,0 +1,331 @@
+# ---- Coexistence with OMC / OMX text and plugins (GH #981) ----
+# Instruction text of another orchestration layer (OMC for Claude, OMX for Codex) can stay in a user's global instructions after its
+# plugin is switched off, and keeps steering models: handovers written to its folder, blocking questions, its usage cache, its loops.
+# These keys keep anti-hall's own rules in force and defer to the other plugin only while it is really on.
+
+[omc_coexist.owner_omc]
+doc = "The owner name of a foreign path that belongs to the OMC plugin: such a path is left alone while OMC is enabled (task_guard.omc_plugin_id in the user's or the project's Claude Code settings). An owner with no detector (omx) is treated as off."
+value = "omc"
+
+# ---- 1. Handovers at a foreign path ---------------------------------------------------------------------------------
+
+[edit_guard.foreign_handover_setting]
+doc = "Redirect new handovers written outside anti-hall's handover folder. Switch guards.handoverRedirect (default on): a NEW file at a path of edit_guard.foreign_handover_globs (another plugin's hand-off folder, or a HANDOVER*.md anywhere) that is not under edit_guard.handover_home_globs is blocked for every agent with the exact session handover path to write instead. A row whose owner plugin is on keeps its folder; an existing file stays editable. Off: such writes follow the usual edit-guard rules."
+value = { section = "guards", key = "handoverRedirect", kind = "bool", env = "ANTIHALL_HANDOVER_REDIRECT", aliases = [], option = "", manifest_default = "", default = true }
+
+[edit_guard.foreign_handover_globs]
+doc = "Handover-shaped paths, relative to the session's directory and matched case-insensitively (`**` any depth, `*` one segment), that are redirected to the session handover path when the file does not exist yet. `owner` names the plugin whose own folder it is (omc_coexist.owner_omc): while that plugin is enabled the row is skipped. Empty owner: always redirected."
+value = [
+  { glob = ".omc/handoffs/**", owner = "omc" },
+  { glob = "**/.omc/handoffs/**", owner = "omc" },
+  { glob = ".omx/handoffs/**", owner = "omx" },
+  { glob = "**/.omx/handoffs/**", owner = "omx" },
+  { glob = "handover*.md", owner = "" },
+  { glob = "**/handover*.md", owner = "" },
+]
+
+[edit_guard.handover_home_globs]
+doc = "anti-hall's own handover folder (relative to the session's directory, case-insensitive): never redirected."
+value = [".anti-hall/handovers/**", "**/.anti-hall/handovers/**"]
+
+[edit_guard.msg_foreign_what]
+doc = "Heading of the block on a new handover outside anti-hall's handover folder ({tool} is the tool name, {file} the target, kept in the saved details)."
+value = "{tool} of a new handover outside .anti-hall/handovers/ is not allowed."
+
+[edit_guard.msg_foreign_why]
+doc = "Why a handover outside anti-hall's handover folder is blocked."
+value = "Handovers live under .anti-hall/handovers/<date>/<session>/, where resume and the handover index find them; another folder is never read on resume."
+
+[edit_guard.msg_foreign_instead]
+doc = "What to do instead ({path} is the repository-relative path of this session's next handover; the absolute path is in the saved details). Kept under 115 characters with a full session id, or the visible line falls back to the details link."
+value = "write it yourself at {path}."
+
+[metric.edit_guard_handover_redirected]
+doc = "New handovers outside anti-hall's handover folder that edit-guard blocked with the session handover path (guards.handoverRedirect), by tool."
+value = { kind = "counter", unit = "blocks", labels = ["tool"] }
+
+[ctxbudget.handover_hint_setting]
+doc = "Point a plain-words handover request at anti-hall's handover skill. Switch autoHandover.promptHint (default on): a prompt matching ctxbudget.handover_hint_res (and none of ctxbudget.handover_hint_skip_res) gets one context line from auto-handover naming the handover skill and the exact path of this session's next handover, so instruction text of another plugin does not choose the place. Off: nothing is added."
+value = { section = "autoHandover", key = "promptHint", kind = "bool", env = "ANTIHALL_AUTO_HANDOVER_PROMPT_HINT", aliases = [], option = "", manifest_default = "", default = true }
+
+[ctxbudget.handover_hint_res]
+doc = "Regular expressions (case-insensitive) over the start of the prompt that ask for a handover in plain words."
+value = [
+  '\b(?:write|make|create|prepare|produce|save|do|draft|update|refresh)\b[^.?!\n]{0,60}\bhand-?(?:over|off)s?\b',
+  '\bhand-?(?:over|off)\b[^.?!\n]{0,20}\b(?:now|please|doc|document|file|note|notes)\b',
+  '^\s*hand-?(?:over|off)\s*[.!]?\s*$',
+]
+
+[ctxbudget.handover_hint_skip_res]
+doc = "Prompts that already run the handover skill or a slash command (no hint is added)."
+value = ['<command-name>', '(?:^|\s)/(?:anti-hall:)?handover\b', '\$anti-hall-handover\b']
+
+[ctxbudget.handover_hint_prompt_max]
+doc = "Characters of the prompt the handover phrases are tested against."
+value = 2000
+unit = "chars"
+
+[ctxbudget.handover_hint_msg]
+doc = "The handover hint line. Placeholders: {skill} (how to load the skill on this host), {path} (the repository-relative path of this session's next handover)."
+value = "Handover asked: load {skill} and write the handover yourself at {path} (never under .omc/, .omx/ or another plugin's folder; resume reads only .anti-hall/handovers/)."
+
+[ctxbudget.handover_hint_skill_claude]
+doc = "How the handover hint names the handover skill on Claude Code."
+value = "the anti-hall handover skill (/anti-hall:handover)"
+
+[ctxbudget.handover_hint_skill_codex]
+doc = "How the handover hint names the handover skill on Codex."
+value = "the anti-hall-handover skill ($anti-hall-handover)"
+
+[ctxbudget.handover_hint_host_claude]
+doc = "metric.auto_handover_hint host label on Claude Code."
+value = "claude"
+
+[ctxbudget.handover_hint_host_codex]
+doc = "metric.auto_handover_hint host label on Codex."
+value = "codex"
+
+[metric.auto_handover_hint]
+doc = "Prompts that asked for a handover in plain words and got the handover skill and path line (autoHandover.promptHint), by host."
+value = { kind = "counter", unit = "prompts", labels = ["host"] }
+
+# ---- doctor: instruction text that contradicts anti-hall ------------------------------------------------------------
+
+[doctor.omc_text_files]
+doc = "The instruction files doctor reads for text of another orchestration layer that anti-hall contradicts: `base` is home (the home directory) or cwd (the project), `rel` the path under it."
+value = [
+  { base = "home", rel = ".claude/CLAUDE.md" },
+  { base = "home", rel = ".codex/AGENTS.md" },
+  { base = "cwd", rel = "CLAUDE.md" },
+  { base = "cwd", rel = "AGENTS.md" },
+  { base = "cwd", rel = ".claude/CLAUDE.md" },
+]
+
+[doctor.omc_text_base_home]
+doc = "The `base` value of doctor.omc_text_files that means the home directory (any other value is the project)."
+value = "home"
+
+[doctor.omc_text_rules]
+doc = "Lines doctor flags in doctor.omc_text_files: `re` (regular expression, Rust syntax), `msg` (why it matters), `when` = omc_off (only while the OMC plugin is not enabled: the text then steers models with nothing behind it) or always."
+value = [
+  { re = '\.om[cx]/handoffs\b', when = "omc_off", msg = "names another plugin's handover folder; anti-hall handovers go to .anti-hall/handovers/ (edit-guard blocks new ones elsewhere)" },
+  { re = '(?i)\buse\s+`?AskUserQuestion\b', when = "always", msg = "tells agents to ask the owner through AskUserQuestion; anti-hall denies it in a workspace child, under AFK and under a no-stop order (decide, ask the advisor, or ask the Primary on the mesh)" },
+]
+
+[doctor.omc_text_when_off]
+doc = "The `when` value of doctor.omc_text_rules that applies a rule only while the OMC plugin is not enabled."
+value = "omc_off"
+
+[doctor.omc_text_max_bytes]
+doc = "Largest instruction file doctor reads for doctor.omc_text_rules."
+value = 1048576
+unit = "bytes"
+
+[doctor.omc_text_max_findings]
+doc = "Most instruction-text lines doctor lists."
+value = 20
+
+[doctor.omc_text_line_max]
+doc = "Characters of a flagged instruction line doctor shows."
+value = 160
+unit = "chars"
+
+[doctor_msg.head_omc_text]
+doc = "Heading of the doctor section on instruction text that contradicts anti-hall."
+value = "Instruction text from another orchestration layer"
+
+[doctor_msg.omc_text_line]
+doc = "One flagged instruction line. Placeholders: {file}, {line} (number), {why}, {text} (the line, cut)."
+value = "{file}:{line} {why}: {text}"
+
+# ---- 6. Wrapper scripts: comments and main-thread roles -------------------------------------------------------------
+
+[command.sw_role_as_written]
+doc = "Judge role scripts as written. Switch guards.commandDeployScriptsAsWritten (default on): a `sh|bash <script>` whose file name matches command.wrapper_as_written_res (a deploy script, which runs in the main thread) is judged as the wrapper command as written, not by its body (#547), so a test or build step inside the deploy does not label the deploy a heavy command. Off: every wrapper is judged by its body."
+value = { section = "guards", key = "commandDeployScriptsAsWritten", kind = "bool", env = "ANTIHALL_COMMAND_DEPLOY_SCRIPTS_AS_WRITTEN", aliases = [], option = "", manifest_default = "", default = true }
+
+[command.wrapper_as_written_res]
+doc = "Regular expressions (case-insensitive) over a wrapped script's file name that give it a main-thread role (judged as written, command.sw_role_as_written)."
+value = ['^deploy(?:[-_.][^/]*)?\.(?:sh|bash|zsh)$', '[-_]deploy(?:[-_.][^/]*)?\.(?:sh|bash|zsh)$']
+
+[command.wrapper_role_label]
+doc = "The metric.command_wrapper_resolved verdict label of a wrapper judged as written because of its role."
+value = "role"
+
+[command.wrapper_comment_line_re]
+doc = "A line of a wrapped script's body that is a shell comment (dropped before the body is judged: a word in a comment runs nothing)."
+value = '^\s*#'
+
+# ---- 2. Questions ---------------------------------------------------------------------------------------------------
+
+[layers.descriptor_layer_names]
+doc = "Names of the layers `config explain <section.key>` shows for a switch read through a setting descriptor, highest precedence first: the environment variable, settings.json, the shipped default."
+value = ["env", "settings", "default"]
+
+[layers.descriptor_source_other]
+doc = "The source `config explain <section.key>` names when no listed layer holds the effective value (a plugin option or a legacy file decided it)."
+value = "plugin option"
+
+[afk.set_offer_hold]
+doc = "Hold a turn that ends offering work. Switch afk.offerHold (default on): while AFK, or under the session's no-stop order, a final reply whose last afk.offer_tail_lines lines offer work to the owner (afk.offer_res: \"Want me to ...\", \"Let me know if ...\") is held like a turn ending on a question (afk.question_max_holds), with afk.msg_offer_stop. Off: only a last line ending on a question mark is held."
+value = { section = "afk", key = "offerHold", kind = "bool", env = "ANTIHALL_AFK_OFFER_HOLD", aliases = [], option = "", manifest_default = "", default = true }
+
+[afk.offer_res]
+doc = "Regular expressions (case-insensitive) over the last lines of a final reply that offer work to the owner instead of doing it."
+value = [
+  '\b(?:want|would you like|do you want)\s+me\s+to\b',
+  '\b(?:shall|should)\s+i\b[^\n]{0,80}\?',
+  '\blet\s+me\s+know\s+(?:if|whether|when|which)\b',
+  '\bif\s+you(?:\s+would|\x27d)?\s+(?:like|want)(?:\s+(?:me\s+to|it))?,?\s+i\s+(?:can|could|will)\b',
+  '\b(?:say|reply)\s+(?:the\s+word|yes|go)\b',
+]
+
+[afk.offer_tail_lines]
+doc = "How many of the last non-empty lines of a final reply afk.offer_res is tested against."
+value = 3
+
+[afk.msg_offer_stop]
+doc = "Reason of the Stop hold of a turn that ends offering work to the owner while AFK or under a no-stop order."
+value = "Your turn ended offering work to the owner, who is away or told you not to stop. Do instead: do it now and report the result. Only a destructive or irreversible choice the plan does not imply is parked as `- [ ] NEEDS OWNER: <question>` in your progress file; then continue the other parts of the plan."
+
+[afk.action_offer]
+doc = "afk_question_parked action label: a turn ending on an offer of work was held."
+value = "offer"
+
+# ---- 3. Usage source ------------------------------------------------------------------------------------------------
+
+[ctxbudget.set_usage_source]
+doc = "Where usage readings come from. Setting limitConserve.usageSource (default auto): omc-cache reads the OMC plugin's usage cache (ctxbudget.usage_cache), statusline reads anti-hall's own snapshot of the host's rate limits (ctxbudget.usage_statusline_file, written by the statusline), auto takes the fresher of the two. Whatever the source, a snapshot older than ctxbudget.usage_max_stale_ms is unknown: limit conservation, the spawn stand-down and the small-edit relief do not act on it."
+value = { section = "limitConserve", key = "usageSource", kind = "enum", values = ["auto", "omc-cache", "statusline"], env = "ANTIHALL_LIMIT_USAGE_SOURCE", aliases = [], option = "", manifest_default = "auto", default = "auto" }
+
+[ctxbudget.usage_source_section]
+doc = "The settings section of limitConserve.usageSource (read by the statusline's snapshot writer)."
+value = "limitConserve"
+
+[ctxbudget.usage_source_key]
+doc = "The settings key of limitConserve.usageSource (read by the statusline's snapshot writer)."
+value = "usageSource"
+
+[ctxbudget.usage_source_omc]
+doc = "The limitConserve.usageSource value that reads only the OMC usage cache (and stops the statusline snapshot)."
+value = "omc-cache"
+
+[ctxbudget.usage_source_statusline]
+doc = "The limitConserve.usageSource value that reads only anti-hall's statusline snapshot."
+value = "statusline"
+
+[ctxbudget.usage_statusline_file]
+doc = "anti-hall's usage snapshot, relative to the home directory: the host's rate limits as the statusline last saw them, in the usage-cache shape ({timestamp, source, data: {fiveHourPercent, weeklyPercent, ...}})."
+value = ".anti-hall/usage-statusline.json"
+
+[ctxbudget.usage_reader_conserve]
+doc = "metric.usage_snapshot_stale reader label of limit conservation."
+value = "limit-conserve"
+
+[ctxbudget.usage_reader_spawn]
+doc = "metric.usage_snapshot_stale reader label of the spawn stand-down and swarm-guard."
+value = "spawn"
+
+[ctxbudget.usage_reader_edit]
+doc = "metric.usage_snapshot_stale reader label of edit-guard's small-edit relief."
+value = "edit-guard"
+
+[metric.usage_snapshot_stale]
+doc = "Usage readings ignored because the snapshot was older than ctxbudget.usage_max_stale_ms (GH #981), by reader."
+value = { kind = "counter", unit = "readings", labels = ["reader"] }
+
+[statusline.usage_snapshot_min_ms]
+doc = "Least time between two writes of the usage snapshot by the statusline (it is drawn far more often)."
+value = 60000
+unit = "ms"
+
+[statusline.usage_snapshot_map]
+doc = "How the statusline's rate_limits windows map to the usage-cache fields of the snapshot: `window` (the rate_limits entry), `pct` and `resets` (the snapshot fields)."
+value = [
+  { window = "five_hour", pct = "fiveHourPercent", resets = "fiveHourResetsAt" },
+  { window = "seven_day", pct = "weeklyPercent", resets = "weeklyResetsAt" },
+]
+
+[statusline.usage_pct_field]
+doc = "The field of a rate_limits window holding its used percentage."
+value = "used_percentage"
+
+[statusline.usage_resets_field]
+doc = "The field of a rate_limits window holding its reset time; copied only when it is text."
+value = "resets_at"
+
+[statusline.usage_snapshot_source]
+doc = "The `source` the statusline writes into the usage snapshot."
+value = "statusline"
+
+[doctor.usage_stale_hour_ms]
+doc = "Milliseconds in the hour doctor shows a stale usage snapshot's age in."
+value = 3600000
+unit = "ms"
+
+[doctor_msg.head_usage]
+doc = "Heading of the doctor section on a stale usage snapshot."
+value = "Usage readings"
+
+[doctor_msg.usage_stale]
+doc = "A usage snapshot the configured source reads is older than ctxbudget.usage_max_stale_ms. Placeholders: {path}, {hours}."
+value = "{path} is {hours} h old: usage readers ignore it (limitConserve.usageSource; nothing refreshes it, e.g. the OMC plugin is off). Set limitConserve.usageSource = statusline or enable the plugin that writes it."
+
+# ---- 4. Quiet while an OMC loop runs --------------------------------------------------------------------------------
+
+[ctxbudget.set_quiet_on_omc_loop]
+doc = "Stay quiet about stopping points while an OMC loop runs. Switch autoHandover.quietOnOmcLoop (default on): while an OMC autonomous loop is active for the session (the loop state task-guard and tasklist-guard already defer to), auto-handover and its pause nag give no stopping-point, /compact or /clear advice (quiet mode: only the handover refresh). Off: the OMC loop is not considered."
+value = { section = "autoHandover", key = "quietOnOmcLoop", kind = "bool", env = "ANTIHALL_AUTO_HANDOVER_QUIET_ON_OMC_LOOP", aliases = [], option = "", manifest_default = "", default = true }
+
+[ctxbudget.omc_tag]
+doc = "The label of the native_unable counts of the OMC reads made by the context checks."
+value = "ctxbudget"
+
+[metric.auto_handover_quiet_omc]
+doc = "Context checks that stayed quiet about stopping points because an OMC autonomous loop was active (autoHandover.quietOnOmcLoop)."
+value = { kind = "counter", unit = "checks", labels = [] }
+
+# ---- 5. Compact advice next to OMC's context guard ------------------------------------------------------------------
+
+[ctxbudget.set_compact_defer_omc]
+doc = "Defer compact advice to OMC's context guard. Switch guards.compactAdviceDeferToOmc (default on): while the OMC plugin is enabled and its Stop context guard orders /compact (the context between its threshold and its critical level, or it blocked this session within omc_coexist.guard_recent_ms), compact-advice-guard does not block a reply that recommends compacting, so the two never give contrary orders for the same Stop. Off: compact-advice-guard decides alone."
+value = { section = "guards", key = "compactAdviceDeferToOmc", kind = "bool", env = "ANTIHALL_COMPACT_ADVICE_DEFER_TO_OMC", aliases = [], option = "", manifest_default = "", default = true }
+
+[ctxbudget.omc_guard_env]
+doc = "The environment variable OMC's Stop context guard reads its threshold percent from."
+value = "OMC_CONTEXT_GUARD_THRESHOLD"
+
+[ctxbudget.omc_guard_default_pct]
+doc = "OMC's context guard threshold when its environment variable is not set (its shipped default)."
+value = 75
+unit = "percent"
+
+[ctxbudget.omc_guard_critical_pct]
+doc = "The context percent from which OMC's context guard lets a Stop through instead of blocking (its critical level)."
+value = 95
+unit = "percent"
+
+[omc_coexist.guard_file]
+doc = "OMC's per-session context-guard block counter, relative to the home directory: `dir`, then `prefix` + session id + `ext`. It holds only a count, so its modification time is the last block."
+value = { dir = ".claude/projects/.omc-guards", prefix = "context-guard-", ext = ".json" }
+
+[omc_coexist.guard_sid_re]
+doc = "A session id OMC keeps a context-guard counter for (others are never looked up)."
+value = '^[A-Za-z0-9_-]{1,128}$'
+
+[omc_coexist.guard_recent_ms]
+doc = "How recent OMC's context-guard block must be for compact-advice-guard to defer to it."
+value = 120000
+unit = "ms"
+
+[metric.compact_advice_deferred_omc]
+doc = "Compact recommendations compact-advice-guard let through because OMC's context guard orders /compact (guards.compactAdviceDeferToOmc)."
+value = { kind = "counter", unit = "checks", labels = [] }
+
+[doctor_msg.omc_compact_below]
+doc = "OMC's context guard threshold is below anti-hall's compact-advice cutoff and the defer switch is off. Placeholders: {omc}, {cutoff}."
+value = "OMC's context guard orders /compact from {omc}% but anti-hall blocks compact advice below {cutoff}% (autoHandover.pct minus guards.compactAdviceMarginPct): turn guards.compactAdviceDeferToOmc on, or raise OMC_CONTEXT_GUARD_THRESHOLD"
+
+[doctor_msg.omc_compact_below_deferred]
+doc = "OMC's context guard threshold is below anti-hall's compact-advice cutoff; anti-hall defers to it. Placeholders: {omc}, {cutoff}."
+value = "OMC's context guard orders /compact from {omc}%, below anti-hall's compact-advice cutoff {cutoff}%: anti-hall defers to OMC there (guards.compactAdviceDeferToOmc)"

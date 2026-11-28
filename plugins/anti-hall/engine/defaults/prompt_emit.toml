@@ -337,11 +337,31 @@ value = '[\x00-\x1F\x7F-\x9F]'
 
 [idle_sweep.prefilter]
 doc = "A transcript line is read only when it holds one of these (the Node scan's cheap pre-filter, in the same terms)."
-value = ["idle_notification", "Async agent launched successfully", "<task-notification>", "\"name\":\"Agent\"", "\"name\": \"Agent\"", "tool_result", "\"tool_use\"", "\"name\":\"TaskStop\"", "\"name\": \"TaskStop\"", "\"task_status\""]
+value = ["idle_notification", "Async agent launched successfully", "<task-notification>", "\"name\":\"Agent\"", "\"name\": \"Agent\"", "tool_result", "\"tool_use\"", "\"name\":\"TaskStop\"", "\"name\": \"TaskStop\"", "\"task_status\"", "shutdown_approved", "teammate_terminated"]
 
 [idle_sweep.stop_id_sep]
 doc = "The separator of a teammate's TaskStop id (`name@session-xxxx`): in the waiting-teammate scan, a stop (or No task found answer) whose id matches no spawn in the window still names the teammate before the last separator."
 value = "@"
+
+[idle_sweep.end_marks]
+doc = "How a teammate's end shows in a transcript line (#844): its approval of a shutdown request, or the host's terminated notice. A line holding one is read for idle_sweep.end_types and idle_sweep.terminated_type (each must also be in idle_sweep.prefilter)."
+value = ["shutdown_approved", "teammate_terminated"]
+
+[idle_sweep.end_types]
+doc = "Teammate message types that end the teammate that sent them (its `from` is its own id): it is stopped, not finished-and-idle."
+value = ["shutdown_approved"]
+
+[idle_sweep.system_sender]
+doc = "The teammate id of the host's own notices in a teammate report."
+value = "system"
+
+[idle_sweep.terminated_type]
+doc = "The type of the host's notice that a teammate has ended; its name is read from its message by idle_sweep.re_terminated_message."
+value = "teammate_terminated"
+
+[idle_sweep.re_terminated_message]
+doc = "Regular expression (JavaScript syntax) of the host's terminated notice text; group 1 is the teammate's name."
+value = "^(\\S+) has shut down\\.?$"
 
 [idle_sweep.task_stop_marks]
 doc = "How a TaskStop call appears in a transcript line."
@@ -688,6 +708,12 @@ value = 262144
 [idle_order.scan_needles]
 doc = "Text a transcript line must hold to be read by the waiting-teammate scan besides the idle notice type: the tool names that re-task or end a teammate."
 value = ["SendMessage", "TaskStop", "No task found", "teammate_spawned"]
+
+[idle_order.quote_max]
+doc = "Longest piece of a transcript line between two double quotes the waiting-teammate scan keeps to ask whether a line names a teammate (`\"name\"`); a name longer than this is never found in a line, as no teammate name is that long."
+value = 128
+min = 16
+max = 4096
 
 [idle_order.idle_marker]
 doc = "The type of the notice a teammate sends when its turn ends (read from the transcript)."

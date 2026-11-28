@@ -196,7 +196,19 @@ fn kind_word(a: &Agent) -> &'static str {
 
 /// Whether the nudge loop owns this signal for this agent (the plain reminder routes then stay quiet about it).
 pub(crate) fn owns(env: &Env, a: &Agent, sig: &str) -> bool {
-    env.switch("agent_nudge.setting") && trigger_of(sig).is_some() && !escalate::primary(a) && a.kind != kind_name("heartbeat")
+    // the loop opens nudges only for a RUNNING child (`open_new`): for any other state it owns nothing, so the plain reminder route
+    // speaks (idle_open_task is raised only while the agent is NOT running; owning it here left every such flag undelivered)
+    env.switch("agent_nudge.setting") && trigger_of(sig).is_some() && !escalate::primary(a) && a.kind != kind_name("heartbeat") && super::signals::running(a)
+}
+
+/// The live session a delivery about `a` falls back to when its own routes reach nobody (see `signals::remind`).
+pub(super) fn fallback_session(env: &Env, st: &State, a: &Agent) -> Option<String> {
+    target(env, st, a).1
+}
+
+/// Whether a snooze the parent asked for still runs for this child (any trigger): its answer proves the nudge was seen.
+pub(super) fn snoozed(env: &Env, st: &State, a: &Agent, now: u64) -> bool {
+    env.switch("agent_nudge.snooze_setting") && st.nudge_snooze.iter().any(|(k, s)| s.until > now && k.split_once('|').is_some_and(|(c, _)| c == a.id))
 }
 
 /// Tokens as k/M (`agent_nudge.units`).
@@ -415,7 +427,15 @@ fn evidence(a: &Agent, sig: &str, f: &super::Flag, now: u64, why: &str) -> (Stri
     if super::signals::building(a, now) {
         parts.push(ef.str_field("building").to_string());
     } else if spent > 0 && a.progress == f.base_progress {
-        parts.push(defaults::fill(ef.str_field("waste"), &[("tokens", &tokens(spent)), ("cache_pct", &super::lim("cache_read_pct"))]));
+        parts.push(defaults::fill(
+            ef.str_field("waste"),
+            &[
+                ("tokens", &tokens(spent)),
+                ("cache_pct", &super::lim("cache_read_pct")),
+                ("since", &age(now.saturating_sub(f.since))),
+                ("outcomes", &a.progress),
+            ],
+        ));
     }
     if super::signals::waiting_on_ci(a) {
         parts.push(ef.str_field("ci_wait").to_string());
@@ -542,11 +562,12 @@ fn rt_steps() -> Vec<Step> {
         .collect()
 }
 
-/// The highest step (1-based) the agent has reached by running time or spend; 0 = none. A threshold of 0 is off.
+/// The highest step (1-based) the agent has reached by time or spend SINCE ITS LAST OUTCOME (not its total runtime or spend, so an agent
+/// that keeps producing outcomes is never nudged); 0 = none. A threshold of 0 is off.
 fn rt_reached(a: &Agent, now: u64, steps: &[Step]) -> u64 {
     let min_ms = super::fmtn("ms_per_s") * 60;
-    let mins = now.saturating_sub(super::started_ms(a)) / min_ms;
-    let spent = super::signals::total_spent(a);
+    let mins = now.saturating_sub(last_outcome_ms(a)) / min_ms;
+    let spent = super::signals::total_spent(a).saturating_sub(a.progress_spent);
     let budget = rt_cfg().get("budget_tokens").and_then(V::as_integer).unwrap_or(0).max(0) as u64;
     let pct = super::fmtn("pct").max(1);
     steps
@@ -555,10 +576,9 @@ fn rt_reached(a: &Agent, now: u64, steps: &[Step]) -> u64 {
         .map_or(0, |i| i as u64 + 1)
 }
 
-/// When the agent's last outcome came: the start of the newest run of samples at its current progress, else when it started.
+/// When the agent's last outcome came, as the sampler saw it (its start when it was never sampled).
 fn last_outcome_ms(a: &Agent) -> u64 {
-    let Some(cur) = a.samples.last() else { return super::started_ms(a) };
-    a.samples.iter().rev().take_while(|s| s.progress == cur.progress).last().map_or(super::started_ms(a), |s| s.t).max(super::started_ms(a))
+    if a.progress_at > 0 { a.progress_at.max(super::started_ms(a)) } else { super::started_ms(a) }
 }
 
 fn rt_text(n: &Nudge, a: &Agent, step: &Step, now: u64) -> String {
@@ -616,9 +636,9 @@ fn open_runtime(env: &Env, st: &mut State) {
         return;
     }
     let now = env.now_ms;
-    // a snooze the parent gave this child's runtime nudge outlives that nudge (it closes when the child blinks out of "running"): a new
-    // one about the same child is held until the snooze runs out, as open_new holds the health triggers
-    let hold_snooze = env.switch("agent_nudge.snooze_setting");
+    // a snooze the parent gave this child outlives the nudge it answered (it closes when the child blinks out of "running"): a new
+    // runtime nudge about the same child is held until the snooze runs out, whichever nudge it answered (#972 wave 2: a snooze given to
+    // a health nudge did not hold the runtime step, which came inside it)
     let ids: Vec<String> = st
         .agents
         .values()
@@ -626,7 +646,7 @@ fn open_runtime(env: &Env, st: &mut State) {
             !escalate::primary(a)
                 && !a.dead
                 && !st.nudges.contains_key(&a.id)
-                && !(hold_snooze && st.nudge_snooze.get(&snooze_key(&a.id, rt_trigger())).is_some_and(|s| s.until > now))
+                && !snoozed(env, st, a, now)
                 && state_of(a) == state_name("running")
                 && !done_held(env, st, a, now)
                 // a session its owner is steering is no runtime target, nor is a session row that is its own parent (a Primary the app
@@ -688,8 +708,10 @@ fn rt_follow(env: &Env, st: &mut State, a: &Agent, n: &mut Nudge) {
         n.snooze_until = 0;
     }
     let advanced = level > n.rt_level;
+    // a snooze the parent gave this child on any nudge (`agents nudge <child> snooze`) holds every nag about it (#972 wave 2)
+    let held = snoozed(env, st, a, now);
     // a recorded snooze holds the next step until it runs out (GH #923): the step then fires on its own thresholds
-    if advanced && n.snooze_until > now {
+    if advanced && (n.snooze_until > now || held) {
         if st.nudge_supp_seen.insert(format!("{}|{}|{level}", a.id, grace_cfg().str_field("reason_snoozed"))) {
             crate::metrics::bump("agent_nudge_suppressed", &[("reason", grace_cfg().str_field("reason_snoozed"))]);
         }
@@ -697,7 +719,7 @@ fn rt_follow(env: &Env, st: &mut State, a: &Agent, n: &mut Nudge) {
     }
     let Some(step) = steps.get(level as usize - 1).filter(|_| level > 0) else { return };
     let last = level as usize == steps.len();
-    let due = n.answer_class.is_empty() && n.snooze_until == 0 && now.saturating_sub(n.last_sent) >= step.refire_ms && (n.rt_acked < level || last);
+    let due = n.answer_class.is_empty() && n.snooze_until == 0 && !held && now.saturating_sub(n.last_sent) >= step.refire_ms && (n.rt_acked < level || last);
     if advanced {
         n.rt_level = level;
         n.answer_class.clear();
@@ -859,7 +881,11 @@ fn open_new(env: &Env, st: &mut State, budget: &mut u64) {
             snoozes: st.nudge_snooze.get(&snooze_key(&a.id, trig)).filter(|_| hold_snooze).map_or(0, |s| s.snoozes),
             tokens_at_sent: super::signals::total_spent(&a),
             out_mark: a.last_output_ms,
-            jev: if sig == defaults::text("agent_nudge.waste_signal") && !a.waste.hash.is_empty() { vec![(defaults::text("agent_nudge.waste_integration").to_string(), a.waste.hash.clone())] } else { Vec::new() },
+            jev: if sig == defaults::text("agent_nudge.waste_signal") && !a.waste.hash.is_empty() {
+                vec![(defaults::text("agent_nudge.waste_integration").to_string(), a.waste.hash.clone())]
+            } else {
+                Vec::new()
+            },
             ..Nudge::default()
         };
         let note = if walked {

@@ -843,9 +843,27 @@ LIB['./edit-guard.js'] = (function () {
     var m = payload && payload.permission_mode;
     return typeof m === 'string' && m.toLowerCase() === ah.cfg('command.eg_plan_mode');
   }
+  // GH #981: a NEW handover-shaped file at a foreign plugin's path (edit_guard.foreign_handover_globs, e.g. .omc/handoffs/**) or a
+  // HANDOVER*.md anywhere outside .anti-hall/handovers/** (edit_guard.handover_home_globs). Checked before the allowlist, which lets
+  // .omc/** through. A row's owner plugin that is on keeps its own folder (an OMC team stage hand-off); an existing file stays editable.
+  function foreignHandover(filePath, cwd) {
+    if (!filePath || !cwd || !ah.settings.bool('edit_guard.foreign_handover_setting')) return false;
+    var rel = toRelPath(filePath, cwd).split('/').map(foldSegment).join('/');
+    var hits = function (g) { return globToRegExp(String(g).split('/').map(foldSegment).join('/')).test(rel); };
+    if (ah.cfg('edit_guard.handover_home_globs').some(hits)) return false;
+    var rows = ah.cfg('edit_guard.foreign_handover_globs').filter(function (r) { return hits(r.glob); });
+    if (rows.length === 0) return false;
+    var sh = spawn.stateHome(), home = sh.unknown || sh.guarded ? '' : sh.ok, tag = ah.cfg('edit_guard.guard_name');
+    // every matching row must be owned by a plugin that is on for the path to be left alone (a HANDOVER*.md has no owner)
+    if (rows.every(function (r) { return r.owner !== '' && omcx.ownerEnabled(r.owner, home, String(cwd), tag); })) return false;
+    var exists = false;
+    try { exists = fs.existsSync(path.resolve(String(cwd), String(filePath))); } catch (e) { if (e.unsure) throw e; exists = true; }
+    return !exists;
+  }
   function editVerdict(filePath, cwd, payload) {
     var projectEditAllow = projectEditAllowOn();
     if (projectEditAllow && isEditAllowFileTarget(filePath, cwd)) return 'block-self-edit';
+    if (foreignHandover(filePath, cwd)) return 'block-handover-foreign';
     if (isAllowed(filePath, cwd) && allowlistIsHonest(filePath, cwd)) return 'allow';
     var canon = canonicalUnderProjectRoot(filePath, cwd);
     if (canon && isAllowed(canon.filePath, canon.root) && allowlistIsHonest(canon.filePath, canon.root)) return 'allow';
@@ -865,6 +883,7 @@ LIB['./edit-guard.js'] = (function () {
     return 'block';
   }
   function isNotesTarget(filePath, cwd, payload) {
+    if (foreignHandover(filePath, cwd)) return false; // a Bash write of a new foreign-path handover is no notes write (GH #981)
     if (isAllowed(filePath, cwd) && allowlistIsHonest(filePath, cwd)) return true;
     var canon = canonicalUnderProjectRoot(filePath, cwd);
     if (canon && isAllowed(canon.filePath, canon.root) && allowlistIsHonest(canon.filePath, canon.root)) return true;
@@ -892,7 +911,7 @@ LIB['./edit-guard.js'] = (function () {
     }
     return text.detailsMessage('block', guard, { what: what, why: ah.cfg('command.msg_edit_why'), instead: text.render(ah.cfg('command.msg_edit_instead'), { sub: SUB }), override: override }, payload && payload.session_id);
   }
-  return { isNotesTarget: isNotesTarget, editVerdict: editVerdict, delegationReason: delegationReason };
+  return { isNotesTarget: isNotesTarget, editVerdict: editVerdict, delegationReason: delegationReason, foreignHandover: foreignHandover };
 })();
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -1676,6 +1695,36 @@ function gitSubcommandIndex(tokens, gitIdx) {
   return -1;
 }
 
+// isSafeGitPull(segment) -> true for `git pull --ff-only ...`: it only fast-forwards the local branch (it refuses anything else), so like a
+// safe fetch it changes no shared remote; a forced or refspec-carrying one is not safe.
+function isSafeGitPull(segment) {
+  if (effectiveVerb(segment) !== 'git') return false;
+  const tokens = tokenizeQuoted(segment);
+  const gitIdx = tokens.findIndex((t) => basename(t).toLowerCase() === 'git');
+  if (gitIdx === -1) return false;
+  const subIdx = gitSubcommandIndex(tokens, gitIdx);
+  if (subIdx === -1 || (tokens[subIdx] || '').toLowerCase() !== 'pull') return false;
+  // a configuration given on the command line (git -c fetch.prune=true pull) can change what the pull does
+  for (let i = gitIdx + 1; i < subIdx; i++) {
+    if (tokens[i] === '-c' || tokens[i].startsWith('--config-env') || /^-c./.test(tokens[i])) return false;
+  }
+  // light only when every flag is on the allowlist (command.pull_light_flags, command.pull_light_short for bundled short flags) and --ff-only
+  // is among them: any other flag (a mode, --squash, --autostash, --no-commit, a prune or force flag, a digit) makes the pull heavy
+  const flags = ah.cfg('command.pull_light_flags'), shorts = ah.cfg('command.pull_light_short');
+  let ffOnly = false;
+  for (let i = subIdx + 1; i < tokens.length; i++) {
+    const t = tokens[i];
+    if (t.startsWith('+') || t.includes(':')) return false;
+    if (t.startsWith('--')) {
+      if (flags.indexOf(t) < 0) return false;
+      if (t === '--ff-only') ffOnly = true;
+    } else if (t.startsWith('-') && t.length > 1) {
+      if (flags.indexOf(t) < 0 && !Array.prototype.every.call(t.slice(1), function (ch) { return shorts.indexOf(ch) >= 0; })) return false;
+    }
+  }
+  return ffOnly;
+}
+
 function isSafeGitFetch(segment) {
   if (effectiveVerb(segment) !== 'git') return false;
   const tokens = tokenizeQuoted(segment);
@@ -1714,7 +1763,8 @@ function isHeavyGitSegment(segment) {
   const subIdx = gitSubcommandIndex(tokens, gitIdx);
   if (subIdx === -1) return false;
   const sub = tokens[subIdx].toLowerCase();
-  if (sub === 'pull' || sub === 'clone') return true;
+  if (sub === 'pull') return !isSafeGitPull(segment);
+  if (sub === 'clone') return true;
   if (sub === 'fetch') return !isSafeGitFetch(segment);
   return false;
 }
@@ -2097,7 +2147,7 @@ function isHeavyGhSegment(segment, command, strict) {
 
 // Per-segment checks that need tokenized/positional logic (not a plain regex
 // substring match) — evaluated alongside lightList() in isHeavySegment.
-const LIGHT_EXCEPTION_FNS = [isSafeGitFetch, isSafeSqliteReadonly, isReadOnlyCloudInspect];
+const LIGHT_EXCEPTION_FNS = [isSafeGitFetch, isSafeGitPull, isSafeSqliteReadonly, isReadOnlyCloudInspect];
 
 // isFlaggedInterpreterScript(segment) -> true when the segment is
 // `python*|node <flag...> <script>.py|.js|.mjs|.cjs ...` — an interpreter
@@ -2318,7 +2368,8 @@ function classifyHeavy(command, depth) {
   for (const seg of splitSegments(command)) {
     if (isHeavySegment(seg, command)) {
       if (remoteMatch(seg, 'command.remote_block')) return { kind: 'remote', label: ah.cfg('command.msg_heavy_remote'), risk: true };
-      if (isHeavyGhSegment(seg) || isGitPushSegment(seg) || isGitPullFetchSegment(seg)) return { kind: 'remote', label: ah.cfg('command.msg_heavy_remote'), risk: remoteMatch(seg, 'command.remote_block') };
+      if (isGitPullFetchSegment(seg) && !isHeavyGhSegment(seg) && !isGitPushSegment(seg)) return { kind: 'remote', label: ah.cfg('command.msg_heavy_pull'), risk: false };
+      if (isHeavyGhSegment(seg) || isGitPushSegment(seg)) return { kind: 'remote', label: ah.cfg('command.msg_heavy_remote'), risk: remoteMatch(seg, 'command.remote_block') };
       const verb = effectiveVerb(seg);
       if (verb && T.heavyVerbs.has(verb)) return { kind: 'verb', label: verb };
       return { kind: 'category', label: ah.cfg('command.heavy_pattern_label') };
@@ -4724,12 +4775,14 @@ function mainFlow(payload) {
   guarded(() => { tierText = devswarmPrimary && LIB['./lib/primary-tier.js'].primaryTierTextOn(guardEnv, (payload && payload.cwd) || process.cwd()); });
   const H = LIB['./lib/host-text.js'];
   const codexHost = H.isCodex(payload);
-  const heavyWhat = text.render(ah.cfg('command.msg_heavy_what'), { kind: ah.cfg(remote ? 'command.msg_heavy_remote' : 'command.msg_heavy_plain'), detail: detail });
+  // a remote kind is named as classified: a pull or fetch reads from the remote, only a push or a gh write changes it
+  const kindText = remote ? (cls && cls.kind === 'remote' && cls.label ? cls.label : ah.cfg('command.msg_heavy_remote')) : ah.cfg('command.msg_heavy_plain');
+  const heavyWhat = text.render(ah.cfg('command.msg_heavy_what'), { kind: kindText, detail: detail });
   const SUB = codexHost ? H.CODEX_SUBAGENT : ah.cfg('command.claude_subagent');
   const segNote = guarded(() => heavySegmentNote(command)) || '';
   // the visible block names the rule that fired (the generic brief headline names none): the verb or category label, or the shared remote
   const ruleLabel = cls && cls.label ? cls.label : ah.cfg('command.heavy_default_label');
-  const ruleNote = text.render(ah.cfg(remote ? 'command.msg_brief_rule_remote' : 'command.msg_brief_rule'), { kind: ah.cfg(remote ? 'command.msg_heavy_remote' : 'command.msg_heavy_plain'), label: ruleLabel });
+  const ruleNote = text.render(ah.cfg(remote ? 'command.msg_brief_rule_remote' : 'command.msg_brief_rule'), { kind: kindText, label: ruleLabel });
   const delegateTo = text.render(ah.cfg('command.msg_heavy_delegate'), { to: codexHost ? H.CODEX_CHEAP : SUB });
   // while spawning is stopped (the usage hard stop) there is nobody to delegate to: a heavy command with bounded output runs inline
   const standStop = guarded(() => sd.applies(payload, ah.cfg('command.guard_name')));

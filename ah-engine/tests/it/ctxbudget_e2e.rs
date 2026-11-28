@@ -105,27 +105,34 @@ fn a_quiet_prompt_is_answered_without_running_any_node_hook_and_adds_no_joiner()
     assert_eq!((code, out.as_str(), err.as_str()), (0, QUIET_PROMPT, ""));
 }
 
-/// Regression for the empty-context rule of `dispatch::combine` (a quiet hook adds no joiner): on a quiet UserPromptSubmit turn
-/// every check that answers natively (the context-budget gates print an empty context, the verify-first reminder prints a line,
-/// the idle-agent sweep and the others print nothing) is combined into ONE context with no stray newline, whichever
-/// reminder line the payload happens to pick.
+/// Regression for the empty-context rule of `dispatch::combine` (a quiet hook adds no joiner): on a UserPromptSubmit turn every
+/// check that answers natively (the context-budget gates print an empty context when quiet, the limit-conservation line and the
+/// handover fire print text, the idle-agent sweep and the others print nothing) is combined into ONE context with no stray newline,
+/// whichever of them speak (two speakers are joined by one blank line, a quiet one adds none). The per-turn verify-first reminder is gone (#958), so the speakers are varied by the context size and the
+/// conservation switch instead of by a rotating reminder line.
 #[test]
 fn a_quiet_prompt_has_no_stray_newlines_whichever_checks_answer_natively() {
     let e = Env::new("ups-newlines");
     let map = e.map("UserPromptSubmit", &[], "true");
-    let tr = e.transcript(50_000);
     let mut lines = std::collections::BTreeSet::new();
-    for i in 0..40 {
+    let mut spoke = 0;
+    for (i, (tokens, conserve)) in [(50_000u64, "off"), (50_000, "on"), (170_000, "off"), (170_000, "on"), (180_000, "off"), (180_000, "on")].into_iter().enumerate() {
+        let tr = e.transcript(tokens);
         let p = serde_json::json!({"session_id": format!("nl{i}"), "hook_event_name": "UserPromptSubmit", "prompt": format!("p{i}"), "cwd": "/tmp", "transcript_path": tr}).to_string();
-        let (code, out, err) = e.run("UserPromptSubmit", &map, &p, &[WINDOW, ("CLAUDE_PLUGIN_OPTION_CONTEXT_TASK_TRACKER", "false")]);
-        assert_eq!((code, err.as_str()), (0, ""), "{out:?}");
-        let v: serde_json::Value = serde_json::from_str(out.trim_end()).unwrap_or_else(|_| panic!("not JSON: {out:?}"));
-        let ctx = v["hookSpecificOutput"]["additionalContext"].as_str().unwrap_or_else(|| panic!("no context: {out:?}"));
-        assert!(!ctx.contains("\n\n") && ctx == ctx.trim(), "stray newline in {ctx:?}");
-        assert_eq!(out.matches('\n').count(), 1, "one JSON line, got {out:?}");
+        let (code, out, err) = e.run("UserPromptSubmit", &map, &p, &[WINDOW, ("ANTIHALL_LIMIT_CONSERVE", conserve), ("CLAUDE_PLUGIN_OPTION_CONTEXT_TASK_TRACKER", "false")]);
+        assert_eq!((code, err.as_str()), (0, ""), "case {i}: {out:?}");
+        if out.is_empty() {
+            continue; // every check was quiet: no output at all, never a bare joiner
+        }
+        spoke += 1;
+        let v: serde_json::Value = serde_json::from_str(out.trim_end()).unwrap_or_else(|_| panic!("case {i}: not JSON: {out:?}"));
+        let ctx = v["hookSpecificOutput"]["additionalContext"].as_str().unwrap_or_else(|| panic!("case {i}: no context: {out:?}"));
+        // two speaking checks are joined by one blank line; a quiet one adds no joiner (no run of 3 newlines, no leading or trailing one)
+        assert!(!ctx.contains("\n\n\n") && ctx == ctx.trim(), "case {i}: stray newline in {ctx:?}");
+        assert_eq!(out.matches('\n').count(), 1, "case {i}: one JSON line, got {out:?}");
         lines.insert(ctx.to_string());
     }
-    assert!(lines.len() > 1, "the payloads must reach more than one reminder line");
+    assert!(spoke >= 3 && lines.len() > 1, "the cases must reach more than one native answer: {spoke} spoke, {lines:?}");
 }
 
 #[test]

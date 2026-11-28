@@ -37,15 +37,51 @@ function ceCommands(tp, n) {
 
 // The reply cut into sentences at claim_evidence.sentence_end_re (a hit that consumes nothing ends the cut).
 function ceSentences(t) {
-  var re = ah.cfg('claim_evidence.sentence_end_re'), out = [], rest = t;
+  return ceSentencesAt(t).map(function (x) { return x.s; });
+}
+
+// The sentences of `t` with the offset each starts at.
+function ceSentencesAt(t) {
+  var re = ah.cfg('claim_evidence.sentence_end_re'), out = [], rest = t, at = 0;
   for (;;) {
     var m = ah.re.find(re, 'i', rest);
     if (!m || m[1] <= 0) break;
-    out.push(rest.slice(0, m[0]));
+    out.push({ s: rest.slice(0, m[0]), at: at });
+    at += m[1];
     rest = rest.slice(m[1]);
   }
-  out.push(rest);
+  out.push({ s: rest, at: at });
   return out;
+}
+
+// #972 wave 2: the text that governs a sentence starting at `at`: its paragraph (claim_evidence.paragraph_break_re) plus the nearest
+// heading line (claim_evidence.heading_line_re) at or before the paragraph's start.
+function ceScope(t, at) {
+  var br = ah.cfg('claim_evidence.paragraph_break_re'), start = 0, end = t.length, off = 0;
+  for (;;) {
+    var m = ah.re.find(br, '', t.slice(off));
+    if (!m || m[1] <= m[0]) break;
+    var a = off + m[0], b = off + m[1];
+    if (b <= at) start = b;
+    else if (a >= at) { end = a; break; }
+    off = b;
+  }
+  var head = '', lines = t.slice(0, start).split('\n');
+  for (var i = lines.length - 1; i >= 0; i--) {
+    if (ah.re.find(ah.cfg('claim_evidence.heading_line_re'), '', lines[i])) { head = lines[i]; break; }
+  }
+  // a list paragraph (claim_evidence.list_para_re) is governed by the line that leads into it, whatever its punctuation
+  var lead = '';
+  if (start > 0 && ah.re.find(ah.cfg('claim_evidence.list_para_re'), '', t.slice(start, end))) {
+    var prev = t.slice(0, start).replace(/\s+$/, '').split('\n');
+    lead = prev[prev.length - 1];
+  }
+  return head + '\n' + lead + '\n' + t.slice(start, end);
+}
+
+// #972 wave 2: the claim's paragraph or heading attributes the result to another agent AND says it was not verified here.
+function ceAttributedUnverified(scope) {
+  return scope !== '' && ceAny(ah.cfg('claim_evidence.attribution_res'), scope) !== null && ceAny(ah.cfg('claim_evidence.unverified_scope_res'), scope) !== null;
 }
 
 // Where the text of `sent` that governs a claim found at `a` starts: after the last clause break before it (or `win` chars back, the nearer).
@@ -162,8 +198,9 @@ function ceReason(sent, hit, prev) {
 // of the sentence); a hit whose clause is negated, future/conditional, reported speech or a rule/criterion statement is passed over and
 // pushed to `seen` as [reason, quote, claim id] for the log.
 function ceFindClaim(scan, seen) {
-  var rows = ah.cfg('claim_evidence.claims'), sents = ceSentences(scan);
+  var rows = ah.cfg('claim_evidence.claims'), at = ceSentencesAt(scan), sents = at.map(function (x) { return x.s; });
   for (var k = 0; k < sents.length; k++) {
+    var scoped = null; // whether the sentence's paragraph or heading marks its results as another agent's, unverified (computed once, on a hit)
     // every hit of every row, in text order, so a consequent follows the condition it depends on
     var hits = [];
     for (var i = 0; i < rows.length; i++) {
@@ -180,6 +217,10 @@ function ceFindClaim(scan, seen) {
     var prev = null;
     for (var h = 0; h < hits.length; h++) {
       var why = ceReason(sents[k], hits[h], prev), quote = sents[k].slice(hits[h][0], hits[h][1]), row = rows[hits[h][2]];
+      if (why === null) {
+        if (scoped === null) scoped = ceAttributedUnverified(ceScope(scan, at[k].at));
+        if (scoped) why = { reason: ah.cfg('claim_evidence.attributed_reason'), chain: false };
+      }
       if (why === null) return { row: row, quote: quote };
       seen.push([why.reason, quote, row.id]);
       if (why.chain && (prev === null || hits[h][1] > prev.end)) prev = { end: hits[h][1], start: ceStart(sents[k], hits[h][0]), reason: why.reason };

@@ -629,14 +629,14 @@ fn verdict_of(v: &Value) -> Result<Option<Verdict>, String> {
 pub fn failed(name: &str, event: &str, why: &str) -> Verdict {
     crate::discard::note("script_error", &format!("{name}: {why}"));
     crate::telemetry::emit::queue(crate::telemetry::emit::script_failure(name, event));
-    with_notice(name, why, failure_verdict(name, event, why, failure_mode(name)))
+    with_notice(name, event, why, failure_verdict(name, event, why, failure_mode(name)))
 }
 
 /// The decision for a check that gave no answer at all (a deferral of any origin: a cut call, a verdict that says nothing, a daemon
 /// that could not run it): the same failure policy as [`failed`], so a deferral never reaches a Node hook that is not launched.
 pub fn unanswered(name: &str, event: &str) -> Verdict {
     let why = defaults::text("script.msg_unanswered");
-    with_notice(name, why, failure_verdict(name, event, why, failure_mode(name)))
+    with_notice(name, event, why, failure_verdict(name, event, why, failure_mode(name)))
 }
 
 /// The decision for a call ended by its wall-clock backstop (`script.wall_limit_factor`) before its CPU limit: the interpreter thread
@@ -652,12 +652,56 @@ fn starved_verdict(name: &str, event: &str, payload: &Value, why: &str) -> Verdi
     }
     crate::discard::note("script_error", &format!("{name}: {why}"));
     crate::telemetry::emit::queue(crate::telemetry::emit::script_failure(name, event));
-    with_notice(name, why, Verdict::Allow)
+    with_notice(name, event, why, Verdict::Allow)
+}
+
+thread_local! {
+    /// The tool call the request on this thread is deciding (its `tool_name` and `tool_input`), set by [`set_call`]; `None` when the
+    /// payload is no tool call. Read by [`read_only_call`] so a closed guard that cannot answer is told what the call was.
+    static CALL: std::cell::RefCell<Option<Value>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Names the tool call the request on this thread is deciding (a payload without a `tool_name` clears it), so a guard that cannot
+/// answer can tell a read-only call from a risky one ([`read_only_call`]).
+pub fn set_call(payload: &Value) {
+    let call = payload.get("tool_name").map(|t| serde_json::json!({"tool_name": t, "tool_input": payload.get("tool_input").cloned().unwrap_or(Value::Null)}));
+    CALL.with(|c| *c.borrow_mut() = call);
+}
+
+/// Whether `name` is risk-weighted (`script.failure_risk_weighted`) and `payload` is a call outside every hold class of
+/// `dispatch.capacity_hold` (a push, a merge, a delete, a deploy ...): a read-only or reversible call. Only a call of a tool the
+/// hold rules read (`dispatch.capacity_hold.tools`) is judged; any other stays with the check's failure mode.
+pub fn read_only_call_of(name: &str, payload: &Value) -> bool {
+    let weighted = defaults::list("script.failure_risk_weighted");
+    if !weighted.contains(&name) {
+        return false;
+    }
+    let tools = defaults::raw("dispatch.capacity_hold").get("tools").and_then(|v| v.as_array());
+    let judged = payload.get("tool_name").and_then(Value::as_str).is_some_and(|t| tools.into_iter().flatten().any(|x| x.as_str() == Some(t)));
+    judged && crate::dispatch::capacity_hold(payload).is_none()
+}
+
+/// [`read_only_call_of`] for the call of the request this thread is deciding ([`set_call`]).
+fn read_only_call(name: &str) -> bool {
+    CALL.with(|c| c.borrow().as_ref().is_some_and(|p| read_only_call_of(name, p)))
+}
+
+/// Whether check `name` on `event` fails closed for the call in hand: its failure mode is `closed`, the event is a guard event, and
+/// the call is not a read-only one of a risk-weighted guard (`script.failure_risk_weighted`): a guard that cannot answer holds an
+/// irreversible or shared-remote action and lets a read through, counted (`script.risk_open_counter`).
+fn closed_for_call(name: &str, event: &str, mode: &str) -> bool {
+    if mode != defaults::text("script.failure_mode_closed") || !defaults::list("dispatch.guard_events").contains(&event) {
+        return false;
+    }
+    !read_only_call(name)
 }
 
 /// [`failed`]'s decision for a check with failure mode `mode`.
 fn failure_verdict(name: &str, event: &str, why: &str, mode: &str) -> Verdict {
-    if mode == defaults::text("script.failure_mode_closed") && defaults::list("dispatch.guard_events").contains(&event) {
+    if mode == defaults::text("script.failure_mode_closed") && defaults::list("dispatch.guard_events").contains(&event) && !closed_for_call(name, event, mode) {
+        crate::obs::counters::advisory(defaults::text("script.risk_open_counter"), name);
+    }
+    if closed_for_call(name, event, mode) {
         return Verdict::Block(defaults::render("script.msg_fail_closed", &[("check", &name), ("why", &why)]));
     }
     Verdict::Allow
@@ -691,8 +735,16 @@ fn noticed() -> &'static std::sync::Mutex<std::collections::HashSet<(String, Str
 
 /// A fail-open `Allow` of a check that could not run says so, once per session and check: a guard that is not guarding must not be
 /// silent. Any other verdict (a block) already tells the user.
-fn with_notice(name: &str, why: &str, v: Verdict) -> Verdict {
+///
+/// Only a guard check on a guard event (`dispatch.guard_events`) tells the user (`script.notice_guard_events_only`, default on): an
+/// advisory check on any other event has nothing that went through unchecked, so its drop is only logged and counted
+/// (`script.notice_suppressed_counter`).
+fn with_notice(name: &str, event: &str, why: &str, v: Verdict) -> Verdict {
     if v != Verdict::Allow {
+        return v;
+    }
+    if defaults::num("script.notice_guard_events_only") == 1 && !defaults::list("dispatch.guard_events").contains(&event) {
+        crate::obs::counters::advisory(defaults::text("script.notice_suppressed_counter"), name);
         return v;
     }
     let session = session();
@@ -709,8 +761,26 @@ fn with_notice(name: &str, why: &str, v: Verdict) -> Verdict {
     if !first {
         return v;
     }
-    let msg = defaults::render("script.msg_guard_down", &[("check", &name), ("why", &why)]);
+    let msg = defaults::render("script.msg_guard_down", &[("check", &name), ("why", &short_why(why))]);
     Verdict::Advisory(serde_json::json!({ defaults::text("script.notice_key"): msg }).to_string())
+}
+
+/// The one short line the user is told for a failure `why` (`script.notice_why_rules`: the first rule whose `contains` is in `why`, else
+/// `script.notice_why_default`). The full text (a script stack, the limits) goes to the log only.
+fn short_why(why: &str) -> String {
+    let rules = defaults::raw("script.notice_why_rules").as_array();
+    for r in rules.into_iter().flatten() {
+        if let (Some(c), Some(t)) = (r.get("contains").and_then(defaults::V::as_str), r.get("text").and_then(defaults::V::as_str))
+            && why.contains(c)
+        {
+            return t.to_string();
+        }
+    }
+    let first = why.lines().next().unwrap_or_default();
+    if !first.is_empty() && first.len() <= defaults::num("script.notice_why_max_chars") as usize && !why.contains('\n') {
+        return first.to_string();
+    }
+    defaults::text("script.notice_why_default").to_string()
 }
 
 /// The failure mode of check `name`: its entry in `script.failure_mode_by_check`, else `script.failure_mode_default`.
@@ -1015,11 +1085,12 @@ pub fn deadline_policy(name: &str) -> &'static str {
 
 /// Whether a call of check `name` on `event` is cut at its request's client deadline (`script.cut_at_request_deadline`). A cut call
 /// ends as [`cut`] (its failure policy); a check whose failure mode is `closed` on a guard event would allow what its failure blocks,
-/// so that one keeps only its own limit, and so does a check whose deadline policy is `finish` ([`deadline_policy`]).
+/// so that one keeps only its own limit, and so does a check whose deadline policy is `finish` ([`deadline_policy`]); a risk-weighted
+/// guard ([`closed_for_call`]) is cut for a read-only call, which a failure lets through.
 pub fn cut_at_deadline(name: &str, event: &str) -> bool {
     defaults::num("script.cut_at_request_deadline") == 1
         && deadline_policy(name) != defaults::text("diagnostics.deadline_policy_finish")
-        && !(failure_mode(name) == defaults::text("script.failure_mode_closed") && defaults::list("dispatch.guard_events").contains(&event))
+        && !closed_for_call(name, event, failure_mode(name))
 }
 
 /// How long past the hard request deadline `check` may still start, and a running call of it is still not cut
@@ -1257,6 +1328,9 @@ mod tests_golden_f;
 #[path = "home_unset_tests/tests.rs"]
 mod tests_home_unset;
 #[cfg(test)]
+#[path = "omc_coexist/tests.rs"]
+mod tests_omc_coexist;
+#[cfg(test)]
 #[path = "host_tests/tests.rs"]
 mod tests_host;
 #[cfg(test)]
@@ -1269,5 +1343,21 @@ mod tests_host_e;
 #[path = "host_tests_f/tests.rs"]
 mod tests_host_f;
 #[cfg(test)]
+#[path = "host_tests_ts/tests.rs"]
+mod tests_host_ts;
+#[cfg(test)]
 #[path = "tests_scan_turn/tests.rs"]
 mod tests_scan_turn;
+
+#[cfg(test)]
+/// Temporary debug helper (not committed).
+pub fn golden_debug_cases(check: &str) -> Vec<(String, String)> {
+    golden::load(check)
+        .into_iter()
+        .filter(|c| c["n"].as_str().is_some_and(|n| n.contains("W2") || n == "903"))
+        .map(|c| {
+            let l = golden::lay(&c);
+            (c["n"].as_str().unwrap_or("").to_string(), format!("{}/t/session.jsonl", l.home))
+        })
+        .collect()
+}

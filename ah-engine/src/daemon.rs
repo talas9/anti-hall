@@ -21,7 +21,6 @@ use crate::paths;
 use crate::rules::RuleSet;
 use crate::store::{KeyCache, Store};
 use crate::telemetry::{self, Telemetry};
-use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::os::unix::io::AsRawFd;
@@ -130,7 +129,12 @@ pub struct Shared {
     keys: Mutex<KeyCache>,
     /// Counters.
     pub stats: Stats,
-    queue: Mutex<VecDeque<(UnixStream, Instant, u64)>>,
+    /// #969: the priority queue of accepted connections, one FIFO lane per admission class (`overload.rs`).
+    queue: Mutex<crate::overload::Queue<UnixStream>>,
+    /// #969: the adaptive limit of the limited classes (`overload.aimd_*`).
+    limiter: Mutex<crate::overload::Aimd>,
+    /// #969: limited-class requests a worker is serving now.
+    limited_running: AtomicUsize,
     /// Request load per minute (waits, in-flight, p95, sessions): does a call ever wait for another?
     pub load: crate::load::Load,
     cv: Condvar,
@@ -158,6 +162,9 @@ pub struct Shared {
     /// per worker: 0 = idle, else (ms since `started`) + 1 at its last progress on the current request (picked up, a check
     /// started or finished, the interpreter ran: [`crate::deadline::beat`]); the watchdog's stuck rule measures from it
     busy_since: Vec<Arc<AtomicU64>>,
+    /// #969: per worker, the socket peer pid of the request it serves (0 = none known): the heartbeat's per-request progress
+    /// (`files.heartbeat_peers`), so a waiting client judges the worker on ITS request, not the longest-silent one
+    busy_peer: Vec<Arc<AtomicU64>>,
     /// A rules/config reload the accept loop asked for is running on its own thread ([`reload_off_loop`]); the loop asks for no other
     /// until it ends.
     reloading: Arc<AtomicBool>,
@@ -167,6 +174,10 @@ pub struct Shared {
     /// Tests: runs inside [`Shared::reload`] after the files were read, to land an edit mid-load.
     #[cfg(test)]
     mid_reload: Mutex<Option<Box<dyn Fn() + Send>>>,
+    /// Tests (#969 load test): stands in for judging a request: given the request bytes and whether it runs in shed mode, how long
+    /// its work takes (slept, so host load does not decide the result); the reply is an empty OK.
+    #[cfg(test)]
+    test_work: Mutex<Option<TestWork>>,
     stall_ms: AtomicU64,
     test_thread_panics: AtomicU64,
     /// CPU and memory against their budgets (`diagnostics.budget_*`), updated by the watchdog.
@@ -212,11 +223,38 @@ fn request_context(req: &[u8]) -> (String, String) {
     (request, event)
 }
 
+/// Tests (#969): the stand-in for judging a request, see `Shared::test_work`.
+#[cfg(test)]
+type TestWork = fn(&[u8], bool) -> Duration;
+
 fn lk<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 impl Shared {
+    /// #969: the admission state: on/off, the adaptive limit of the limited classes (usable, fractional, bounds), how many of them run,
+    /// whether shed mode is on at the limit floor, and the queued requests per class.
+    fn overload_json(&self) -> serde_json::Value {
+        let workers = self.busy_since.len();
+        let lim = lk(&self.limiter).clone();
+        let by_rank = lk(&self.queue).by_rank();
+        let queued: serde_json::Map<String, serde_json::Value> = crate::overload::classes()
+            .iter()
+            .enumerate()
+            .map(|(r, c)| ((*c).to_string(), serde_json::json!(by_rank.get(r).copied().unwrap_or(0))))
+            .collect();
+        serde_json::json!({
+            "enabled": crate::overload::enabled(),
+            "limit": lim.limit(workers),
+            "limit_raw": (lim.raw() * 1000.0).round() / 1000.0,
+            "limit_min": crate::overload::Aimd::min(),
+            "limit_max": crate::overload::Aimd::max(workers),
+            "limited_running": self.limited_running.load(SeqCst),
+            "shed_floor": crate::overload::enabled() && lim.at_floor(workers),
+            "queued": queued,
+        })
+    }
+
     /// Build the shared state for a daemon with these limits, rules and rules-file path.
     pub fn new(cfg: Config, own: &str, rules: RuleSet, rules_path: std::path::PathBuf) -> Shared {
         let workers = cfg.workers;
@@ -235,7 +273,9 @@ impl Shared {
             store: Store::new(None),
             keys: Mutex::new(KeyCache::default()),
             stats: Stats::default(),
-            queue: Mutex::new(VecDeque::new()),
+            queue: Mutex::new(crate::overload::Queue::default()),
+            limiter: Mutex::new(crate::overload::Aimd::new(workers)),
+            limited_running: AtomicUsize::new(0),
             load: crate::load::Load::new(),
             cv: Condvar::new(),
             depth: AtomicUsize::new(0),
@@ -250,10 +290,13 @@ impl Shared {
             loop_beat: AtomicU64::new(0),
             loop_ended: AtomicBool::new(false),
             busy_since: (0..workers).map(|_| Arc::new(AtomicU64::new(0))).collect(),
+            busy_peer: (0..workers).map(|_| Arc::new(AtomicU64::new(0))).collect(),
             reloading: Arc::new(AtomicBool::new(false)),
             reload_gate: Mutex::new(()),
             #[cfg(test)]
             mid_reload: Mutex::new(None),
+            #[cfg(test)]
+            test_work: Mutex::new(None),
             stall_ms: AtomicU64::new(0),
             test_thread_panics: AtomicU64::new(0),
             budget: Mutex::new(crate::budget::State::default()),
@@ -634,6 +677,7 @@ impl Shared {
             "queue_depth": self.depth.load(SeqCst),
             "queue_cap": cfg.queue,
             "workers": cfg.workers,
+            "overload": self.overload_json(),
             "idle_exit_s": cfg.idle_exit.map(|d| d.as_secs()),
             "requests": self.stats.requests.load(SeqCst),
             "busy_replies": self.stats.busy.load(SeqCst),
@@ -709,7 +753,7 @@ impl Shared {
 
 /// The latency of each phase of a hook call by event: `{event: {phase: {count, p50_us, p95_us, max_us}}}` (the client's connect,
 /// request-to-ACK and ACK-to-response, the daemon's queue wait, judging and delivery, the launcher's startup), and the time of each
-/// check apart under `checks`. Quantiles are upper bucket bounds, as everywhere in the metrics.
+/// check apart under `checks`. Quantiles come from the metrics' HdrHistograms (within `telemetry.hdr_sigfig` digits).
 pub fn phases_json(t: &crate::telemetry::Telemetry) -> serde_json::Value {
     let snap = t.with_metrics(|m| m.snapshot(""));
     let mut out = serde_json::Map::new();
@@ -717,7 +761,7 @@ pub fn phases_json(t: &crate::telemetry::Telemetry) -> serde_json::Value {
     let field = |h: &serde_json::Value, k: &str| h.get(k).cloned().unwrap_or(serde_json::Value::Null);
     let label = |h: &serde_json::Value, k: &str| h.get("labels").and_then(|l| l.get(k)).and_then(serde_json::Value::as_str).unwrap_or_default().to_string();
     for h in snap.get("histograms").and_then(serde_json::Value::as_array).into_iter().flatten() {
-        let row = serde_json::json!({"count": field(h, "count"), "p50_us": field(h, "p50_us"), "p95_us": field(h, "p95_us"), "max_us": field(h, "max_us")});
+        let row = serde_json::json!({"count": field(h, "count"), "p50_us": field(h, "p50_us"), "p95_us": field(h, "p95_us"), "p99_us": field(h, "p99_us"), "max_us": field(h, "max_us"), "exact_count": field(h, "exact_count")});
         match h.get("name").and_then(serde_json::Value::as_str) {
             Some("hook_phase_us") => {
                 let (event, phase) = (label(h, "event"), label(h, "phase"));
@@ -766,6 +810,8 @@ pub fn phases_json(t: &crate::telemetry::Telemetry) -> serde_json::Value {
 thread_local! {
     /// The socket peer of the request this thread is serving ([`serve_conn`] sets it, the request parse takes it).
     static REQUEST_PEER: std::cell::Cell<Option<u32>> = const { std::cell::Cell::new(None) };
+    /// #969: this worker's slot of [`Shared::busy_peer`] (set by [`worker`]).
+    static PEER_SLOT: std::cell::RefCell<Option<Arc<AtomicU64>>> = const { std::cell::RefCell::new(None) };
 }
 
 /// Where the engine's CPU goes, for `status --json`: `by_event` (hook calls and the checks' CPU per hook event) and `top_checks`
@@ -1178,6 +1224,9 @@ fn dispatch(body: &str, sh: &Shared, cfg: &Config) -> Reply {
     }
     // every hook call reaches the daemon as a dispatch request, so the launcher's build version rides in its environment
     sh.note_hook_version(&meta.env);
+    // #969: the load factor the client passed down, before the window: the event's ceiling is scaled by it
+    // #969 review: fitted again to the event's outer bound, so a request that skipped the launcher can not stretch the ceiling
+    crate::deadline::set_load_factor(crate::deadline::fit_passed(meta.load_permille, &meta.host, &meta.event));
     if let Some(ms) = meta.deadline_ms {
         crate::deadline::client_window(ms);
     }
@@ -1657,6 +1706,15 @@ fn serve_conn(mut s: UnixStream, sh: &Shared, wait: Duration, in_flight: u64) ->
         crate::deadline::end();
         return After::Continue;
     }
+    #[cfg(test)]
+    let test_work = *lk(&sh.test_work); // copied out: the guard must not be held while the work sleeps
+    #[cfg(test)]
+    if let Some(work) = test_work {
+        std::thread::sleep(work(&req, crate::overload::request_shed()));
+        write_reply(&mut s, &Reply::Ok(String::new()), &cfg);
+        crate::deadline::end();
+        return After::Continue;
+    }
     if wire {
         // ACK(req): the request is read and will be judged. A client that already gave up (it closed after its ack timeout and
         // resent) refuses the write, and then nothing is judged: the resend is the only judging of that request.
@@ -1673,7 +1731,13 @@ fn serve_conn(mut s: UnixStream, sh: &Shared, wait: Duration, in_flight: u64) ->
         crate::deadline::watch_peer(s.as_raw_fd());
     }
     let acked_at = Instant::now();
-    REQUEST_PEER.with(|c| c.set(crate::limits::peer_pid(&s)));
+    let peer = crate::limits::peer_pid(&s);
+    REQUEST_PEER.with(|c| c.set(peer));
+    PEER_SLOT.with(|p| {
+        if let Some(slot) = p.borrow().as_ref() {
+            slot.store(u64::from(peer.unwrap_or(0)), SeqCst);
+        }
+    });
     let (request, event) = request_context(&req);
     let _breadcrumb = crate::crash::enter("request", &request, &event, "", "");
     health::write_crash_breadcrumb(&request, &event, "", sh.started.elapsed().as_secs(), sh.memory());
@@ -1817,37 +1881,79 @@ fn spawn_service(sh: &Arc<Shared>, name: &'static str, run: Arc<dyn Fn() + Send 
     crate::crash::spawn_supervised(name, stop, restart, run);
 }
 
+/// The next request this worker serves (#969): the oldest of the highest-ranked class it may take. A limited class is taken only
+/// while fewer of its requests than the adaptive limit are being served, so the workers above the limit stay free for guard and
+/// control requests. `None` after a wait of `daemon.worker_wait_ms` with nothing it may take (the worker then does its upkeep).
+/// The flag says whether the request was counted in `limited_running` (the worker un-counts exactly that, even when the limited
+/// classes are edited while it runs).
+fn next_request(sh: &Shared) -> Option<(crate::overload::Item<UnixStream>, bool)> {
+    let workers = sh.busy_since.len();
+    let limited = crate::overload::limited_ranks();
+    let mut q = lk(&sh.queue);
+    loop {
+        q.reclass(|c| {
+            let head = peek_head(c);
+            crate::overload::classify_read(&head).map(|(r, e)| (r, e, crate::overload::session_of(&head)))
+        });
+        let limit = lk(&sh.limiter).limit(workers);
+        let running = sh.limited_running.load(SeqCst);
+        let may = |rank: usize| !limited.get(rank).copied().unwrap_or(false) || running < limit;
+        let held = defaults::text("overload.what_limited");
+        if let Some(item) = q.pop(may, crate::overload::age_bound, |i| crate::overload::count(held, i.class, i.event)) {
+            let counted = limited.get(item.class).copied().unwrap_or(false);
+            if counted {
+                sh.limited_running.fetch_add(1, SeqCst);
+            }
+            sh.depth.fetch_sub(1, SeqCst);
+            crate::invariant!(
+                "daemon/queue",
+                sh.depth.load(SeqCst) == q.len(),
+                defaults::render("msg.inv_queue_pop", &[("depth", &sh.depth.load(SeqCst)), ("len", &q.len())])
+            );
+            return Some((item, counted));
+        }
+        let (g, timeout) = sh.cv.wait_timeout(q, defaults::millis("daemon.worker_wait_ms")).unwrap_or_else(|e| e.into_inner());
+        q = g;
+        if timeout.timed_out() {
+            return None; // anything queued meanwhile is taken after the upkeep
+        }
+    }
+}
+
 fn worker(sh: Arc<Shared>, idx: usize) {
+    note_qos(&sh, crate::qos::apply_self("worker"));
     crate::script::prewarm_patterns();
     crate::script::prewarm();
     crate::deadline::set_beat(sh.busy_since[idx].clone(), sh.started);
+    PEER_SLOT.with(|p| *p.borrow_mut() = Some(sh.busy_peer[idx].clone()));
     loop {
-        let conn = {
-            let mut q = lk(&sh.queue);
-            loop {
-                if let Some((c, queued_at, in_flight)) = q.pop_front() {
-                    sh.depth.fetch_sub(1, SeqCst);
-                    crate::invariant!(
-                        "daemon/queue",
-                        sh.depth.load(SeqCst) == q.len(),
-                        defaults::render("msg.inv_queue_pop", &[("depth", &sh.depth.load(SeqCst)), ("len", &q.len())])
-                    );
-                    break Some((c, queued_at.elapsed(), in_flight));
-                }
-                let (g, _) = sh.cv.wait_timeout(q, defaults::millis("daemon.worker_wait_ms")).unwrap_or_else(|e| e.into_inner());
-                q = g;
-                if q.is_empty() {
-                    break None;
-                }
-            }
-        };
-        let Some((conn, wait, in_flight)) = conn else {
+        let Some((item, limited)) = next_request(&sh) else {
             crate::script::maintain(true);
             crate::memdiag::worker_tick(idx);
             continue;
         };
+        let (wait, class, event) = (item.at.elapsed(), item.class, item.event);
+        // #969 shed mode: the limit is backed off to its floor (sustained overload), or this request waited past its class bound
+        let workers = sh.busy_since.len();
+        let floor = crate::overload::enabled() && lk(&sh.limiter).at_floor(workers);
+        let late = crate::overload::waited_too_long(class, wait);
+        if floor || late {
+            let what = if late { "overload.what_timed_out" } else { "overload.what_shed_mode" };
+            crate::overload::count(defaults::text(what), class, event);
+        }
+        crate::overload::set_request_shed(floor || late);
         sh.busy_since[idx].store(sh.ms() + 1, SeqCst);
-        let after = serve_conn(conn, &sh, wait, in_flight);
+        let after = serve_conn(item.conn, &sh, wait, item.in_flight);
+        crate::overload::set_request_shed(false);
+        if limited {
+            sh.limited_running.fetch_sub(1, SeqCst);
+        }
+        if let Some(target) = crate::overload::target(class, event).filter(|_| crate::overload::enabled()) {
+            lk(&sh.limiter).update(item.at.elapsed(), target, workers);
+        }
+        lk(&sh.queue).finish(item.session.as_deref()); // the session's later requests may go
+        sh.cv.notify_all(); // a worker holding back a limited request re-checks the limit
+        sh.busy_peer[idx].store(0, SeqCst);
         sh.busy_since[idx].store(0, SeqCst);
         crate::script::maintain(false);
         crate::memdiag::worker_tick(idx);
@@ -1992,14 +2098,47 @@ fn loop_stalled(beat: u64, ended: bool, now: u64, stall_ms: u64, start_stall_ms:
     now.saturating_sub(beat) > stall_ms
 }
 
+use health::{watchdog_exit_kind, watchdog_factor};
+
+/// R0 (#969 hardening): log and record one watchdog exit (`code` = stall or stuck) taken at `load` per core; returns the kind logged.
+fn watchdog_exit(load: Option<f64>, code: &str, log_detail: &str, failure: &str) -> &'static str {
+    let kind = watchdog_exit_kind(load);
+    health::log_event(kind, code, log_detail);
+    health::record_failure(kind, code, failure);
+    kind
+}
+
 /// How many ms the longest-silent busy worker has gone without progress (`None` = no worker is busy): what the heartbeat file carries,
 /// so a client waiting past its fail-fast deadline can tell a daemon that is working on its request from one that is not.
+/// #969: count the outcome of a request thread's QoS request (`daemon.qos`) per outcome.
+fn note_qos(sh: &Shared, r: crate::qos::Applied) {
+    let outcome = match r {
+        crate::qos::Applied::Set => "set",
+        crate::qos::Applied::Off => "off",
+        crate::qos::Applied::Refused(_) => "refused",
+    };
+    sh.telemetry.with_metrics(|m| m.inc("qos_threads", &[("outcome", outcome)]));
+}
+
+/// #969: each busy worker that knows its request's client: (the client's pid, ms since the worker's last progress on it).
+fn busy_peers(sh: &Shared) -> Vec<(u64, u64)> {
+    let now = sh.ms();
+    sh.busy_since
+        .iter()
+        .zip(&sh.busy_peer)
+        .map(|(b, p)| (b.load(SeqCst), p.load(SeqCst)))
+        .filter(|(since, pid)| *since != 0 && *pid != 0)
+        .map(|(since, pid)| (pid, now.saturating_sub(since - 1)))
+        .collect()
+}
+
 fn oldest_busy_silence(sh: &Shared) -> Option<u64> {
     let now = sh.ms();
     sh.busy_since.iter().map(|b| b.load(SeqCst)).filter(|since| *since != 0).map(|since| now.saturating_sub(since - 1)).max()
 }
 
 fn watchdog(sh: Arc<Shared>) {
+    note_qos(&sh, crate::qos::apply_self("watchdog"));
     let mut last_rss = Instant::now();
     let mut last_idle_check = Instant::now();
     let mut last_cpu_check = Instant::now();
@@ -2009,6 +2148,7 @@ fn watchdog(sh: Arc<Shared>) {
     loop {
         std::thread::sleep(sh.cfg().watchdog_tick);
         health::heartbeat(oldest_busy_silence(&sh));
+        health::heartbeat_peers(&busy_peers(&sh));
         // the stall and stuck checks keep running while draining: a drain waits for its workers, so one stuck there would
         // otherwise hold the process (and the singleton lock) until the drain timer. Once a forced exit is scheduled there
         // is nothing left to decide, and a check that kept firing would log the same failure every tick (each one counts
@@ -2033,17 +2173,23 @@ fn watchdog(sh: Arc<Shared>) {
             sh.busy_since.iter().filter(|b| b.load(SeqCst) != 0).count() <= cfg.workers,
             defaults::render("msg.inv_busy_workers", &[("workers", &cfg.workers)])
         );
-        if loop_stalled(sh.loop_beat.load(SeqCst), sh.loop_ended.load(SeqCst), now, cfg.stall.as_millis() as u64, cfg.start_stall.as_millis() as u64) {
-            health::log_event("watchdog", "stall", defaults::text("msg.log_stall"));
-            health::record_failure("watchdog", "stall", defaults::text("msg.failure_stall"));
+        // R0: a starved machine slows the accept loop and blocks host calls; both bounds stretch with the load, and an exit taken
+        // under load is logged as a load exit, which never counts toward the crash-loop rule
+        let load = crate::loadscale::per_core();
+        let factor = watchdog_factor(load);
+        let (stall_ms, stuck_ms) = (crate::loadscale::scale(cfg.stall.as_millis() as u64, factor), crate::loadscale::scale(cfg.stuck.as_millis() as u64, factor));
+        let start_stall_ms = crate::loadscale::scale(cfg.start_stall.as_millis() as u64, factor);
+        if loop_stalled(sh.loop_beat.load(SeqCst), sh.loop_ended.load(SeqCst), now, stall_ms, start_stall_ms) {
+            let kind = watchdog_exit(load, "stall", defaults::text("msg.log_stall"), defaults::text("msg.failure_stall"));
+            sh.telemetry.with_metrics(|m| m.inc("watchdog_exits", &[("kind", kind), ("code", "stall")]));
             begin_drain(&sh, "stall", defaults::text("msg.exit_reason_stall"), true);
             continue;
         }
         for (i, b) in sh.busy_since.iter().enumerate() {
             let since = b.load(SeqCst);
-            if since != 0 && now.saturating_sub(since - 1) > cfg.stuck.as_millis() as u64 {
-                health::log_event("watchdog", "stuck", &defaults::render("msg.log_stuck", &[("i", &i)]));
-                health::record_failure("watchdog", "stuck", defaults::text("msg.failure_stuck"));
+            if since != 0 && now.saturating_sub(since - 1) > stuck_ms {
+                let kind = watchdog_exit(load, "stuck", &defaults::render("msg.log_stuck", &[("i", &i)]), defaults::text("msg.failure_stuck"));
+                sh.telemetry.with_metrics(|m| m.inc("watchdog_exits", &[("kind", kind), ("code", "stuck")]));
                 begin_drain(&sh, "stuck", defaults::text("msg.exit_reason_stuck"), true);
                 break;
             }
@@ -2143,7 +2289,10 @@ fn watchdog(sh: Arc<Shared>) {
                 continue;
             }
             if cfg.rss_cap_kb > 0 && mem > cfg.rss_cap_kb && !sh.rss_tripped.swap(true, SeqCst) {
-                health::log_event("rss", "rss", &defaults::render("msg.log_rss", &[("rss", &mem), ("cap", &cfg.rss_cap_kb)]));
+                // R0: under load more requests run at once and memory rises with them; a cap trip taken then is logged as a load
+                // exit (health.rss_load_kind, not crashy) so it can not latch the crash-loop cooldown; at low load it stays `rss`
+                let kind = health::rss_exit_kind(crate::loadscale::per_core());
+                health::log_event(kind, "rss", &defaults::render("msg.log_rss", &[("rss", &mem), ("cap", &cfg.rss_cap_kb)]));
                 crate::obs::trace::dump(defaults::text("diagnostics.trace_reason_rss"));
                 // its own kind: the cap trip above is the one the crash-loop rule counts, this line only explains it
                 health::log_event("memory", "breakdown", &sh.memory_line());
@@ -2793,7 +2942,35 @@ fn shed_drain(mut read: impl FnMut(&mut Vec<u8>, Duration) -> std::io::Result<us
     bytes - left
 }
 
+/// Answer a connection the full queue refused BUSY (the client falls back by its capacity rules) and close it gracefully.
+fn answer_busy(sh: &Shared, mut s: UnixStream) {
+    sh.stats.busy.fetch_add(1, SeqCst);
+    note_busy_reason(sh, BusyWhy::Queue);
+    sh.telemetry.with_metrics(|m| m.inc("busy_replies", &[]));
+    crate::failopen::note(defaults::text("fail_open.reason_busy"), defaults::text("fail_open.check_none"), defaults::text("msg.reply_busy_detail"));
+    crate::failopen::drain_into(&sh.telemetry);
+    s.set_nonblocking(true).ok_logged("daemon_busy_nonblocking");
+    let frame = Reply::Busy.frame();
+    match s.write(&frame) {
+        Ok(n) if n == frame.len() => shed_close_gracefully(s),
+        _ => {
+            REPLY_WRITE_ERRORS.fetch_add(1, SeqCst); // a short write, a full socket buffer (WouldBlock) or a gone peer
+        }
+    }
+}
+
+/// The first `overload.peek_bytes` of a new connection that have arrived, without consuming or waiting for them (#969): what the
+/// client has not sent yet is not there, and the request is then classed `overload.class_unknown`.
+fn peek_head(s: &UnixStream) -> Vec<u8> {
+    let mut buf = vec![0u8; defaults::num("overload.peek_bytes") as usize];
+    // SAFETY: `buf` is a live, writable buffer of `buf.len()` bytes and the descriptor is the open, accepted socket.
+    let got = unsafe { libc::recv(s.as_raw_fd(), buf.as_mut_ptr().cast(), buf.len(), libc::MSG_PEEK | libc::MSG_DONTWAIT) };
+    buf.truncate(usize::try_from(got).unwrap_or(0));
+    buf
+}
+
 fn accept_loop(sh: &Arc<Shared>, listener: &UnixListener) {
+    note_qos(sh, crate::qos::apply_self("accept"));
     let me = limits::uid();
     let fd = listener.as_raw_fd();
     let mut last_check = Instant::now();
@@ -2847,41 +3024,48 @@ fn accept_loop(sh: &Arc<Shared>, listener: &UnixListener) {
                 sh.telemetry.with_metrics(|m| m.inc("rejected_peers", &[]));
                 continue; // dropped: another uid never gets a reply
             }
+            // #969: the request's admission class, from its first bytes (peeked, never waited for: unread = guard)
+            let head = if crate::overload::enabled() { peek_head(&s) } else { Vec::new() };
+            let read = crate::overload::classify_read(&head);
+            let (class, event) = read.unwrap_or_else(|| crate::overload::classify(&head));
             let mut q = lk(&sh.queue);
-            if q.len() >= sh.cfg().queue {
-                drop(q);
-                sh.stats.busy.fetch_add(1, SeqCst);
-                note_busy_reason(sh, BusyWhy::Queue);
-                sh.telemetry.with_metrics(|m| m.inc("busy_replies", &[]));
-                crate::failopen::note(defaults::text("fail_open.reason_busy"), defaults::text("fail_open.check_none"), defaults::text("msg.reply_busy_detail"));
-                crate::failopen::drain_into(&sh.telemetry);
-                let mut s = s;
-                s.set_nonblocking(true).ok_logged("daemon_busy_nonblocking");
-                let frame = Reply::Busy.frame();
-                match s.write(&frame) {
-                    Ok(n) if n == frame.len() => shed_close_gracefully(s),
-                    Ok(_) => {
-                        REPLY_WRITE_ERRORS.fetch_add(1, SeqCst);
+            // requests ahead of this one: the queued ones and those a worker is serving now
+            let in_flight = q.len() as u64 + sh.busy_since.iter().filter(|b| b.load(SeqCst) != 0).count() as u64;
+            let item = crate::overload::Item { conn: s, at: Instant::now(), in_flight,
+                class,
+                event,
+                limited: false,
+                unread: crate::overload::enabled() && read.is_none(),
+                session: crate::overload::enabled().then(|| crate::overload::session_of(&head)).flatten(),
+            };
+            // a request whose event carries a recorder is never evicted (its state is what a later guard reads)
+            let refused = match q.push(item, sh.cfg().queue, |v| crate::overload::evictable(v.event)) {
+                crate::overload::Admit::Queued => {
+                    sh.depth.fetch_add(1, SeqCst);
+                    None
+                }
+                // a full queue made room by refusing the newest request of a lower class (the depth is unchanged)
+                crate::overload::Admit::Evicted(v) => Some((v, true)),
+                crate::overload::Admit::Rejected(v) => Some((v, false)),
+            };
+            crate::invariant!(
+                "daemon/queue",
+                sh.depth.load(SeqCst) == q.len(),
+                defaults::render("msg.inv_queue_push", &[("depth", &sh.depth.load(SeqCst)), ("len", &q.len())])
+            );
+            drop(q);
+            match refused {
+                None => sh.cv.notify_one(),
+                Some((v, evicted)) => {
+                    if crate::overload::enabled() {
+                        let what = if evicted { "overload.what_evicted" } else { "overload.what_rejected" };
+                        crate::overload::count(defaults::text(what), v.class, v.event);
                     }
-                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
-                        REPLY_WRITE_ERRORS.fetch_add(1, SeqCst);
+                    if evicted {
+                        sh.cv.notify_one(); // for the request that took its place
                     }
-                    Err(_) => {
-                        REPLY_WRITE_ERRORS.fetch_add(1, SeqCst);
-                    }
-                };
-            } else {
-                // requests ahead of this one: the queued ones and those a worker is serving now
-                let in_flight = q.len() as u64 + sh.busy_since.iter().filter(|b| b.load(SeqCst) != 0).count() as u64;
-                q.push_back((s, Instant::now(), in_flight));
-                sh.depth.fetch_add(1, SeqCst);
-                crate::invariant!(
-                    "daemon/queue",
-                    sh.depth.load(SeqCst) == q.len(),
-                    defaults::render("msg.inv_queue_push", &[("depth", &sh.depth.load(SeqCst)), ("len", &q.len())])
-                );
-                drop(q);
-                sh.cv.notify_one();
+                    answer_busy(sh, v.conn);
+                }
             }
         }
         // accepts work again: say so once the line can be written (the descriptor table may still be full right after one
@@ -2901,6 +3085,10 @@ fn accept_loop(sh: &Arc<Shared>, listener: &UnixListener) {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "daemon_overload/tests.rs"]
+mod overload_tests;
 
 #[cfg(test)]
 mod tests {
@@ -2926,6 +3114,46 @@ mod tests {
         let both = block_text_of(&hook(2, r#"{"decision":"block","reason":"json says"}"#, "stderr says\n"));
         assert_eq!(both, format!("json says{}stderr says", defaults::text("telemetry.block_channel_joiner")));
         assert_eq!(block_text_of(&hook(2, r#"{"decision":"block","reason":"same"}"#, "same\n")), "same");
+    }
+
+    /// R0 (#969 hardening): at load 80 on 16 cores a host call blocked past stuck_ms produced a watchdog exit that counted as a
+    /// crash; client.crash_n of them within client.crash_window_s latched the engine off for client.crash_cooldown_s, every guard
+    /// passing meanwhile. Exits taken under load must not latch; the same exits on an idle machine still must.
+    #[test]
+    fn watchdog_exits_under_load_never_latch_the_crash_loop_but_idle_ones_still_do() {
+        let _turn = health::STATE_TURN.lock().unwrap_or_else(|e| e.into_inner());
+        let prev = std::env::var_os("AH_ENGINE_DIR");
+        let cfg = crate::config::ClientConfig::from_env();
+        let run = |name: &str, load: Option<f64>| -> bool {
+            let dir = crate::testtmp::path(format!("ah-r0-latch-{name}-{}", std::process::id()));
+            std::fs::create_dir_all(&dir).unwrap();
+            // SAFETY: a test-only env mutation; the tests that read AH_ENGINE_DIR in this process take STATE_TURN first.
+            unsafe { std::env::set_var("AH_ENGINE_DIR", &dir) };
+            for code in std::iter::repeat_n(["stuck", "stall"], cfg.crash_n + 1).flatten() {
+                watchdog_exit(load, code, "test", "test");
+            }
+            let tripped = health::crashloop_tripped(&cfg);
+            crate::discard::harmless(std::fs::remove_dir_all(&dir));
+            tripped
+        };
+        let loaded = run("loaded", Some(5.0));
+        let idle = run("idle", None);
+        let low = run("low", Some(0.5));
+        match &prev {
+            // SAFETY: as above
+            Some(v) => unsafe { std::env::set_var("AH_ENGINE_DIR", v) },
+            None => unsafe { std::env::remove_var("AH_ENGINE_DIR") },
+        }
+        assert!(!loaded, "watchdog exits on a loaded machine (5 per core) latched the crash-loop cooldown");
+        assert!(idle && low, "watchdog exits on an idle machine must still trip the crash loop");
+        // the bounds stretch with the load, never shrink, and stay put on an idle machine
+        let max = defaults::num("daemon.watchdog_load_scale_max_permille");
+        assert_eq!(watchdog_factor(None), 1000);
+        assert_eq!(watchdog_factor(Some(0.5)), 1000);
+        assert_eq!(watchdog_factor(Some(50.0)), max.max(1000), "clamped to its own ceiling");
+        assert!(watchdog_factor(Some(5.0)) > 1000, "a loaded machine gives a stuck worker longer");
+        assert_eq!(watchdog_exit_kind(Some(5.0)), defaults::text("health.load_exit_kind"));
+        assert!(!defaults::list("health.crashy_kinds").contains(&defaults::text("health.load_exit_kind")), "a load exit is not crashy");
     }
 
     #[test]
@@ -3114,6 +3342,7 @@ mod tests {
                     cfg: String::new(),
                     payload_sha1: None,
                     deadline_ms: None,
+                    load_permille: None,
                     notice: None,
                 };
                 let d = format!("D 0.1.0\n{}\n{payload}", serde_json::to_string(&meta).unwrap());
@@ -3144,6 +3373,7 @@ mod tests {
             cfg: String::new(),
             payload_sha1: None,
             deadline_ms: None,
+            load_permille: None,
             notice: None,
         };
         let d = format!("D 0.1.0\n{}\n{payload}", serde_json::to_string(&meta).unwrap());

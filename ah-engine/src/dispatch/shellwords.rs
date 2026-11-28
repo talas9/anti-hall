@@ -75,6 +75,471 @@ pub struct Cfg {
     /// `--opt=VALUE` / `-oVALUE`) whose value is itself a command line (`env -S './x.sh'`): the value is read again as a command,
     /// so a script it names is resolved like a top-level one.
     pub wrapper_split_opts: Vec<(String, Vec<String>)>,
+    /// The parsed read exemption ([`read_only_parts`]): the separators that end one command of a list (`&&`, `;`, a newline ...;
+    /// empty = the exemption is off). A pipe `|` joins the commands of one pipeline; any other separator exempts nothing.
+    pub ro_seps: Vec<String>,
+    /// The commands that only change the directory (`cd`, `pushd`), dropped from the list when alone in their pipeline.
+    pub ro_skip: Vec<String>,
+    /// The variables whose `$NAME` / `${NAME}` may stand in an argument (`HOME`, `PWD`, `TMPDIR`): set by the environment, a path
+    /// or a name, never a flag. Any other expansion exempts nothing.
+    pub ro_vars: Vec<String>,
+    /// The word an allowed variable is read as (the read exemption's pattern then sees no `$`).
+    pub ro_placeholder: String,
+    /// The variable that holds the home directory (`HOME`): a leading `$HOME/`, `${HOME}/` or the home path itself reads as `~/`
+    /// in a command word and an assignment's value.
+    pub ro_home: String,
+    /// The engine's own binary, as a command word or an assignment's value may spell it (`ah-engine`, `~/.anti-hall/...`). Only a
+    /// variable assigned one of these (`E=<path>; "$E" status`) may stand in a command word.
+    pub ro_programs: Vec<String>,
+    /// The engine's local, reversible verbs: per entry, its leading words (`*` = any one word) and the flags (words that start
+    /// with `-`) that must stand as a whole word somewhere after the program (`config set --check`).
+    pub ro_verbs: Vec<String>,
+    /// #969: the shells whose code argument (`bash -c '..'`, and `eval ..`'s words) runs as a command: its command words count as
+    /// the call's own ([`Normalised::cmds`]); a quoted argument of any other program never does.
+    pub ro_shells: Vec<String>,
+    /// #971: the variables a list may not assign for the exemption (`PATH`, `IFS`: the shell itself reads them; `NAME*` = any name
+    /// that starts with NAME). An assignment of one exempts nothing.
+    pub ro_assign_deny: Vec<String>,
+    /// #971: the commands that may assign a shell variable (`printf -v`, `read`, `export`, `eval`): after one, no variable assigned
+    /// earlier in the list is known any more.
+    pub ro_assigners: Vec<String>,
+    /// #971: the engine options whose value is free text (`--message`, `--summary`): a value with no substitution and no unquoted
+    /// expansion is data, not read for its expansions.
+    pub ro_text_opts: Vec<String>,
+    /// #971: the system directories (`/usr/bin/`, `/bin/`) a reader's command word may be spelled with: `/usr/bin/grep` reads as
+    /// `grep`.
+    pub ro_bin_dirs: Vec<String>,
+    /// #971: the commands that never assign a shell variable (`echo`, `grep`, `git`, `sleep`): after a pipeline every command of
+    /// which is one of these, the variables of [`local_spans`]' reading stay known; after any other they are unknown.
+    pub ro_inert: Vec<String>,
+}
+
+/// What the parsed read exemption ([`read_only_parts`]) made of one pipeline of a command list.
+#[derive(Debug, PartialEq, Eq)]
+pub enum Part {
+    /// A pipeline as text, its expansions resolved: the caller's read pattern must match all of it.
+    Read(String),
+    /// An engine verb of `ro_verbs`, the rest of its pipeline (`head -5 | grep x`, empty = none), which the caller's read
+    /// pattern must match, and its redirections (`2>&1`, `>/dev/null`, `>>/tmp/x`: operator and target joined, the target's
+    /// variables resolved), which the caller's redirection pattern must match.
+    Local(String, Vec<String>),
+}
+
+/// #971: where a word stands, for [`ro_expand`]: a command word (only an engine variable or the home variable leads it), an
+/// argument (an allowed variable reads as the placeholder), or a redirection target (only a variable assigned in the list).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum At {
+    Command,
+    Arg,
+    Target,
+}
+
+/// #971: a variable a list assigned: its value, and whether that value is the engine's own binary (only then may it stand as a
+/// command word).
+struct Var {
+    name: String,
+    value: String,
+    program: bool,
+}
+
+/// `word` with its expansions resolved for the parsed read exemption, `None` when one is not allowed. A word with no expansion
+/// outside single quotes (`exp` [`Exp::Lit`]) is its text. Otherwise a variable assigned earlier in the list (`vars`) reads as its
+/// value (as a command word only the engine binary; unquoted, only a value with no space or glob character, which the shell would
+/// split), an allowed variable (`ro_vars`) in an argument as `ro_placeholder`, the home variable at the start of a command word as
+/// `~`; `${..}` with an operator, `${!x}`, a positional or special parameter, `$(..)`, a backtick and `<(..)`/`>(..)` exempt nothing.
+fn ro_expand(word: &str, exp: Exp, vars: &[Var], cfg: &Cfg, home: Option<&std::ffi::OsStr>, at: At) -> Option<String> {
+    let command = at == At::Command;
+    let out = if exp == Exp::Lit { word.to_string() } else { ro_subst(word, exp, vars, cfg, at)? };
+    let under_home = home.and_then(|h| h.to_str()).filter(|h| command && !h.is_empty()).and_then(|h| out.strip_prefix(h)).filter(|r| r.starts_with('/'));
+    Some(under_home.map_or_else(|| out.clone(), |rest| format!("~{rest}")))
+}
+
+/// The expansions of a word that has some ([`ro_expand`]).
+fn ro_subst(word: &str, exp: Exp, vars: &[Var], cfg: &Cfg, at: At) -> Option<String> {
+    if word.contains('`') || word.contains("<(") || word.contains(">(") {
+        return None;
+    }
+    let name_char = |c: char| c.is_ascii_alphanumeric() || c == '_';
+    let cs: Vec<char> = word.chars().collect();
+    let (mut out, mut i) = (String::new(), 0);
+    while i < cs.len() {
+        if cs[i] != '$' {
+            out.push(cs[i]);
+            i += 1;
+            continue;
+        }
+        let (name, next): (String, usize) = if cs.get(i + 1) == Some(&'{') {
+            let close = cs[i + 2..].iter().position(|c| *c == '}')? + i + 2;
+            (cs[i + 2..close].iter().collect(), close + 1)
+        } else {
+            let len = cs[i + 1..].iter().take_while(|c| name_char(**c)).count();
+            (cs[i + 1..i + 1 + len].iter().collect(), i + 1 + len)
+        };
+        if name.is_empty() || !name.chars().all(name_char) || name.starts_with(|c: char| c.is_ascii_digit()) {
+            return None;
+        }
+        // #971 review: zsh reads an unbraced `$NAME[..]` as a subscript, evaluated as arithmetic (`x[$(..)]` runs a command)
+        if cs.get(i + 1) != Some(&'{') && cs.get(next) == Some(&'[') {
+            return None;
+        }
+        if let Some(v) = vars.iter().find(|v| v.name == name) {
+            let split = exp == Exp::Bare && v.value.contains([' ', '\t', '\n', '*', '?', '[']);
+            if split || (at == At::Command && !v.program) {
+                return None;
+            }
+            out.push_str(&v.value);
+        } else if at == At::Command {
+            if i != 0 || cfg.ro_home.is_empty() || name != cfg.ro_home {
+                return None;
+            }
+            out.push('~');
+        } else if at == At::Arg && cfg.ro_vars.contains(&name) {
+            out.push_str(&cfg.ro_placeholder);
+        } else {
+            return None;
+        }
+        i = next;
+    }
+    Some(out)
+}
+
+/// Whether `word` (a command word as written, or a script path a command runs) is the engine's own binary (`ro_programs`, the home
+/// directory read as `~`): it is never read as a script (#969: it is far over any read cap and would be held as unread).
+pub fn is_engine_program(word: &str, cfg: &Cfg, home: Option<&std::ffi::OsStr>) -> bool {
+    !cfg.ro_programs.is_empty() && ro_expand(word, Exp::Quoted, &[], cfg, home, At::Command).is_some_and(|w| cfg.ro_programs.contains(&w))
+}
+
+/// Whether the words after the engine program are one of its local verbs (`ro_verbs`).
+fn ro_verb(words: &[String], verbs: &[String]) -> bool {
+    verbs.iter().any(|v| {
+        let (flags, lead): (Vec<&str>, Vec<&str>) = v.split_whitespace().partition(|w| w.starts_with('-'));
+        !lead.is_empty()
+            && lead.len() <= words.len()
+            && lead.iter().zip(words).all(|(p, w)| *p == "*" || *p == w.as_str())
+            && flags.iter().all(|f| words.iter().any(|w| w.as_str() == *f))
+    })
+}
+
+/// #971 review: whether a double-quoted free-text value (`--message "..."`) holds only text and plain `$NAME` / `${NAME}`: no
+/// substitution (`$(..)`, a backtick, `<(..)`), no operator, flag, subscript or modifier (zsh `${(e)X}` and bash `${X@P}` run the
+/// value as code; `${Z[Y]}` and zsh `$Z[Y]` evaluate `Y` as arithmetic, which runs a `$(..)` inside it).
+fn ro_text(v: &str) -> bool {
+    if v.contains('`') || v.contains("<(") || v.contains(">(") {
+        return false;
+    }
+    let cs: Vec<char> = v.chars().collect();
+    let name_char = |c: &char| c.is_ascii_alphanumeric() || *c == '_';
+    let mut i = 0;
+    while i < cs.len() {
+        if cs.get(i) != Some(&'$') {
+            i += 1;
+            continue;
+        }
+        let braced = cs.get(i + 1) == Some(&'{');
+        let start = i + 1 + usize::from(braced);
+        // a name, or a positional parameter (`$5`: digits only), both plain values
+        let digits = cs.get(start).is_some_and(char::is_ascii_digit);
+        let len = cs.get(start..).unwrap_or_default().iter().take_while(|c| if digits { c.is_ascii_digit() } else { name_char(c) }).count();
+        if len == 0 {
+            return false;
+        }
+        let mut j = start + len;
+        if braced {
+            if cs.get(j) != Some(&'}') {
+                return false;
+            }
+            j += 1;
+        } else if cs.get(j) == Some(&'[') || (cs.get(j) == Some(&':') && cs.get(j + 1).is_some_and(|c| c.is_ascii_alphabetic() || *c == '&')) {
+            return false;
+        }
+        i = j;
+    }
+    true
+}
+
+/// #971 review: whether a word as written (`raw`, quotes included) holds an unquoted `(` `)` `<` or `>` after its first `skip`
+/// chars (a redirection's operator): the shell reads one as a grouping, a function definition, a glob qualifier, a process
+/// substitution or a redirection, never as text. A quote it reads differently from the shell only ever leaves a char unquoted.
+fn bare_meta(raw: &[char], skip: usize) -> bool {
+    let (mut i, mut dollar) = (0, false);
+    while i < raw.len() {
+        let c = raw[i];
+        match c {
+            '\\' => i += 1,
+            '\'' => {
+                // `$'..'` honours backslash escapes, a plain single quote does not
+                let ansi = dollar;
+                i += 1;
+                while i < raw.len() && raw[i] != '\'' {
+                    i += if ansi && raw[i] == '\\' { 2 } else { 1 };
+                }
+            }
+            '"' => {
+                i += 1;
+                while i < raw.len() && raw[i] != '"' {
+                    i += if raw[i] == '\\' { 2 } else { 1 };
+                }
+            }
+            '(' | ')' | '<' | '>' if i >= skip => return true,
+            _ => {}
+        }
+        dollar = c == '$';
+        i += 1;
+    }
+    false
+}
+
+/// #971 review: an assignment the plain form misses (`NAME+=..`, `NAME[..]=..`): an append, or an element of an array or a hash
+/// (zsh `commands[x]=`, `functions[x]=`, `fpath+=`), can rebind the name a later command runs.
+fn assign_ext(word: &str) -> bool {
+    let Some((k, _)) = word.split_once('=') else { return false };
+    let (k, append) = k.strip_suffix('+').map_or((k, false), |k| (k, true));
+    let (name, sub) = k.strip_suffix(']').and_then(|k| k.split_once('[')).map_or((k, false), |(n, _)| (n, true));
+    (append || sub) && !name.is_empty() && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') && !name.starts_with(|c: char| c.is_ascii_digit())
+}
+
+/// The parsed read exemption of `dispatch.capacity_hold` (`parsed`): the pipelines of a command list the caller's read pattern
+/// must pass, `None` when the list can not be read this way (the exemption then exempts nothing and the rules decide). A bare
+/// `cd <dir>` alone in its pipeline (`ro_skip`, no redirection) is dropped. An assignment alone in its pipeline is dropped and its
+/// variable resolves later in the list (#971: any value the reading can resolve; only the engine binary, `ro_programs`, may then
+/// stand in a command word: `E=<path>; "$E" mesh send ..`); an assignment of a variable in `ro_assign_deny` exempts nothing, and
+/// one that may not run (after `&&` or `||`), runs in a subshell (`&` after it, a pipeline) or follows a command of `ro_assigners`
+/// (`printf -v`) leaves its variable unknown. An allowed variable in an argument is read as `ro_placeholder`; a word with no
+/// expansion outside single quotes is its text. The engine's own program with a local verb (`ro_verbs`) is a [`Part::Local`] with
+/// its redirections (operator and target), the value of a `ro_text_opts` option with no substitution and no unquoted expansion
+/// read as data. A reader spelled by a `ro_bin_dirs` path reads as its name. A heredoc, a substitution, an assignment in front of
+/// a command, a separator outside `ro_seps` and `|`, or any other expansion exempts nothing. `home` is the home directory's path
+/// (a command word that starts with it reads as `~/`).
+pub fn read_only_parts(cmd: &str, cfg: &Cfg, home: Option<&std::ffi::OsStr>) -> Option<Vec<Part>> {
+    ro_walk(cmd, cfg, home, false).map(|v| v.into_iter().map(|(_, p)| p).collect())
+}
+
+/// #971: the engine-local calls of a list the parsed read exemption could not pass as a whole, each with its place in `cmd` (byte
+/// range of its pipeline, pipe tail included) for the caller to judge (tail and redirections) and mask out, so that the rest of the
+/// list is decided as it would be without them (an engine-local call is no reason to hold what passes on its own). It reads the list
+/// as [`read_only_parts`] does, but a pipeline it can not vouch for is kept for the rules instead of voiding the list; after such a
+/// pipeline no variable assigned before it is known, and after an assignment of a `ro_assign_deny` variable, a `ro_assigners`
+/// command or a function definition (anywhere in the list) no later call is masked. `None` when the list can not be split (a
+/// heredoc, a separator outside `ro_seps` and `|`, an open quote) or `ro_seps` is empty.
+pub fn local_spans(cmd: &str, cfg: &Cfg, home: Option<&std::ffi::OsStr>) -> Option<Vec<(std::ops::Range<usize>, Part)>> {
+    let bytes: Vec<usize> = cmd.char_indices().map(|(b, _)| b).chain(std::iter::once(cmd.len())).collect();
+    let spans = ro_walk(cmd, cfg, home, true)?;
+    Some(spans.into_iter().filter(|(_, p)| matches!(p, Part::Local(..))).filter_map(|((a, b), p)| Some((*bytes.get(a)?..*bytes.get(b)?, p))).collect())
+}
+
+/// The reading of [`read_only_parts`] (`lenient` false: any pipeline it can not vouch for voids the list) and of [`local_spans`]
+/// (`lenient` true: such a pipeline is left out, see there); each part with its pipeline's char range in the command.
+fn ro_walk(cmd: &str, cfg: &Cfg, home: Option<&std::ffi::OsStr>, lenient: bool) -> Option<Vec<(Span, Part)>> {
+    if cfg.ro_seps.is_empty() {
+        return None;
+    }
+    // each list item: its pipeline elements (words with how they expand), the separators before and after it, and its char range
+    struct Item {
+        pipe: Vec<Vec<(String, Exp)>>,
+        before: &'static str,
+        after: &'static str,
+        span: Option<Span>,
+        meta: bool,
+    }
+    let fresh = |before: &'static str| Item { pipe: vec![Vec::new()], before, after: "", span: None, meta: false };
+    let chars: Vec<char> = cmd.chars().collect();
+    let mut lists: Vec<Item> = vec![fresh("")];
+    let (toks, spans) = split_at(cmd, cfg)?;
+    let mut spans = spans.into_iter();
+    for t in toks {
+        match t {
+            Tok::Body(..) => return None,
+            Tok::Sep(s) if cfg.ro_seps.iter().any(|x| x == s) => {
+                lists.last_mut()?.after = s;
+                lists.push(fresh(s));
+            }
+            Tok::Sep("|") => lists.last_mut()?.pipe.push(Vec::new()),
+            Tok::Sep(_) => return None,
+            Tok::Word(w, _, _, exp) => {
+                let (a, b) = spans.next()?;
+                let item = lists.last_mut()?;
+                item.span = Some(item.span.map_or((a, b), |(a0, _)| (a0, b)));
+                // a redirection's own operator is no stray metacharacter when the word starts with it as written
+                let raw = chars.get(a..b)?;
+                let op = if is_redir(&w) { redir_split(&w).0 } else { "" };
+                let skip = if raw.iter().copied().take(op.chars().count()).eq(op.chars()) { op.chars().count() } else { 0 };
+                item.meta |= bare_meta(raw, skip);
+                item.pipe.last_mut()?.push((w, exp));
+            }
+        }
+    }
+    let denied = |k: &str| {
+        k == cfg.ro_home
+            || cfg.ro_vars.iter().any(|v| v == k)
+            || cfg.ro_assign_deny.iter().any(|d| d.strip_suffix('*').map_or(d == k, |pre| k.starts_with(pre)))
+    };
+    let mut vars: Vec<Var> = Vec::new();
+    let mut parts = Vec::new();
+    let mut tainted = false;
+    for Item { pipe, before, after, span, meta } in lists {
+        if pipe.len() == 1 && pipe[0].is_empty() {
+            continue;
+        }
+        let span = span?;
+        if pipe.iter().any(Vec::is_empty) {
+            return None;
+        }
+        // lenient: a list that may rebind a name (an assignment of a denied variable, an assigning command, a function definition, as
+        // a command word or behind wrapper words such as `then` or `sudo`) masks nothing from there on
+        let rebinds = |el: &Vec<(String, Exp)>| {
+            for (w, _) in el {
+                if w.ends_with("()")
+                    || cfg.ro_assigners.iter().any(|a| *a == base(w))
+                    || w.split_once('=').is_some_and(|(k, _)| is_assign(w) && denied(k))
+                    || assign_ext(w)
+                {
+                    return true;
+                }
+                if !is_assign(w) && !cfg.cmd_wrappers.iter().any(|x| *x == base(w)) {
+                    return false;
+                }
+            }
+            false
+        };
+        // #971 review: an unquoted ( ) < > inside a word (a zsh multi-name function `a b () ..`, a glob qualifier `*(e:..:)`, a
+        // redirection joined to a word `x>f`) is shell syntax no word list reads: it exempts nothing and masks nothing from there
+        // on; nor does an expansion that assigns (`${E::=..}`, `$((E=1))`)
+        let assigns = |w: &str| {
+            let braced = w.find("${").is_some_and(|at| w[at..].contains('='));
+            braced || w.contains("((") || w.contains("$[")
+        };
+        let assigning = pipe.iter().flatten().any(|(w, e)| *e != Exp::Lit && assigns(w));
+        if meta && !lenient {
+            return None;
+        }
+        if lenient && (meta || assigning || pipe.iter().any(rebinds)) {
+            tainted = true;
+        }
+        if lenient && tainted {
+            continue;
+        }
+        let first = &pipe[0];
+        // #971 review: only a pipeline of one element is an assignment (`X=1 | git push` runs the rest of its pipe)
+        if pipe.len() == 1 && first.iter().all(|(w, _)| is_assign(w)) {
+            // an assignment that may not run, or runs in a subshell, leaves its variable unknown
+            let sure = !matches!(before, "&&" | "||") && after != "&";
+            for (w, exp) in first {
+                let (k, v) = w.split_once('=')?;
+                if denied(k) {
+                    return None;
+                }
+                let program = ro_expand(v, *exp, &vars, cfg, home, At::Command).filter(|p| cfg.ro_programs.contains(p));
+                let value = match program {
+                    Some(p) => Some((p, true)),
+                    None => ro_expand(v, *exp, &vars, cfg, home, At::Target).map(|v| (v, false)),
+                };
+                // #971 review: a value the reading can not resolve (a substitution, a backtick, `${x:=..}`) may run something,
+                // whether or not the assignment itself runs: it exempts nothing (lenient: masks nothing from here on)
+                if value.is_none() && ro_expand(v, *exp, &vars, cfg, home, At::Arg).is_none() {
+                    if !lenient {
+                        return None;
+                    }
+                    tainted = true;
+                }
+                vars.retain(|x| x.name != k);
+                if !sure {
+                    continue;
+                }
+                if let Some((value, program)) = value {
+                    vars.push(Var { name: k.to_string(), value, program });
+                }
+            }
+            continue;
+        }
+        // a command that may assign a variable (`printf -v E ..`) leaves every variable assigned before it unknown
+        if pipe.iter().any(|el| cfg.ro_assigners.iter().any(|a| *a == base(&el[0].0))) {
+            vars.clear();
+        }
+        // only a bare `cd <dir>` is dropped: one with a redirection or more words is left for the read pattern (and so the rules)
+        if pipe.len() == 1 && first.len() <= 2 && !first.iter().any(|(w, _)| is_redir(w)) && cfg.ro_skip.iter().any(|s| *s == first[0].0) {
+            let read = first[1..].iter().all(|(w, exp)| ro_expand(w, *exp, &vars, cfg, home, At::Arg).is_some());
+            if !read && !lenient {
+                return None;
+            }
+            // #971 review: an unreadable `cd` (`cd ${E::=/bin/sh}`) is not just dropped: it masks nothing from here on
+            tainted |= !read;
+            continue;
+        }
+        // lenient: a pipeline every word of which resolves (no `$((E=1))` or `${E:=x}`) and every command of which never assigns
+        // (`ro_inert`, an allow list: zsh's `print -v`, `integer` assign too) keeps the variables known; any other pipeline is kept for
+        // the rules and leaves every variable unknown
+        let inert = || pipe.iter().all(|el| cfg.ro_inert.iter().any(|x| *x == base(&el[0].0)));
+        match ro_pipeline(&pipe, &vars, cfg, home) {
+            Some(Part::Read(_)) if lenient && inert() => {}
+            Some(Part::Read(_)) if lenient => vars.clear(),
+            Some(part) => parts.push((span, part)),
+            None if lenient => vars.clear(),
+            None => return None,
+        }
+    }
+    Some(parts)
+}
+
+/// One pipeline of [`ro_walk`] that is neither an assignment nor a bare `cd`: the engine program with a local verb
+/// ([`Part::Local`]: its pipe tail and redirections; the value of a `ro_text_opts` option read as data when nothing in it runs or is
+/// split), or any other command as text with its expansions resolved ([`Part::Read`]; a reader spelled by a `ro_bin_dirs` path reads
+/// as its name). `None` when a word can not be resolved or the engine verb is not a local one.
+fn ro_pipeline(pipe: &[Vec<(String, Exp)>], vars: &[Var], cfg: &Cfg, home: Option<&std::ffi::OsStr>) -> Option<Part> {
+    let bin = |w: String| -> String {
+        let short = cfg.ro_bin_dirs.iter().find_map(|d| w.strip_prefix(d.as_str()).filter(|r| !r.is_empty() && !r.contains('/')));
+        short.map_or(w.clone(), str::to_string)
+    };
+    let first = pipe.first()?;
+    let (w0, e0) = first.first()?;
+    let prog = ro_expand(w0, *e0, vars, cfg, home, At::Command)?;
+    let mut tail = Vec::new();
+    for el in pipe.iter().skip(1) {
+        let words = el.iter().map(|(w, exp)| ro_expand(w, *exp, vars, cfg, home, At::Arg)).collect::<Option<Vec<_>>>()?;
+        let mut words = words.into_iter();
+        let head = bin(words.next()?);
+        tail.push(std::iter::once(head).chain(words).collect::<Vec<_>>().join(" "));
+    }
+    let tail = tail.join(" | ");
+    if !cfg.ro_programs.contains(&prog) {
+        let args = first.iter().skip(1).map(|(w, exp)| ro_expand(w, *exp, vars, cfg, home, At::Arg)).collect::<Option<Vec<_>>>()?;
+        let head = std::iter::once(bin(prog)).chain(args).collect::<Vec<_>>().join(" ");
+        return Some(Part::Read(if tail.is_empty() { head } else { format!("{head} | {tail}") }));
+    }
+    let (mut args, mut redirs) = (Vec::new(), Vec::new());
+    let mut k = 1;
+    while k < first.len() {
+        let (w, exp) = first.get(k)?;
+        if is_redir(w) {
+            let (op, target) = redir_split(w);
+            let target = if target.is_empty() {
+                k += 1;
+                let (t, texp) = first.get(k)?;
+                ro_expand(t, *texp, vars, cfg, home, At::Target)?
+            } else {
+                ro_expand(target, *exp, vars, cfg, home, At::Target)?
+            };
+            redirs.push(format!("{op}{target}"));
+        } else if let Some(text) = cfg.ro_text_opts.iter().find(|o| *o == w || w.strip_prefix(o.as_str()).is_some_and(|r| r.starts_with('='))) {
+            // a free-text value is data when nothing in it runs or is split: read as the placeholder
+            let joined = w.len() > text.len();
+            // #971 review: a missing value, or a redirection in its place (`--message >f`), exempts nothing
+            let (v, e) = if joined { (&w[text.len() + 1..], *exp) } else { first.get(k + 1).map(|(v, e)| (v.as_str(), *e))? };
+            if !joined && is_redir(v) {
+                return None;
+            }
+            if e == Exp::Lit || (e == Exp::Quoted && ro_text(v)) {
+                args.push(text.clone());
+                args.push(cfg.ro_placeholder.clone());
+                k += usize::from(!joined);
+            } else {
+                args.push(ro_expand(w, *exp, vars, cfg, home, At::Arg)?);
+            }
+        } else {
+            args.push(ro_expand(w, *exp, vars, cfg, home, At::Arg)?);
+        }
+        k += 1;
+    }
+    ro_verb(&args, &cfg.ro_verbs).then_some(Part::Local(tail, redirs))
 }
 
 /// A command read the shell's way.
@@ -98,15 +563,33 @@ pub struct Normalised {
     pub cds: Vec<String>,
     /// #928: how many wrapper-option values were skipped to find a command (`sudo -u bob cmd`).
     pub opt_skips: usize,
+    /// #969: the command words the top level runs (wrappers, assignments and redirections skipped), as written: what is called, never
+    /// an argument that only names a program (`pgrep -f 'ah-engine serve'`).
+    pub cmds: Vec<String>,
+    /// #969: the code a shell named in `ro_shells` runs (`bash -c '..'`, `eval ..`), read again by [`normalise`] for its commands.
+    pub shell_code: Vec<String>,
 }
 
 enum Tok {
-    /// The word with quoted separators blanked, whether it can run something, and its value as the shell passes it on (quotes
-    /// removed, nothing blanked: what a nested shell would read).
-    Word(String, bool, String),
+    /// The word with quoted separators blanked, whether it can run something, its value as the shell passes it on (quotes
+    /// removed, nothing blanked: what a nested shell would read), and how it expands ([`Exp`]).
+    Word(String, bool, String, Exp),
     Sep(&'static str),
     /// A heredoc body (its delimiter line kept) and whether it can run something (an unquoted delimiter and a substitution).
     Body(String, bool),
+}
+
+/// #971: how a word expands, for the parsed read exemption: `Lit` holds no expansion outside single quotes (a `$`, a backtick or
+/// `<(` in it is text), `Quoted` only expansions inside double quotes (no word splitting or globbing of their values), `Bare` an
+/// unquoted expansion (its value is split and globbed).
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+pub enum Exp {
+    /// No expansion outside single quotes.
+    Lit,
+    /// Expansions inside double quotes only.
+    Quoted,
+    /// An unquoted expansion.
+    Bare,
 }
 
 /// A brace list `pre{a,b}post` expanded the way bash does (nested lists too), at most `cap` words; a word with no list is itself.
@@ -288,13 +771,24 @@ fn sub_end(cs: &[char], i: usize) -> Option<usize> {
 /// Splits `cmd` into words and unquoted separators. `None` when a quote or a substitution is left open (the caller holds the call
 /// under `unreadable`). A word is "live" when it holds a substitution (`$(..)`, `${..}`, a backtick, `<(..)`, `>(..)`) outside single
 /// quotes: it can run something.
-#[allow(unused_assignments)] // the last flush! resets state nothing reads
 fn split(cmd: &str, cfg: &Cfg) -> Option<Vec<Tok>> {
+    split_at(cmd, cfg).map(|(toks, _)| toks)
+}
+
+/// A word's first and one-past-last char index in the command.
+type Span = (usize, usize);
+
+/// [`split`], with the place of each word token in `cmd` (in order, one per `Tok::Word`: its first and one-past-last char index,
+/// quotes included), for #971's masking of the engine-local calls.
+#[allow(unused_assignments)] // the last flush! resets state nothing reads
+fn split_at(cmd: &str, cfg: &Cfg) -> Option<(Vec<Tok>, Vec<Span>)> {
     let cs: Vec<char> = cmd.chars().collect();
     let n = cs.len();
     let mut toks: Vec<Tok> = Vec::new();
+    let (mut spans, mut wstart): (Vec<Span>, usize) = (Vec::new(), 0);
     // cur: the word with quoted separators blanked; raw: its value as the shell passes it on
     let (mut cur, mut raw, mut live, mut in_word, mut brace) = (String::new(), String::new(), false, false, false);
+    let mut exp = Exp::Lit;
     let mut pending: Vec<(String, bool, bool)> = Vec::new();
     let mut arith = 0usize;
     let mut i = 0;
@@ -311,12 +805,15 @@ fn split(cmd: &str, cfg: &Cfg) -> Option<Vec<Tok>> {
                 let (w, r) = (std::mem::take(&mut cur), std::mem::take(&mut raw));
                 if brace && cfg.brace_cap > 0 {
                     for (k, w) in braces(&w, cfg.brace_cap).into_iter().enumerate() {
-                        toks.push(Tok::Word(w, live, if k == 0 { r.clone() } else { String::new() }));
+                        toks.push(Tok::Word(w, live, if k == 0 { r.clone() } else { String::new() }, exp));
+                        spans.push((wstart, i));
                     }
                 } else {
-                    toks.push(Tok::Word(w, live, r));
+                    toks.push(Tok::Word(w, live, r, exp));
+                    spans.push((wstart, i));
                 }
                 live = false;
+                exp = Exp::Lit;
                 in_word = false;
                 brace = false;
             }
@@ -325,6 +822,9 @@ fn split(cmd: &str, cfg: &Cfg) -> Option<Vec<Tok>> {
     while i < n {
         let c = cs[i];
         let next = cs.get(i + 1).copied();
+        if !in_word {
+            wstart = i;
+        }
         match c {
             ' ' | '\t' | '\r' => {
                 flush!();
@@ -388,6 +888,7 @@ fn split(cmd: &str, cfg: &Cfg) -> Option<Vec<Tok>> {
                         // a substitution opens a new quoting context: copied as written, up to its close
                         '`' | '$' if d == '`' || cs.get(i + 1) == Some(&'(') => {
                             live = true;
+                            exp = exp.max(Exp::Quoted);
                             let end = sub_end(&cs, i)?;
                             for &e in &cs[i..end] {
                                 cur.push(e);
@@ -399,6 +900,7 @@ fn split(cmd: &str, cfg: &Cfg) -> Option<Vec<Tok>> {
                             if cs.get(i + 1) == Some(&'{') {
                                 live = true;
                             }
+                            exp = exp.max(Exp::Quoted);
                             put!(d);
                             i += 1;
                         }
@@ -524,6 +1026,9 @@ fn split(cmd: &str, cfg: &Cfg) -> Option<Vec<Tok>> {
                 if c == '`' || (matches!(c, '$' | '<' | '>') && matches!(next, Some('(' | '{')) && (c == '$' || next == Some('('))) {
                     live = true;
                 }
+                if c == '`' || c == '$' || (matches!(c, '<' | '>') && next == Some('(')) {
+                    exp = Exp::Bare;
+                }
                 if c == '{' && (i == 0 || cs[i - 1] != '$') {
                     brace = true;
                 }
@@ -539,7 +1044,7 @@ fn split(cmd: &str, cfg: &Cfg) -> Option<Vec<Tok>> {
         }
     }
     flush!();
-    Some(toks)
+    Some((toks, spans))
 }
 
 fn base(word: &str) -> &str {
@@ -612,10 +1117,23 @@ fn unknown_sub(group: &[(String, bool, String)], cmd: &str, known: &[String], op
     None
 }
 
-/// A redirection word (`>out`, `2>&1`, `<in`), not a process substitution (`<(..)`).
+/// A redirection word (`>out`, `2>&1`, `<in`, `&>out`), not a process substitution (`<(..)`).
 fn is_redir(word: &str) -> bool {
     let w = word.trim_start_matches(|c: char| c.is_ascii_digit());
+    let w = w.strip_prefix('&').filter(|r| r.starts_with('>')).unwrap_or(w);
     (w.starts_with('<') || w.starts_with('>')) && !w[1..].starts_with('(')
+}
+
+/// #971: the operator of a redirection word (`2>`, `>>`, `&>`, `>|`, `2>&`) and its target written in the same word (`/dev/null`,
+/// `1`), the target empty when it is the next word (`> /dev/null`).
+fn redir_split(word: &str) -> (&str, &str) {
+    let digits = word.len() - word.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+    let mut at = digits + usize::from(word[digits..].starts_with("&>"));
+    at += word[at..].len() - word[at..].trim_start_matches(['<', '>']).len();
+    if word[at..].starts_with(['&', '|']) {
+        at += 1;
+    }
+    word.split_at(at)
 }
 
 /// The word a simple command runs (assignments, redirections, wrappers and their options skipped), with the words after it.
@@ -867,12 +1385,29 @@ pub fn normalise(cmd: &str, cfg: &Cfg) -> Option<Normalised> {
         }
         nested = next;
     }
+    // #969: the commands of a shell's code (`bash -c '..'`, `eval ..`) are the call's own, `passes` levels deep
+    let mut codes = std::mem::take(&mut n.shell_code);
+    for _ in 0..cfg.passes {
+        let mut next = Vec::new();
+        for c in codes.drain(..) {
+            if let Some((m, _)) = once(unwrap_sub(&c), cfg, 1) {
+                merge(&mut n.cmds, m.cmds);
+                next.extend(m.shell_code);
+            }
+        }
+        if next.is_empty() {
+            break;
+        }
+        codes = next;
+    }
     Some(n)
 }
 
 /// What one reading of a command found besides its text (see the fields of [`Normalised`]).
 #[derive(Default)]
 struct Found {
+    cmds: Vec<String>,
+    shell_code: Vec<String>,
     gh_unknown: Option<String>,
     unknown_cmds: Vec<String>,
     scripts: Vec<String>,
@@ -936,8 +1471,11 @@ fn once(cmd: &str, cfg: &Cfg, depth: usize) -> Option<(Normalised, Vec<String>)>
         for seg in starts.map(|s| &group[s..]) {
             let mut splits = Vec::new();
             let at_cmd = command_at(seg, &cfg.cmd_wrappers, &cfg.wrapper_opts, &cfg.wrapper_split_opts, &mut more.opt_skips, &mut splits);
+            // #969 review: a split option's value (`env -S '..'`) is a command line the call runs: its commands count too
+            more.shell_code.extend(splits.iter().cloned());
             nested.extend(splits);
             let Some((cmd, at)) = at_cmd else { continue };
+            merge(&mut more.cmds, vec![cmd.to_string()]);
             // a command name no list knows: what a shell alias or function defined earlier in the session is called
             if !cfg.unknown_known.is_empty() && plain_name(cmd) && !cfg.unknown_known.iter().any(|k| k == cmd) {
                 merge(&mut more.unknown_cmds, vec![cmd.to_string()]);
@@ -951,6 +1489,25 @@ fn once(cmd: &str, cfg: &Cfg, depth: usize) -> Option<(Normalised, Vec<String>)>
             }
             // a script run by path: the first non-option word after an interpreter (one named by its path too: /bin/sh x), or the
             // command word itself
+            // #969: the code a shell runs is a command line of the call's own (its commands count for engine-unlisted)
+            if cfg.ro_shells.iter().any(|sh| sh == base(cmd)) {
+                let rest = &seg[at + 1..];
+                let code = if cfg.script_inline_flags.is_empty() || base(cmd) == "eval" {
+                    Some(rest.iter().map(|(_, _, r)| r.as_str()).collect::<Vec<_>>().join(" "))
+                } else {
+                    rest.iter().position(|(w, ..)| cfg.script_inline_flags.iter().any(|f| f == w)).and_then(|f| rest.get(f + 1)).map(|(_, _, r)| r.clone())
+                };
+                if let Some(c) = code.filter(|c| !c.trim().is_empty()) {
+                    more.shell_code.push(c);
+                }
+            }
+            // `eval` read as a wrapper (its next word taken for the command): its words are the code it runs
+            if let Some(k) = seg[..at].iter().position(|(w, ..)| base(w) == "eval" && cfg.ro_shells.iter().any(|sh| sh == "eval")) {
+                let c = seg[k + 1..].iter().map(|(_, _, r)| r.as_str()).collect::<Vec<_>>().join(" ");
+                if !c.trim().is_empty() {
+                    more.shell_code.push(c);
+                }
+            }
             if cfg.script_interps.iter().any(|i| i == base(cmd)) {
                 let rest = &seg[at + 1..];
                 let flag = rest.iter().position(|(w, ..)| cfg.script_inline_flags.iter().any(|f| f == w));
@@ -987,7 +1544,7 @@ fn once(cmd: &str, cfg: &Cfg, depth: usize) -> Option<(Normalised, Vec<String>)>
     };
     for t in toks {
         match t {
-            Tok::Word(w, live, r) => group.push((w, live, r)),
+            Tok::Word(w, live, r, _) => group.push((w, live, r)),
             Tok::Body(b, runs) => {
                 emit(&mut group, &mut text, &mut stripped, &mut git_unknown, &mut nested, &mut found);
                 // the body is data (matched as written); what it substitutes runs, so that is read as a command, once as written
@@ -1023,8 +1580,8 @@ fn once(cmd: &str, cfg: &Cfg, depth: usize) -> Option<(Normalised, Vec<String>)>
         }
     }
     emit(&mut group, &mut text, &mut stripped, &mut git_unknown, &mut nested, &mut found);
-    let Found { gh_unknown, unknown_cmds, scripts, cds, opt_skips } = found;
-    Some((Normalised { text, stripped, git_unknown, extra, gh_unknown, unknown_cmds, scripts, cds, opt_skips }, nested))
+    let Found { cmds, shell_code, gh_unknown, unknown_cmds, scripts, cds, opt_skips } = found;
+    Some((Normalised { text, stripped, git_unknown, extra, gh_unknown, unknown_cmds, scripts, cds, opt_skips, cmds, shell_code }, nested))
 }
 
 #[cfg(test)]
@@ -1055,6 +1612,185 @@ mod tests {
             ..Cfg::default()
         }
     }
+    fn ro_cfg() -> Cfg {
+        let v = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        Cfg {
+            ro_seps: v(&["&&", ";", "\n", "||", "&"]),
+            ro_skip: v(&["cd", "pushd"]),
+            ro_vars: v(&["HOME", "TMPDIR"]),
+            ro_placeholder: "_".into(),
+            ro_home: "HOME".into(),
+            ro_programs: v(&["ah-engine", "~/.anti-hall/ah-engine/bin/ah-engine"]),
+            ro_verbs: v(&["mesh send", "status", "config set --check", "agents nudge * msg"]),
+            ..cfg()
+        }
+    }
+
+    /// The parsed read exemption: a cd in front is dropped, an allowed variable reads as the placeholder, the engine binary in a
+    /// variable resolves, an engine-local verb is a Local part; anything it can not vouch for gives no parts at all.
+    #[test]
+    fn read_only_parts_reads_lists_variables_and_engine_verbs() {
+        let c = ro_cfg();
+        let home = Some(std::ffi::OsStr::new("/Users/me"));
+        let parts = |cmd: &str| read_only_parts(cmd, &c, home);
+        let read = |t: &str| Part::Read(t.to_string());
+        let local = |t: &str| Part::Local(t.to_string(), Vec::new());
+        assert_eq!(parts("cd \"$HOME/x\" && grep -rn memo . | head -15"), Some(vec![read("grep -rn memo . | head -15")]));
+        assert_eq!(parts("grep x \"${TMPDIR}/y\" $HOME"), Some(vec![read("grep x _/y _")]));
+        assert_eq!(parts("E=\"$HOME/.anti-hall/ah-engine/bin/ah-engine\"; \"$E\" mesh send --to a --message \"git push\""), Some(vec![local("")]));
+        assert_eq!(parts("E=/Users/me/.anti-hall/ah-engine/bin/ah-engine; $E status | head -3"), Some(vec![local("head -3")]), "the home path reads as ~");
+        assert_eq!(parts("ah-engine config set daemon.nice 0 --check"), Some(vec![local("")]));
+        assert_eq!(parts("ah-engine agents nudge abc msg hi"), Some(vec![local("")]), "* is any one word");
+        assert_eq!(parts("cd x; ls -la"), Some(vec![read("ls -la")]), "the caller's read pattern judges what is left");
+        assert_eq!(parts("cd /tmp > f && ls"), Some(vec![read("cd /tmp > f"), read("ls")]), "a cd with a redirection is not dropped");
+        assert_eq!(parts("cd -P /tmp && ls"), Some(vec![read("cd -P /tmp"), read("ls")]), "only a bare cd <dir> is dropped");
+        assert_eq!(parts("A=1 grep x"), Some(vec![read("A=1 grep x")]), "an assignment in front of a command is left for the read pattern to refuse");
+        for (cmd, why) in [
+            ("ah-engine config set daemon.nice 0", "config set without --check writes"),
+            ("ah-engine config set daemon.nice 0 --check=x", "the flag must stand as a whole word"),
+            ("ah-engine agents nudge abc stop", "a verb not on the list"),
+            ("ah-engine --json status", "the verb words lead"),
+            ("E=/tmp/evil; \"$E\" status", "an assignment of anything but the engine"),
+            ("E=ah-engine \"$E\" status", "a prefix assignment resolves nothing"),
+            ("$X status", "a variable in a command word not assigned earlier"),
+            ("$TMPDIR/ah-engine status", "only the home variable leads a command word"),
+            ("grep x \"$PAT\"", "a variable not on the list"),
+            ("grep x \"${HOME:-/tmp}\"", "an expansion with an operator"),
+            ("grep x \"${!HOME}\"", "an indirect expansion"),
+            ("grep x \"$1\" \"$@\"", "positional and special parameters"),
+            ("grep x \"$(git push)\"", "a substitution"),
+            ("grep x `date`", "a backtick"),
+            ("cat <(git push)", "a process substitution"),
+            ("cd \"$(git push)\" && ls", "a substitution in a cd"),
+            ("cat <<EOF\nx\nEOF", "a heredoc"),
+            ("grep x |& head", "a separator outside the list"),
+            ("grep x | | head", "an empty pipeline element"),
+        ] {
+            assert_eq!(parts(cmd), None, "{why}: {cmd:?}");
+        }
+        assert_eq!(read_only_parts("cd x; ls", &cfg(), home), None, "no separators = off");
+    }
+
+    /// #971: redirections of an engine-local verb come back for the caller to judge (operator and target, the target's assigned
+    /// variables resolved); a literal message is data whatever it holds; a literal variable resolves in an argument; a reader spelled
+    /// by a system path reads as its name; an assignment that may not run, or a command that may assign, leaves the variable unknown.
+    #[test]
+    fn read_only_parts_reads_redirections_literals_and_assignments() {
+        let c = Cfg {
+            ro_assign_deny: vec!["PATH".into(), "IFS".into(), "LD_*".into()],
+            ro_assigners: vec!["printf".into(), "read".into()],
+            ro_text_opts: vec!["--message".into(), "--summary".into()],
+            ro_bin_dirs: vec!["/usr/bin/".into(), "/bin/".into()],
+            ..ro_cfg()
+        };
+        let home = Some(std::ffi::OsStr::new("/Users/me"));
+        let parts = |cmd: &str| read_only_parts(cmd, &c, home);
+        let local = |t: &str, r: &[&str]| Part::Local(t.to_string(), r.iter().map(|x| x.to_string()).collect());
+        let read = |t: &str| Part::Read(t.to_string());
+        assert_eq!(parts("ah-engine status 2>&1 | head -3"), Some(vec![local("head -3", &["2>&1"])]));
+        assert_eq!(parts("ah-engine status > /dev/null 2>/dev/null"), Some(vec![local("", &[">/dev/null", "2>/dev/null"])]));
+        assert_eq!(parts("ah-engine status &>>/tmp/x 1>&2"), Some(vec![local("", &["&>>/tmp/x", "1>&2"])]));
+        assert_eq!(parts("F=/tmp/a; ah-engine status > $F"), Some(vec![local("", &[">/tmp/a"])]));
+        assert_eq!(parts("ah-engine status > ~/.claude/settings.json"), Some(vec![local("", &[">~/.claude/settings.json"])]), "the caller judges the target");
+        assert_eq!(parts("ah-engine mesh send --to a --message 'costs $5; `make` <(x) $(y)'"), Some(vec![local("", &[])]));
+        assert_eq!(parts("ah-engine mesh send --to a --message \"costs $5 for $USER\""), Some(vec![local("", &[])]), "a double-quoted text value is data");
+        assert_eq!(parts("ah-engine mesh send --to a --message=\"x $Y\""), Some(vec![local("", &[])]));
+        assert_eq!(parts("ID=abc; S=/tmp/x; ah-engine mesh send --to $ID --message-file $S/m.md"), Some(vec![local("", &[])]));
+        assert_eq!(parts("M=\"a b; c\"; ah-engine mesh send --to x --message \"$M\""), Some(vec![local("", &[])]));
+        assert_eq!(parts("/usr/bin/grep -rn x . | /bin/head -3"), Some(vec![read("grep -rn x . | head -3")]));
+        assert_eq!(parts("/usr/local/bin/grep x"), Some(vec![read("/usr/local/bin/grep x")]), "only the listed system directories");
+        for (cmd, why) in [
+            ("ah-engine status >", "a redirection with no target"),
+            ("ah-engine status > \"$(git push)\"", "a substitution in a target"),
+            ("ah-engine status > $TMPDIR/x", "an allowed variable is no known target"),
+            ("ah-engine mesh send --to a --message \"$(date)\"", "a substitution in a text value"),
+            ("ah-engine mesh send --to a --message \"`date`\"", "a backtick in a text value"),
+            ("ah-engine mesh send --to a --message $X", "an unquoted expansion in a text value"),
+            ("X=\"abc stop\"; ah-engine agents nudge $X msg", "an unquoted value the shell would split"),
+            ("X=\"a*\"; ah-engine agents nudge $X msg", "an unquoted value the shell would glob"),
+            ("C=--check & ah-engine config set k v $C", "a backgrounded assignment"),
+            ("C=--x; false && C=--check; ah-engine config set k v $C", "a conditional assignment"),
+            ("E=/tmp/evil; false && E=ah-engine; \"$E\" status", "a conditional engine assignment"),
+            ("E=ah-engine; printf -v E /tmp/evil; \"$E\" status", "a command that may assign"),
+            ("PATH=/tmp/evil; ah-engine status", "a variable the shell reads"),
+            ("LD_PRELOAD=/tmp/x.so; ah-engine status", "a denied prefix"),
+            ("HOME=/tmp/evil; ah-engine status", "the home variable"),
+            ("TMPDIR=/tmp/evil; ah-engine status", "an allowed variable"),
+            ("ID=abc; $ID status", "a variable that is not the engine as a command word"),
+        ] {
+            assert_eq!(parts(cmd), None, "{why}: {cmd:?}");
+        }
+    }
+
+    /// #971: the engine-local calls of a list come back with their byte range (pipe tail included); a pipeline that is no local call
+    /// is left out and voids nothing, but leaves its variables unknown; a rebinding command word stops the masking from there on.
+    #[test]
+    fn local_spans_find_the_engine_local_calls_of_any_list() {
+        let c = Cfg {
+            ro_assigners: vec!["export".into()],
+            ro_assign_deny: vec!["PATH".into()],
+            cmd_wrappers: vec!["then".into()],
+            ro_inert: vec!["sleep".into(), "echo".into()],
+            ..ro_cfg()
+        };
+        let home = Some(std::ffi::OsStr::new("/Users/me"));
+        let spans = |cmd: &str| local_spans(cmd, &c, home).map(|v| v.into_iter().map(|(r, _)| cmd[r].to_string()).collect::<Vec<_>>());
+        assert_eq!(spans("sleep 1; ah-engine status 2>&1 | head -3; python3 -c 'x'"), Some(vec!["ah-engine status 2>&1 | head -3".to_string()]));
+        assert_eq!(
+            spans("E=ah-engine; \"$E\" mesh send --to a --message 'é ; x'; sleep 1"),
+            Some(vec!["\"$E\" mesh send --to a --message 'é ; x'".to_string()])
+        );
+        assert_eq!(spans("E=ah-engine; sleep 1; \"$E\" status"), Some(vec!["\"$E\" status".to_string()]), "a command whose words resolve assigns nothing");
+        assert_eq!(spans("E=ah-engine; echo $((E=1)); \"$E\" status"), Some(vec![]), "an expansion it can not resolve leaves the variable unknown");
+        assert_eq!(spans("E=ah-engine; x \"$(y)\"; \"$E\" status"), Some(vec![]));
+        assert_eq!(spans("C=--check; print -v C 1; ah-engine config set k v $C"), Some(vec![]), "a command off the inert list may assign");
+        assert_eq!(spans("ah-engine agents stop x; sleep 1"), Some(vec![]), "a verb off the list");
+        assert_eq!(spans("export PATH=/tmp/e; ah-engine status"), Some(vec![]), "an assigning command stops the masking");
+        assert_eq!(spans("if true; then PATH=/tmp/e; fi; ah-engine status"), Some(vec![]), "a denied assignment behind a wrapper word");
+        assert_eq!(spans("f() { :; }; ah-engine status"), Some(vec![]), "a function definition");
+        assert_eq!(spans("ah-engine status; cat <<EOF\nx\nEOF"), None, "a heredoc voids the reading");
+        // #971 review: what may rebind a name or run code masks nothing from there on; calls before it stay masked
+        assert_eq!(spans("X=\"${PATH::=/tmp/e}\"; ah-engine status"), Some(vec![]), "an assignment value it can not resolve");
+        assert_eq!(spans("cd ${PATH::=/tmp/e}; ah-engine status"), Some(vec![]), "an unreadable cd");
+        assert_eq!(spans("echo ${PATH:=/tmp/e}; ah-engine status"), Some(vec![]), "an assigning expansion");
+        assert_eq!(spans("commands[ah-engine]=/tmp/e; ah-engine status"), Some(vec![]), "a zsh hash element");
+        assert_eq!(spans("ah-engine status; ah-engine status () git push"), Some(vec!["ah-engine status".to_string()]), "a zsh function");
+    }
+
+    /// #971 review: the fail-opens of the parsed read exemption: each list exempts nothing.
+    #[test]
+    fn review_971_what_the_read_exemption_must_not_pass() {
+        let c = Cfg { ro_text_opts: vec!["--message".into()], ro_assigners: vec!["setopt".into()], ..ro_cfg() };
+        let home = Some(std::ffi::OsStr::new("/Users/me"));
+        let parts = |cmd: &str| read_only_parts(cmd, &c, home);
+        for cmd in [
+            "OUT=\"$(git push)\"; echo done",
+            "ah-engine status && X=\"$(git push)\"",
+            "X=`git push`; ah-engine status",
+            "ah-engine mesh send --to a --message \"${(e)X}\"",
+            "ah-engine mesh send --to a --message \"${X@P}\"",
+            "Z=1; ah-engine mesh send --to a --message \"$Z[Y]\"",
+            "Z=1; echo \"$Z[Y]\"",
+            "ah-engine mesh send --to a --message",
+            "ah-engine status --message >~/.claude/settings.json",
+            "ah-engine status --message=>~/.claude/settings.json",
+            "ah-engine status x>~/.claude/settings.json",
+            "ah-engine status () git push",
+            "cd /tmp/*(e:'. /tmp/r':); ah-engine status",
+        ] {
+            assert_eq!(parts(cmd), None, "{cmd}");
+        }
+        // a pipeline that starts with an assignment is no assignment: the whole pipe is left for the read pattern
+        assert_eq!(parts("X=1 | git push; ls"), Some(vec![Part::Read("X=1 | git push".into()), Part::Read("ls".into())]));
+        // what stays data: a quoted ( > or $NAME, a positional, a redirection's own operator
+        let local = |r: &[&str]| Some(vec![Part::Local(String::new(), r.iter().map(|x| x.to_string()).collect())]);
+        assert_eq!(parts("ah-engine mesh send --to a --message \"fix (#1): a > b, $HOME ${USER} $5\""), local(&[]));
+        assert_eq!(parts("ah-engine status 2>&1 </dev/null"), local(&["2>&1", "</dev/null"]));
+        assert!(!bare_meta(&"'a(b)'\"<c>\"\\(".chars().collect::<Vec<_>>(), 0));
+        assert!(bare_meta(&"\\$'\\'>x".chars().collect::<Vec<_>>(), 0), "a backslashed $ opens no ANSI quote");
+        assert!(assign_ext("commands[x]=/tmp/e") && assign_ext("fpath+=x") && !assign_ext("X=a[1]") && !assign_ext("--x[1]=y"));
+    }
+
     fn n(c: &str) -> Normalised {
         normalise(c, &cfg()).unwrap_or_else(|| panic!("balanced: {c}"))
     }
@@ -1073,6 +1809,16 @@ mod tests {
         assert_eq!(n("sudo -u root ls").unknown_cmds, ["root"], "a wrapper option value is read as the command (a false hold, never a pass)");
         assert!(n("ls -la; cd x; export A=1").unknown_cmds.is_empty());
         assert!(n("\"$x\" a; ./run.sh; foo() { ls; }; >out ls").unknown_cmds.is_empty(), "dynamic words, paths, definitions, redirections");
+        assert_eq!(n("pgrep -fl 'ah-engine serve' && sudo ah-engine status").cmds, ["pgrep", "ah-engine"], "a quoted mention is no command");
+        let sh = Cfg { ro_shells: vec!["bash".into(), "sh".into(), "eval".into()], ..cfg() };
+        let wrapped = Cfg { cmd_wrappers: vec!["eval".into(), "sudo".into()], ..sh.clone() };
+        assert!(normalise("sudo eval \"ah-engine agents stop x\"", &wrapped).unwrap().cmds.contains(&"ah-engine".to_string()), "eval as a wrapper");
+        let cmds = |c: &str| normalise(c, &sh).unwrap().cmds;
+        assert_eq!(cmds("bash -c 'ah-engine agents stop x'"), ["bash", "ah-engine"], "a shell's code is the call's own");
+        assert_eq!(cmds("eval \"ah-engine agents stop x\""), ["eval", "ah-engine"]);
+        assert_eq!(cmds("sh -c \"bash -c 'ah-engine status'\""), ["sh", "bash", "ah-engine"], "nested shells");
+        assert_eq!(cmds("echo 'ah-engine agents stop x'"), ["echo"], "an echo argument is no command");
+        assert_eq!(cmds("grep -r 'bash -c ah-engine' ."), ["grep"]);
         assert!(n("git commit -m \"fix the bug\"").unknown_cmds.is_empty(), "a quoted argument is text, not a command");
         assert_eq!(n("bash x.sh a").scripts, ["x.sh"]);
         assert_eq!(n("sudo ./d.sh").scripts, ["./d.sh"]);
@@ -1303,6 +2049,28 @@ mod tests {
         let mut off = c.clone();
         off.wrapper_split_opts.clear();
         assert!(normalise("env -S ./x.sh", &off).unwrap().scripts.is_empty());
+    }
+
+    /// #969 review: the commands of a split option's value (`env -S '..'`) are the call's own (engine-unlisted reads them), as a
+    /// shell's code is; a quoted argument with a space is still text.
+    #[test]
+    fn issue_969_a_split_string_value_keeps_its_commands() {
+        let mut c = cfg();
+        c.wrapper_opts = vec![("env".into(), vec!["-u".into(), "-S".into()])];
+        c.wrapper_split_opts = vec![("env".into(), vec!["-S".into()])];
+        let cmds_in = |t: &str, c: &Cfg| normalise(t, c).map(|n| n.cmds).unwrap();
+        assert_eq!(cmds_in("env --split-string='FOO=1 ah-engine agents stop x'", &c), Vec::<String>::new(), "--split-string is no split option here");
+        c.wrapper_split_opts = vec![("env".into(), vec!["-S".into(), "--split-string".into()])];
+        assert_eq!(cmds_in("env --split-string='FOO=1 ah-engine agents stop x'", &c), ["ah-engine"]);
+        let cmds = |t: &str| cmds_in(t, &c);
+        assert_eq!(cmds("env -S 'ah-engine agents stop x'"), ["ah-engine"]);
+        assert_eq!(cmds("env -S'ah-engine agents stop x'"), ["ah-engine"], "the value attached");
+        // true negatives: a quoted mention is no command, and an option that is no split option only skips its value
+        assert_eq!(cmds("pgrep -f 'ah-engine serve'"), ["pgrep"]);
+        assert_eq!(cmds("env -u 'ah-engine x' ls"), ["ls"]);
+        let mut off = c.clone();
+        off.wrapper_split_opts.clear();
+        assert!(!normalise("env -S 'ah-engine agents stop x'", &off).unwrap().cmds.contains(&"ah-engine".to_string()));
     }
 
     #[test]

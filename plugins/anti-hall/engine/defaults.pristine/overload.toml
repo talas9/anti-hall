@@ -1,0 +1,147 @@
+# Orderly overload on the daemon's request path (#969, T-76): admission classes, the priority queue, worker reservation, the
+# adaptive (AIMD) limit and shed mode. The daemon is thread-based, so these are the semantics of tower's `load_shed`,
+# `concurrency_limit`, a priority buffer and tower-acc's AIMD limiter, implemented natively in `src/overload.rs`. Every
+# limit, class, threshold and label lives here; tuning overload behaviour is editing this file, never the engine source.
+
+[overload.enabled]
+doc = "1 = requests are classed and served by rank (control, guard, turn, advisory), limited classes share an adaptive number of workers and shed mode skips advisory checks under sustained overload; 0 = the plain FIFO queue every request shared before (one class, no limit, no shed mode)."
+value = 1
+min = 0
+max = 1
+
+[overload.classes]
+doc = "The admission classes, highest rank first. A worker always takes the highest-ranked request it may serve; within a class, oldest first."
+value = ["control", "guard", "turn", "advisory"]
+
+[overload.class_by_prefix]
+doc = "The class of a request by its frame prefix (the word before the first space): CTL control verbs and P project-state verbs are local and cheap (status must answer under load), G is the injection gate of a hook call. V (hook) and D (dispatch) requests are classed by their event (overload.class_by_event)."
+value = { CTL = "control", P = "control", G = "guard" }
+
+[overload.event_key_by_prefix]
+doc = "The JSON key that names the event in the first bytes of a V or D request: D carries it in its meta line (`event`, the second field), V in the raw hook payload."
+value = { D = ["event"], V = ["hook_event_name", "hookEventName"] }
+
+[overload.class_by_event]
+doc = "The class of a hook or dispatch request by its event. Events that can block (PreToolUse, PermissionRequest, Stop, SubagentStop) are guard; turn events (UserPromptSubmit, SessionStart, PreCompact) are turn; the rest only advise or record and are advisory."
+value = { PreToolUse = "guard", PermissionRequest = "guard", Stop = "guard", SubagentStop = "guard", UserPromptSubmit = "turn", SessionStart = "turn", PreCompact = "turn", PostToolUse = "advisory", PostToolUseFailure = "advisory", Notification = "advisory", SubagentStart = "advisory", SessionEnd = "advisory" }
+
+[overload.class_unknown]
+doc = "The class of a request whose prefix or event could not be read when it was accepted (nothing sent yet, a truncated peek, an event not listed): guard, so a misread request is never limited or shed as advice."
+value = "guard"
+
+[overload.peek_bytes]
+doc = "How many bytes of a new connection the accept loop (and a worker, for a request that had sent nothing yet) peeks, non-blocking and consuming nothing, to read its class, event and session. Bytes not yet sent are not waited for: the request is then classed overload.class_unknown, and a session beyond the bytes peeked (a D request carries its payload after the forwarded environment; the socket buffer bounds what is visible) leaves the request outside the per-session barrier."
+value = 16384
+min = 16
+max = 65536
+unit = "bytes"
+
+[overload.limited_classes]
+doc = "Classes whose requests share the adaptive worker limit (overload.aimd_*): at most that many of them are served at once, so the workers above it stay free for guard and control requests. Classes not listed may take any free worker."
+value = ["turn", "advisory"]
+
+[overload.reserved_workers]
+doc = "Workers the limited classes may never hold: the upper bound of the adaptive limit is daemon.workers minus this (at least overload.aimd_min)."
+value = 1
+min = 0
+max = 64
+unit = "workers"
+
+[overload.aimd_min]
+doc = "Lowest adaptive limit: at least this many limited-class requests may always be served at once, so advisory work and the recorders in it never starve."
+value = 1
+min = 1
+max = 64
+unit = "workers"
+
+[overload.aimd_backoff_permille]
+doc = "Multiplicative decrease of the adaptive limit (permille of the current limit) when a request finishes slower than its latency target (overload.aimd_target_ms_by_event, else overload.aimd_target_ms_by_class)."
+value = 900
+min = 100
+max = 999
+unit = "permille"
+
+[overload.aimd_increase_permille]
+doc = "Additive increase of the adaptive limit (permille of one worker) when a request finishes within its class target. Applied on every in-target completion, also at low traffic, so the limit recovers once the machine does (the Netflix/tower-acc AIMD only grows while half the limit is in use and can stay low after one slow request)."
+value = 1000
+min = 1
+max = 10000
+unit = "permille"
+
+[overload.aimd_target_ms_by_class]
+doc = "Latency target per class of overload.aimd_signal_classes: a request served (queue wait plus judging) slower than this shrinks the adaptive limit, faster grows it."
+value = { turn = 1500, advisory = 500 }
+unit = "ms"
+
+[overload.aimd_target_ms_by_event]
+doc = "Latency target per event, over its class row (signal classes only): turn events whose normal work is a transcript scan or a turn summary (UserPromptSubmit, SessionStart) are allowed longer, so a normal one does not read as overload."
+value = { UserPromptSubmit = 2500, SessionStart = 3000 }
+unit = "ms"
+
+[overload.shed_at_limit]
+doc = "Shed mode is on while the adaptive limit is at or below this many workers (sustained overload: several slow turn or advisory requests in a row backed it off to its floor). In shed mode a request runs without the checks listed in overload.shed_eligible."
+value = 1
+min = 0
+max = 64
+unit = "workers"
+
+[overload.shed_wait_ms_by_class]
+doc = "A request that waited in the queue longer than this (its class row; a class not listed never) runs in shed mode even when the limit is above overload.shed_at_limit (shed mode skips only overload.shed_eligible). The bounds nest (test the_time_bounds_nest): above a script call's HARD CPU limit (script.time_limit_ms x script.time_hard_factor, capped by script.time_hard_cap_ms), so one full-length script ahead does not make a request late; below the client's deadline at its largest load factor (client.deadline_ms x daemon.load_scale_max_permille), so a shed request still reaches a waiting client."
+value = { guard = 550, turn = 550, advisory = 550 }
+unit = "ms"
+
+[overload.shed_eligible]
+doc = "The checks shed mode may skip: a POSITIVE list of checks proven advice-only (they never return a block or exit 2), shipped EMPTY, so shed mode skips nothing until a check is listed after review. A check's failure mode (script.failure_mode_by_check) says what happens when it errs, never whether it can block, so it does not make a check sheddable. A listed check that fails closed or is a recorder (diagnostics.shed_never) still runs."
+value = []
+
+[overload.session_key]
+doc = "The JSON key of the session in a request's first bytes (the hook payload's session_id): requests of one session are served in arrival order across classes (the per-session barrier), so a Stop never judges before its session's PostToolUse recorders ran."
+value = "session_id"
+
+[overload.session_max_chars]
+doc = "Longest session id kept for the per-session barrier (characters); a longer one is cut."
+value = 128
+min = 8
+max = 1024
+unit = "chars"
+
+[overload.evictable_events]
+doc = "Events whose queued requests a full queue may answer BUSY to make room for a higher class. Shipped EMPTY: PostToolUse, UserPromptSubmit and the others carry recorders (diagnostics.shed_never: task-tracker, devswarm-parent-reply-tracker, git-audit, merge-side-pick, ...) whose state a later Stop or guard reads, and a BUSY request is not replayed. List only events with no recorder entry."
+value = []
+
+[overload.age_promote_ms_by_class]
+doc = "Aging against starvation: a queued request of a listed class that waited longer than this is served before higher classes (when its class may take a worker), so a sustained guard load never starves turn and advisory work. A class not listed is never promoted by age."
+value = { turn = 1000, advisory = 1500 }
+unit = "ms"
+
+[overload.aimd_signal_classes]
+doc = "Classes whose request latency drives the adaptive limit. Only the limited classes: guard latency on a starved machine (PreToolUse judge p95 about 1 s at load 4-5 per core) would pin the limit at its floor and keep shed mode on."
+value = ["turn", "advisory"]
+
+[overload.drop_reason]
+doc = "The reason word a check skipped in shed mode is recorded under (metrics answers_dropped and delivery_lost, budget dropped counts)."
+value = "overload_shed"
+
+[overload.what_evicted]
+doc = "Label of metric overload (what): a queued request of a lower class answered BUSY to make room for a higher-class one at a full queue."
+value = "evicted"
+
+[overload.what_rejected]
+doc = "Label of metric overload (what): a request answered BUSY at a full queue holding nothing of a lower class."
+value = "rejected"
+
+[overload.what_limited]
+doc = "Label of metric overload (what): a limited-class request a worker passed over at least once because the adaptive limit was reached (counted once per request)."
+value = "limited"
+
+[overload.what_shed_mode]
+doc = "Label of metric overload (what): a request served in shed mode because the adaptive limit was at its floor."
+value = "shed_mode"
+
+[overload.what_timed_out]
+doc = "Label of metric overload (what): a request served in shed mode because it waited in the queue past its class bound (overload.shed_wait_ms_by_class)."
+value = "timed_out"
+
+[overload.event_none]
+doc = "The event label of a request whose event was not read when it was accepted (a control verb, or a hook request not yet sent)."
+value = "-"

@@ -288,21 +288,119 @@ module.exports = {
 
 // OWNER-BLOCKED marker (moved here from task-guard so task-tracker's per-turn
 // demand and task-guard's IDLE NEGLECT agree): metadata.blockedOn / blockedOn
-// === owner|user|human|external, or an "OWNER:" / "OWNER DECISION" subject
-// prefix => not dispatchable. Setting guards.taskGuardOwnerBlockedMarker
-// (default on; fail-open to honoring the marker).
-const OWNER_BLOCKED_VALUES = new Set(['owner', 'user', 'human', 'external']);
-const OWNER_SUBJECT_RE = /^\s*owner(:|\s+decision\b)/i;
-function isOwnerBlocked(t) {
+// is exactly one of the engine's dispatch_tier.owner_values (trimmed, lowercase;
+// an owner word elsewhere in the reason does not count here, GH #959), or the
+// subject matches dispatch_tier.owner_subject_re => not dispatchable. Setting
+// guards.taskGuardOwnerBlockedMarker (default on; fail-open to honoring the
+// marker). The values and subject pattern are read from the engine's
+// task_guards.toml, never written here.
+const ENGINE_TASK_GUARDS = path.resolve(__dirname, '../../../anti-hall/engine/defaults/task_guards.toml');
+let tomlText = null;
+// One TOML value as the engine's defaults write them: a basic "..." or literal '...' string, an integer, a boolean, or an array /
+// inline table of those; arrays may span lines and carry comments and a trailing comma. After the value only blanks and a comment may
+// follow on its line (anything on later lines is ignored). Returns undefined for anything else.
+function parseTomlValue(src) {
+  let i = 0;
+  // blanks, newlines and comments (inside an array or table)
+  const ws = () => {
+    for (;;) {
+      while (i < src.length && /\s/.test(src[i])) i++;
+      if (src[i] !== '#') return;
+      while (i < src.length && src[i] !== '\n') i++;
+    }
+  };
+  function str() {
+    const q = src[i++];
+    let out = '';
+    while (i < src.length && src[i] !== q) {
+      // a quoted string never spans a line: a raw newline in one is malformed
+      if (src[i] === '\n' || src[i] === '\r') throw new Error('newline in string');
+      if (q === '"' && src[i] === '\\') {
+        const e = src[i + 1];
+        const map = { n: '\n', t: '\t', r: '\r', '"': '"', '\\': '\\', b: '\b', f: '\f' };
+        if (e === 'u' || e === 'U') {
+          // exactly 4 (\u) or 8 (\U) hex digits; anything else, a raw newline included, is malformed
+          const len = e === 'u' ? 4 : 8;
+          const hex = src.substr(i + 2, len);
+          if (!new RegExp('^[0-9A-Fa-f]{' + len + '}$').test(hex)) throw new Error('bad unicode escape');
+          out += String.fromCodePoint(parseInt(hex, 16)); i += 2 + len; continue;
+        }
+        if (map[e] === undefined) throw new Error('bad escape');
+        out += map[e]; i += 2; continue;
+      }
+      out += src[i++];
+    }
+    if (src[i] !== q) throw new Error('unterminated string');
+    i++;
+    return out;
+  }
+  function val() {
+    ws();
+    const c = src[i];
+    if (c === '"' || c === "'") return str();
+    if (c === '[') {
+      i++; const arr = [];
+      for (;;) {
+        ws(); if (src[i] === ']') { i++; return arr; }
+        arr.push(val()); ws();
+        if (src[i] === ',') i++; else if (src[i] !== ']') throw new Error('bad array');
+      }
+    }
+    if (c === '{') {
+      i++; const obj = {};
+      for (;;) {
+        ws(); if (src[i] === '}') { i++; return obj; }
+        let k;
+        if (src[i] === '"' || src[i] === "'") k = str(); else { const m = /^[A-Za-z0-9_-]+/.exec(src.slice(i)); if (!m) throw new Error('bad key'); k = m[0]; i += k.length; }
+        ws(); if (src[i++] !== '=') throw new Error('bad table');
+        obj[k] = val(); ws();
+        if (src[i] === ',') i++; else if (src[i] !== '}') throw new Error('bad table');
+      }
+    }
+    const m = /^(true|false|[+-]?\d[\d_]*)/.exec(src.slice(i));
+    if (!m) throw new Error('bad value');
+    i += m[0].length;
+    return m[0] === 'true' ? true : m[0] === 'false' ? false : Number(m[0].replace(/_/g, ''));
+  }
+  try {
+    const v = val();
+    while (i < src.length && (src[i] === ' ' || src[i] === '\t')) i++;
+    if (src[i] === '#') while (i < src.length && src[i] !== '\n') i++;
+    return i === src.length || src[i] === '\n' || (src[i] === '\r' && src[i + 1] === '\n') ? v : undefined;
+  } catch (_) { return undefined; }
+}
+function engineValue(key, text) {
+  try {
+    const own = typeof text === 'string';
+    if (!own && tomlText === null) tomlText = fs.readFileSync(ENGINE_TASK_GUARDS, 'utf8');
+    const src = own ? text : tomlText;
+    const escaped = key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const section = new RegExp('^\\[' + escaped + '\\]\\r?\\n([\\s\\S]*?)(?=^\\[|(?![\\s\\S]))', 'm').exec(src);
+    // `value=`, `value = ` and a value that runs over several lines (a multiline array) all parse: the parser reads from the '='. Only a
+    // column-0 line counts: an indented `value =` may be an example inside a multiline doc string (it reads as no value, never an exemption)
+    const at = section && /^value[ \t]*=[ \t]*/m.exec(section[1]);
+    return at ? parseTomlValue(section[1].slice(at.index + at[0].length)) : undefined;
+  } catch (_) { return undefined; }
+}
+// The blockedOn value (trimmed, lowercase) is exactly one of dispatch_tier.owner_values. Exact on purpose: Node is the fallback, and an
+// owner word elsewhere in a reason is held by the engine only for hold_max, so matching it here would make Node weaker (GH #959).
+function ownerValue(reason, text) {
+  const words = engineValue('dispatch_tier.owner_values', text);
+  return Array.isArray(words) && words.includes(reason.trim().toLowerCase());
+}
+function isOwnerBlocked(t, text) {
   try {
     if (!require('./settings.js').enabled('guards', 'taskGuardOwnerBlockedMarker')) return false;
   } catch (_) { /* fail open -> marker still honored */ }
-  const bo = t && typeof t.blockedOn === 'string' ? t.blockedOn.trim().toLowerCase() : '';
-  if (OWNER_BLOCKED_VALUES.has(bo)) return true;
+  if (t && typeof t.blockedOn === 'string' && ownerValue(t.blockedOn, text)) return true;
   const subject = (t && (t.content || t.subject)) || '';
-  return typeof subject === 'string' && OWNER_SUBJECT_RE.test(subject);
+  const re = engineValue('dispatch_tier.owner_subject_re', text);
+  if (typeof subject !== 'string' || typeof re !== 'string') return false;
+  try { return new RegExp(re, 'i').test(subject); } catch (_) { return false; }
 }
 
+module.exports.isOwnerBlocked = isOwnerBlocked;
+module.exports.parseTomlValue = parseTomlValue;
 // blockedByAfterUpdate(existing, inp) — TaskUpdate carries EITHER a full
 // `blockedBy` replacement OR the harness's incremental `addBlockedBy` (the
 // shape real transcripts use: {"taskId":"5","addBlockedBy":["4"]}). Missing
@@ -315,7 +413,6 @@ function blockedByAfterUpdate(existing, inp, norm) {
   return out;
 }
 
-module.exports.isOwnerBlocked = isOwnerBlocked;
 module.exports.blockedByAfterUpdate = blockedByAfterUpdate;
 
 // maxNumericKey(map) -> the highest all-digit key (0 if none). Used by the

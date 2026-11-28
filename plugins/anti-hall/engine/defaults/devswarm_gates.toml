@@ -139,6 +139,18 @@ value = 2
 doc = "The first Stop check's report window (RESET_MS): a report older than this before the session's first check does not satisfy it."
 value = 300000
 
+[devswarm_gates.cg_report_fresh_ms]
+doc = "How recent this child's latest heartbeat (`mesh heartbeat`, with or without --summary) or summary row must be to satisfy the report duty at a Stop, on top of a report sent this stop episode (#844: a heartbeat from the previous turn is not \"no heartbeat\"). 0 = only this episode's report counts."
+value = 900000
+min = 0
+max = 86400000
+
+[devswarm_gates.cg_report_skew_ms]
+doc = "How far in the future a heartbeat time may lie (clock skew) and still count for devswarm_gates.cg_report_fresh_ms; a later one is ignored."
+value = 60000
+min = 0
+max = 3600000
+
 [devswarm_gates.cg_tick_fresh_ms]
 doc = "How recent a zero-unread `inbox tick` marker must be to count as liveness proof for this Stop (TICK_MARKER_FRESH_MS)."
 value = 120000
@@ -285,7 +297,7 @@ value = "Heartbeat: before you stop, emit a heartbeat / self-report to your pare
 
 [devswarm_gates.cg_inbox_pending]
 doc = "The inbound line for known unread parent mail: {cli}, {id}."
-value = "Inbox: you have unpulled/unread parent message(s): run `{cli} inbox pull {id}` (or `inbox read` if already pulled), then `inbox ack` once addressed — BEFORE you stop. "
+value = "Inbox: you have unpulled/unread parent message(s): run `{cli} inbox pull {id}` (or `inbox read` if already pulled), then `inbox ack {id} --through <the ackThrough that read printed>` once addressed — BEFORE you stop. "
 
 [devswarm_gates.cg_inbox_native_only]
 doc = "The one-time inbound line when only the native probe is unknown and the report is satisfied: {cli}, {id}."

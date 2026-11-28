@@ -1172,7 +1172,12 @@ fn cmd_archive_locked(inv: &Inv, id: &str, opts: &Opts<'_>) -> R<Answer> {
         o.put("leftFamilyDescriptors", OVal::Arr(family.1.iter().map(|(i, r)| OVal::Obj(vec![("id".into(), s(i)), ("reason".into(), s(r))])).collect()));
     }
     if !submodule_drift.is_empty() {
-        let item = |(p, h): &(String, String)| tpl("devswarm_cli.ar_drift_item", &[("path", p), ("head", &h.chars().take(defaults::num("devswarm_cli.ar_head_chars") as usize).collect::<String>())]);
+        let item = |(p, h): &(String, String)| {
+            tpl(
+                "devswarm_cli.ar_drift_item",
+                &[("path", p), ("head", &h.chars().take(defaults::num("devswarm_cli.ar_head_chars") as usize).collect::<String>())],
+            )
+        };
         let list = submodule_drift.iter().map(item).collect::<Vec<_>>().join(", ");
         o.put("submoduleDrift", OVal::Arr(submodule_drift.iter().map(|(p, h)| OVal::Obj(vec![("path".into(), s(p)), ("head".into(), s(h))])).collect()))
             .put("submoduleDriftNote", s(&tpl("devswarm_cli.ar_msg_submodule_drift", &[("list", &list)])));

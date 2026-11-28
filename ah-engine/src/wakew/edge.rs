@@ -42,6 +42,25 @@ pub struct State {
     pub held_pending: bool,
     /// New-mail wake lines held back by the last tick (coalesced into the outstanding wake), for the caller's counter.
     pub held: u32,
+    /// Wake lines the last tick printed for new mail (direct or inbox), for the caller's `mesh_wake_lines` counter (GH #845).
+    pub woke_mail: u32,
+    /// Wake lines the last tick printed for broadcasts, same counter.
+    pub woke_broadcast: u32,
+    /// The broadcast watermark (GH #845): the highest broadcast seq a line was printed for (or that was seeded); it never goes down,
+    /// so a drain followed by a new arrival between two polls still wakes.
+    pub last_bc_seq: f64,
+    /// No watermark was saved (a fresh watcher, or a cursor file from a build before it): the first read with the watermark field
+    /// reconciles instead of seeding silently, so pending eligible mail always wakes once.
+    pub bc_seq_missing: bool,
+    /// The eligible unread broadcast count at the last read (memory only, `None` before the first): an ack that lowers it while
+    /// some stay unread wakes again (review P1-1), so a backlog the drain held back past its caps is drained too.
+    pub last_bc_pending: Option<f64>,
+    /// The broadcast cursor at the last read (memory only): an ack that moved it while wake-eligible rows stay unread wakes again,
+    /// even when it passed only rows that do not wake (re-review N-3).
+    pub last_bc_cursor: Option<f64>,
+    /// The arm print is still owed: set when the watcher arms, cleared only by a tick that reads the broadcast watermark, so an arm
+    /// whose first read failed or lacked the field still prints (re-review N-4).
+    pub bc_arm_due: bool,
 }
 
 impl Default for State {
@@ -62,6 +81,13 @@ impl Default for State {
             woke_unread: 0.0,
             held_pending: false,
             held: 0,
+            woke_mail: 0,
+            woke_broadcast: 0,
+            last_bc_seq: 0.0,
+            bc_seq_missing: false,
+            last_bc_pending: None,
+            last_bc_cursor: None,
+            bc_arm_due: false,
         }
     }
 }
@@ -86,6 +112,13 @@ pub struct Snapshot {
     pub total2: Option<Option<f64>>,
     /// Broadcast channel.
     pub total3: Option<Option<f64>>,
+    /// Broadcast watermark channel (GH #845): `None` when the summary row predates it (the legacy `total3` count applies),
+    /// `Some(None)` when nothing unread wakes the workspace, else the highest seq of the unread broadcasts that do.
+    pub bc_seq: Option<Option<f64>>,
+    /// How many unread broadcasts wake the workspace (display and the start-up reconcile only).
+    pub bc_pending: Option<f64>,
+    /// The reader's broadcast cursor (the summary's `broadcastWakeCursor`), when the row has it (re-review N-3).
+    pub bc_cursor: Option<f64>,
     /// The workspace's direct mail it has not read yet (the summary's `directUnread`), `None` when unknown.
     pub unread: Option<f64>,
     /// Wake coalescing (GH #884, `devswarm.wakeWatchCoalesce`): `Some(ms)` when it applies to this watcher, the time after which a
@@ -197,15 +230,28 @@ fn note_wake(st: &mut State, snap: &Snapshot) {
     }
 }
 
+/// Review P1-2: the tick's lines were (`printed`) or were not all written out. A broadcast line that did not reach the workspace
+/// must not move the watermark: the old one is kept and marked unknown (never saved), so the next tick prints again.
+pub fn undo_unprinted(before: &State, mut after: State, printed: bool) -> State {
+    if !printed && after.woke_broadcast > 0 {
+        after.last_bc_seq = before.last_bc_seq;
+        after.bc_seq_missing = true;
+    }
+    after
+}
+
 /// `tick(state, snapshot)` -> the new state and the lines to print.
 pub fn tick(state: &State, snap: &Snapshot) -> (State, Vec<String>) {
     let mut st = state.clone();
     st.held = 0;
+    st.woke_mail = 0;
+    st.woke_broadcast = 0;
     let mut lines = Vec::new();
     let now = snap.now_ms;
     let arming = !st.armed;
     if !st.armed {
         st.armed = true;
+        st.bc_arm_due = true;
         lines.push(arm_line(snap));
     }
     // SEED MISSING BASELINES: a counter with no recorded history is seeded from the first successful read, so a missing
@@ -280,6 +326,7 @@ pub fn tick(state: &State, snap: &Snapshot) -> (State, Vec<String>) {
             st.held_pending = true;
         } else {
             lines.push(line);
+            st.woke_mail += 1;
             note_wake(&mut st, snap);
         }
     } else if st.held_pending
@@ -288,6 +335,7 @@ pub fn tick(state: &State, snap: &Snapshot) -> (State, Vec<String>) {
     {
         // held mail still unread after the re-wake window: one wake for all of it
         lines.push(wake_line(snap, st.woke_total2, t2, Some(text("wake_watch.label_mesh_direct"))));
+        st.woke_mail += 1;
         note_wake(&mut st, snap);
     }
     // A (re)started watcher keeps no wake in memory, while the cursor a held wake moved past is saved: unread direct mail found
@@ -318,10 +366,47 @@ pub fn tick(state: &State, snap: &Snapshot) -> (State, Vec<String>) {
     }
     // BROADCAST CHANNEL: a third, independent observation, never merged into the dual-channel logic.
     let total3 = snap.total3.flatten();
+    if let Some(seq) = snap.bc_seq {
+        // GH #845 watermark: wake when the highest eligible unread seq passes the saved one (never on a count edge, which a drain
+        // plus a new arrival between two polls would hide). A watcher with no saved watermark wakes once for pending eligible mail.
+        let pending = snap.bc_pending.unwrap_or(0.0);
+        // the line shows how many unread broadcasts wake the workspace (`0 -> N`), in the legacy line text
+        let line = || wake_line(snap, 0.0, pending.max(1.0), Some(text("wake_watch.label_broadcast")));
+        // review P1-2: a (re)armed watcher, or one with no trusted watermark, prints once for pending eligible mail, so a line lost
+        // to a closed pipe or a restart after the watermark was saved still reaches the workspace
+        let cursor_moved = matches!((snap.bc_cursor, st.last_bc_cursor), (Some(now), Some(was)) if now > was);
+        let reacked = pending > 0.0 && (st.last_bc_pending.is_some_and(|was| pending < was) || cursor_moved);
+        if st.bc_seq_missing || st.bc_arm_due {
+            st.bc_arm_due = false;
+            if pending > 0.0 {
+                lines.push(line());
+                st.woke_broadcast += 1;
+            }
+            st.bc_seq_missing = false;
+            st.last_bc_seq = st.last_bc_seq.max(seq.unwrap_or(0.0));
+        } else if let Some(s) = seq.filter(|s| *s > st.last_bc_seq) {
+            lines.push(line());
+            st.woke_broadcast += 1;
+            st.last_bc_seq = s;
+        } else if reacked {
+            lines.push(line());
+            st.woke_broadcast += 1;
+        }
+        st.last_bc_pending = Some(pending);
+        if snap.bc_cursor.is_some() {
+            st.last_bc_cursor = snap.bc_cursor;
+        }
+        // the legacy count stays in step silently, for a build that still reads it
+        if let Some(t3) = total3 {
+            st.last_broadcast = t3;
+        }
+        return (st, lines);
+    }
     if let Some(t3) = total3
         && t3 > st.last_broadcast
     {
         lines.push(wake_line(snap, st.last_broadcast, t3, Some(text("wake_watch.label_broadcast"))));
+        st.woke_broadcast += 1;
     }
     if snap.total3.is_some()
         && let Some(t3) = total3

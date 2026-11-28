@@ -51,6 +51,9 @@ Handover, resume and compaction guards.
 - `maintenance.progressPrune` = true: Switch: archive stale per-session progress files into the history ledger...
 - `maintenance.precompactSnapshot` = true: Where the PreCompact snapshot switch is read from (maintenance.precompactSnapshot, default on)
 - `context.handoverResume` = true: Where the handover resume switch is read from (context.handoverResume, default on)
+- `autoHandover.promptHint` = true: Point a plain-words handover request at anti-hall's handover skill
+- `guards.compactAdviceDeferToOmc` = true: Defer compact advice to OMC's context guard
+- `autoHandover.quietOnOmcLoop` = true: Stay quiet about stopping points while an OMC loop runs
 - `guards.handoverGateOnChangeRepeatS` = 1800: Unchanged post-handover gate reminder interval, seconds
 - `guards.handoverGateOnChange` = true: Send the post-handover gate on change
 

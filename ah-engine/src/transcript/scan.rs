@@ -140,6 +140,12 @@ thread_local! {
     static TEST_BLOCK: Cell<usize> = const { Cell::new(0) };
 }
 
+/// Set this thread's read block (0: the configured one), so that a test can cut a window into many blocks.
+#[cfg(test)]
+pub(crate) fn set_test_block(n: usize) {
+    TEST_BLOCK.with(|b| b.set(n));
+}
+
 // ---- the window ----
 
 /// An open window: the last `len` bytes of a file of `size` bytes.

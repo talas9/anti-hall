@@ -182,8 +182,14 @@ fn line(a: &mut Agent, v: &Value, now: u64) {
         a.last_output_ms = a.last_output_ms.max(ts);
         a.running = true;
         let content = msg.and_then(|m| m.get(tr("content")));
+        // a message to the agent (not a tool result) opens a new turn: for a stopped child, the resume (#972 round 3)
+        if !blocks.iter().any(|b| str_of(b, tr("type_key")) == tr("tool_result")) {
+            a.inbound_ms = a.inbound_ms.max(ts);
+        }
         if !super::is_child(a) && a.kind != super::kind_name("codex") && owner_turn(v, content) {
             a.owner_ms = a.owner_ms.max(ts);
+            a.ask_open = true;
+            a.calls_since_ask = 0;
         }
         // a wake opens a turn that counts as a poke unless it calls a tool; any other prompt (not a tool result) closes the open one
         if !blocks.iter().any(|b| str_of(b, tr("type_key")) == tr("tool_result")) {
@@ -485,6 +491,33 @@ fn poke_close(a: &mut Agent, ts: u64, now: u64) {
     a.poke_tokens = 0;
 }
 
+/// Count one tool call for the compliance signals (GH #958): a task-list call answers the owner's prompt and restarts the count of work
+/// calls; a read of the list (`task_read`) is neither; every other call is work.
+fn note_call(a: &mut Agent, name: &str) {
+    if ["task_create", "task_update", "todo"].iter().any(|r| tools(r).contains(&name)) {
+        a.task_calls += 1;
+        a.calls_since_task = 0;
+        a.calls_since_ask = 0;
+        a.ask_open = false;
+    } else if !tools("task_read").contains(&name) {
+        a.calls_since_task += 1;
+        if a.ask_open {
+            a.calls_since_ask += 1;
+        }
+    }
+}
+
+/// Whether a message tool's input names one of `agent_tracker.report_to.names` as its recipient (field `agent_tracker.report_to.field`) and
+/// carries at least `min_chars` characters (field `body_field`).
+fn report_to(input: &Value) -> bool {
+    let r = defaults::raw("agent_tracker.report_to");
+    let to = str_of(input, r.str_field("field")).trim().to_lowercase();
+    let body = str_of(input, r.str_field("body_field")).trim().chars().count() as u64;
+    let min = r.get("min_chars").and_then(V::as_integer).unwrap_or(0).max(0) as u64;
+    // a short ping ("still working") is no report: it would reset the runtime ladder and the waste window every time
+    !to.is_empty() && body >= min && r.get("names").map(V::strings).unwrap_or_default().iter().any(|n| n.to_lowercase() == to)
+}
+
 fn tool_use(a: &mut Agent, b: &Value, ts: u64, cwd: &str) {
     let name = str_of(b, tr("name"));
     let input = b.get(tr("input")).cloned().unwrap_or(Value::Null);
@@ -494,6 +527,7 @@ fn tool_use(a: &mut Agent, b: &Value, ts: u64, cwd: &str) {
         a.rescue_calls.insert(id.clone());
     }
     a.tools += 1;
+    note_call(a, name);
     let arg = [tr("command"), tr("file_path"), tr("pattern"), tr("path")].iter().map(|k| str_of(&input, k)).find(|s| !s.is_empty()).unwrap_or("");
     let label = if tools("task_create").contains(&name) { cap(str_of(&input, tr("subject")), lim("text_cap")) } else { cap(arg, lim("text_cap")) };
     let is_edit = tools("edit").contains(&name);
@@ -503,6 +537,7 @@ fn tool_use(a: &mut Agent, b: &Value, ts: u64, cwd: &str) {
     let mut push = false;
     let mut amp = false;
     let mut call_dir = if cwd.is_empty() { a.cwd.clone() } else { cwd.to_string() };
+    let mut blocker_task = String::new();
     if is_edit {
         a.edits += 1;
         let path = str_of(&input, tr("file_path"));
@@ -513,6 +548,18 @@ fn tool_use(a: &mut Agent, b: &Value, ts: u64, cwd: &str) {
         a.step_events += 1;
         for w in words(path) {
             push_ring(&mut a.work, w, lim("work_words_max"));
+        }
+    } else if super::is_child(a) && tools("report").contains(&name) && report_to(&input) {
+        // a child's message to its lead is a delivered report (#972 class 3: a reviewer's findings sent by SendMessage read "0 outcomes");
+        // the same text sent again is no new outcome (#972 round 2: a repeated status reset the runtime and waste clocks)
+        let r = defaults::raw("agent_tracker.report_to");
+        let body: String = str_of(&input, r.str_field("body_field")).split_whitespace().collect::<Vec<_>>().join(" ");
+        let key = format!("{:x}", crate::health::fnv(&body));
+        if a.report_keys.contains(&key) {
+            crate::metrics::bump("agent_report_repeat", &[]);
+        } else {
+            push_ring(&mut a.report_keys, key, r.get("dedupe_max").and_then(V::as_integer).unwrap_or(0).max(1) as u64);
+            class = "report".into();
         }
     } else if tools("read").contains(&name) {
         // reading is work on the step too: its targets are the words the drift check compares with the step
@@ -537,12 +584,22 @@ fn tool_use(a: &mut Agent, b: &Value, ts: u64, cwd: &str) {
         // the program the segment runs: quoted argument text (`rg 'git commit' src`, `echo "git push"`) is never the command.
         let unq: Vec<String> = segs.iter().map(|s| unquoted(s)).collect();
         let seg_hit = |k: &str| pat(k).is_some_and(|r| unq.iter().any(|s| r.is_match(s)));
+        // a shipping segment earns credit only when the call's success proves it ran and succeeded: every delimiter before it runs it
+        // (agent_tracker.ran_delims.before: never `||`) and every one after it needs it to succeed (ran_delims.after: `&&`), #972 round 2
+        let rd = defaults::raw("agent_tracker.ran_delims");
+        let (before, after) = (rd.get("before").map(V::strings).unwrap_or_default(), rd.get("after").map(V::strings).unwrap_or_default());
+        let ran = |i: usize| {
+            delims.iter().take(i).all(|d| before.contains(d)) && delims.iter().take(segs.len().saturating_sub(1)).skip(i).all(|d| after.contains(d))
+        };
+        let ran_hit = |k: &str| pat(k).is_some_and(|r| unq.iter().enumerate().any(|(i, s)| r.is_match(s) && ran(i)));
         push = seg_hit("push");
         if seg_hit("commit") {
             class = "commit".into();
-        } else if pat("merge").is_some_and(|r| r.is_match(arg)) {
+        } else if ran_hit("merge") {
+            // per segment, like commit and push: the merge and deploy patterns are anchored at the program a segment runs, so matched
+            // against the joined segments they saw only the first one (`cd repo && gh pr merge 840` was no merge, #972 class 3)
             class = "merge".into();
-        } else if pat("deploy").is_some_and(|r| r.is_match(arg)) {
+        } else if ran_hit("deploy") {
             class = "deploy".into();
         } else if pat("test").is_some_and(|r| r.is_match(arg)) {
             class = "test".into();
@@ -607,6 +664,16 @@ fn tool_use(a: &mut Agent, b: &Value, ts: u64, cwd: &str) {
         todos(a, &input);
     } else if tools("task_update").contains(&name) {
         let task = str_of(&input, tr("task_id")).to_string();
+        // a write of the task's blocker (its blockedOn, owner or status, nudges.idle_wake field names): the answer a hold reminder asks
+        // for; a write of anything else (a subject fix) is not (#972 round 2, Codex #838 P2.4)
+        let iw = defaults::raw("nudges.idle_wake");
+        let blocker = input.get(iw.str_field("f_metadata")).is_some_and(|m| m.get(iw.str_field("f_blocked_on")).is_some())
+            || input.get(iw.str_field("f_owner")).is_some()
+            || input.get(iw.str_field("f_status")).is_some();
+        // recorded on the call's successful result only (#972 round 3, Codex #839 P1.2: an errored update wrote nothing)
+        if blocker && !task.is_empty() {
+            blocker_task.clone_from(&task);
+        }
         let text = [tr("active_form"), tr("subject")].iter().map(|k| str_of(&input, k)).find(|s| !s.is_empty()).unwrap_or("");
         let subject = str_of(&input, tr("subject"));
         if !task.is_empty() && !subject.is_empty() {
@@ -618,11 +685,14 @@ fn tool_use(a: &mut Agent, b: &Value, ts: u64, cwd: &str) {
                 a.progress += weight("step");
                 a.open = false;
                 // the finished task was the declared step: nothing is being done now until another starts
-                if !task.is_empty() && a.step_task == task {
-                    a.step.clear();
-                    a.step_task.clear();
-                    a.step_events = 0;
-                    a.work.clear();
+                end_step(a, &task);
+            }
+            // any other closed status (nudges.idle_wake.closed_statuses, the list the task-list readers use) ends the declared step the
+            // same way (GH #964: a deleted step stayed the step, still open, and idle_open_task kept naming a task gone from the list);
+            // it is no progress, and closing another task leaves the step alone. Completion above never depends on this list.
+            s if closed_statuses().iter().any(|c| *c == s) => {
+                if end_step(a, &task) {
+                    a.open = false;
                 }
             }
             s if s == tr("in_progress") => {
@@ -640,12 +710,29 @@ fn tool_use(a: &mut Agent, b: &Value, ts: u64, cwd: &str) {
     if !id.is_empty() {
         let bg = tools("shell").contains(&name) && input.get(tr("background")).and_then(Value::as_bool) == Some(true);
         let ack = tools("agent").contains(&name) && input.get(tr("background")).and_then(Value::as_bool) == Some(true);
-        a.pending.insert(id, Pending { name: name.to_string(), ts, label, class, bg, push, ack, writes, amp, cwd: call_dir });
+        a.pending.insert(id, Pending { name: name.to_string(), ts, label, class, bg, push, ack, writes, amp, cwd: call_dir, blocker_task });
         while a.pending.len() > lim("loop_window") as usize {
             let Some(k) = a.pending.iter().min_by_key(|(_, p)| p.ts).map(|(k, _)| k.clone()) else { break };
             a.pending.remove(&k);
         }
     }
+}
+
+/// The task statuses that close a task (`nudges.idle_wake.closed_statuses`).
+fn closed_statuses() -> Vec<&'static str> {
+    defaults::raw("nudges.idle_wake").get("closed_statuses").map(V::strings).unwrap_or_default()
+}
+
+/// The task `task` ended: when it was the declared step, nothing is being done now until another starts. Whether it was.
+fn end_step(a: &mut Agent, task: &str) -> bool {
+    if task.is_empty() || a.step_task != task {
+        return false;
+    }
+    a.step.clear();
+    a.step_task.clear();
+    a.step_events = 0;
+    a.work.clear();
+    true
 }
 
 fn remember_task(a: &mut Agent, id: &str, subject: &str) {
@@ -720,6 +807,17 @@ fn tool_result(a: &mut Agent, b: &Value, ts: u64) {
     }
     if pat("guard_fire").is_some_and(|r| r.is_match(&text)) {
         a.guard_fires += 1;
+    }
+    if !failed && !p.blocker_task.is_empty() {
+        a.blocker_writes.insert(p.blocker_task.clone(), ts);
+        while a.blocker_writes.len() > lim("task_names_max") as usize {
+            let Some(k) = a.blocker_writes.iter().min_by_key(|(_, t)| **t).map(|(k, _)| k.clone()) else { break };
+            a.blocker_writes.remove(&k);
+        }
+    }
+    if !failed && p.class == "report" {
+        a.reports += 1;
+        a.progress += weight("report");
     }
     // a subagent launched in the foreground returned its result to this agent
     if !failed && !p.ack && tools("agent").contains(&p.name.as_str()) {

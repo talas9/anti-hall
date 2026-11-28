@@ -471,7 +471,7 @@ value = "cache-ttl-wait-guard"
 
 [cache_wait.summary]
 doc = "One-line description of the cache-ttl-wait-guard check in the generated reference."
-value = "Order long single waits to be split. PreToolUse on Bash (Claude and Codex, every agent), Monitor and TaskOutput (Claude): a sleep, a poll loop or watch under a timeout, or a tool deadline above the prompt-cache limit gets an order to split it into shorter waits. Advisory only: it never blocks."
+value = "Order long single waits to be split. PreToolUse on Bash (Claude and Codex, every agent), Monitor and TaskOutput (Claude): a sleep, a poll loop or watch under a timeout, or a tool deadline above the prompt-cache limit gets an order to split it into shorter waits. The engine's own wake-watch Monitor (cache_wait.watcher_argv) is exempt. Advisory only: it never blocks."
 
 [cache_wait.limit_s]
 doc = "A single wait above this many seconds is ordered split: it outlives the prompt cache (the TTL is 300 s; this leaves a margin for the turn itself)."
@@ -498,6 +498,38 @@ value = "PreToolUse"
 [cache_wait.persistent_field]
 doc = "The tool input field that makes a Monitor persistent (it runs for the session and wakes the agent by event, so it is no single wait)."
 value = "persistent"
+
+[cache_wait.watcher_tools]
+doc = "Tools whose call may run the engine's own wake watcher (cache_wait.watcher_argv): such a call is exempt from the order (GH #965)."
+value = ["Monitor"]
+
+[cache_wait.watcher_prefixes]
+doc = "The only words that may stand before the watcher program in an exempt Monitor command, at most one of them (GH #965): the `exec` of agent_tracker.wake_command, which replaces the shell and bounds nothing. Any other wrapper or an assignment means no exemption."
+value = ["exec"]
+
+[cache_wait.watcher_redirects]
+doc = "The only redirections an exempt watcher Monitor command may carry (GH #965): the stderr-to-stdout merge of agent_tracker.wake_command_agents. Any other redirection means no exemption."
+value = ["2>&1"]
+
+[cache_wait.watcher_command_keys]
+doc = "The config keys of the engine's own wake-watch re-arm commands (GH #965). An exempt Monitor must run the very program path one of them names (its first word after at most one cache_wait.watcher_prefixes word, home forms expanded), not any file whose name is ah-engine."
+value = ["agent_tracker.wake_command_agents", "agent_tracker.wake_command"]
+
+[cache_wait.home_forms]
+doc = "Spellings of the home directory expanded before two watcher program paths are compared (GH #965), as the shell expands them: a form starting with ~ only unquoted at the start of a word, a form starting with $ unquoted or inside double quotes, never inside single quotes (a quoted '~/x' or '$HOME/x' is a literal path and gets no exemption)."
+value = ["~/", "$HOME/", "${HOME}/"]
+
+[cache_wait.watcher_unsafe]
+doc = "Text that, anywhere in a Monitor command, means it is not plainly the engine's watcher (GH #965): a backtick (command substitution), a backslash (an escape the comparison would read differently from the shell) and $' (ANSI-C quoting)."
+value = ["`", "\\", "$'"]
+
+[cache_wait.watcher_path_re]
+doc = "The characters an exempt watcher program path may hold once the home directory is expanded (GH #965): a plain path only. Any other character means no exemption."
+value = '^[A-Za-z0-9_./+:@%,=-]+$'
+
+[cache_wait.watcher_argv]
+doc = "The engine's own wake watcher, as program base name then verb words (GH #965). A Monitor whose whole command is plainly one of these (one simple command; only cache_wait.watcher_prefixes before it and cache_wait.watcher_redirects in it, no assignment, other wrapper, substitution, chain or pipe; any further words must be options) is the long, event-driven wake path the re-arm lines ask for with agent_tracker.wake_timeout_ms (agent_tracker.wake_command, agent_tracker.wake_command_agents, devswarm_cli.sp_wake_watcher): it idles by event, so it is no single wait and is not ordered split. Every other Monitor, and a compound command that only mentions the watcher, is judged as before."
+value = [["ah-engine", "agents", "wake-watch"], ["ah-engine", "devswarm", "wake-watch"]]
 
 [cache_wait.bash_timeout_field]
 doc = "The Bash tool input field that holds the call's timeout, in milliseconds. It bounds a poll loop or a watch that has no timeout of its own."

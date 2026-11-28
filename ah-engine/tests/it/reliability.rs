@@ -1571,7 +1571,9 @@ fn wrapper_restart_loop_fails_open_under_one_second() {
     // the first exec of a freshly linked binary is slow on macOS (~0.4 s, measured: 0.9-1.0 s on the first run after a rebuild, 0.52 s on
     // every later one, identical before and after the slow-wait change); that is the OS, not the call, so it is paid before the timing
     let _ = e.ctl("ping");
-    let (out, code, dt) = e.wrapper_hook(DENY_IN);
+    // R0 (#969 hardening): a fresh crash-loop cooldown holds a risky call (a_fresh_crash_loop_cooldown_holds_a_force_push...), so the
+    // fail-open timing is measured on a call that is not held
+    let (out, code, dt) = e.wrapper_hook(READ_IN);
     println!("TIMING wrapper restart-loop wall_ms={:.1}", dt.as_secs_f64() * 1000.0);
     assert_eq!((out.as_str(), code), ("", 0));
     assert!(dt < common::scaled(Duration::from_secs(1)), "wrapper took {dt:?}");
@@ -2271,6 +2273,41 @@ fn a_live_daemon_that_shows_no_progress_fails_the_call_open_within_a_second() {
     }
 }
 
+/// #969: the progress gate judges the worker on the call's OWN request. Another worker silent for 5 s (the daemon-wide figure) no
+/// longer fails a call open whose own worker is making progress (`files.heartbeat_peers` names its pid with a fresh figure): the
+/// call waits and gets the late deny. Before, one slow check failed every waiting client open (423 of 484 client gives-ups live).
+#[test]
+fn a_call_whose_own_worker_progresses_is_not_failed_open_by_another_silent_worker() {
+    let _timing = wrapper_timing_lock();
+    let e = Env::new("hbpeer", &[("AH_ENGINE_NOSPAWN", "1"), ("AH_ENGINE_SLOW_DOWN_N", "9")]);
+    let mut stand_in = Command::new("sleep").arg("60").spawn().unwrap();
+    fake_heartbeat_with(&e, stand_in.id(), true, Some(5000)); // the longest-silent worker: silent for 5 s
+    std::fs::create_dir_all(e.eng()).unwrap();
+    let l = UnixListener::bind(e.eng().join("e.sock")).unwrap();
+    let peers = e.eng().join(ah_engine::defaults::text("files.heartbeat_peers"));
+    std::thread::spawn(move || {
+        for mut s in l.incoming().flatten() {
+            let pid = ah_engine::limits::peer_pid(&s).unwrap_or(0);
+            let mut b = Vec::new();
+            ah_engine::discard::harmless(s.read_to_end(&mut b));
+            // the worker serving this request beats while it works, then answers late
+            let until = std::time::Instant::now() + Duration::from_millis(1500);
+            while std::time::Instant::now() < until {
+                ah_engine::discard::harmless(std::fs::write(&peers, format!("{pid} 0\n")));
+                std::thread::sleep(Duration::from_millis(100));
+            }
+            let r = ah_engine::frame::encode(ah_engine::frame::Kind::Ok, &format!("{}late deny", ah_engine::hookio::EXIT2));
+            ah_engine::discard::harmless(s.write_all(&r));
+        }
+    });
+    let (out, code, dt) = e.wrapper_hook(DENY_IN);
+    println!("TIMING own-worker progress late deny wall_ms={:.1} rc={code}", dt.as_secs_f64() * 1000.0);
+    ah_engine::discard::harmless(stand_in.kill());
+    ah_engine::discard::harmless(stand_in.wait());
+    assert_eq!(code, 2, "the call's own worker progressed, so its late deny blocks: out={out:?} {}", e.health_log());
+    assert!(!e.health_log().contains("not working on the request"), "no progress-gate fail-open: {}", e.health_log());
+}
+
 /// #684 (review of #690): the long wait is for Stop and SubagentStop only. SessionEnd (5 s hook timeout) with a daemon that shows
 /// progress forever still ends by itself: the CLIENT gives up at the short bound (`client.slow_fallback_max_ms` less its margin) and
 /// logs the slow call, before the launcher's watchdog could kill it.
@@ -2416,6 +2453,28 @@ fn an_open_breaker_holds_a_force_push_while_the_daemon_is_there_and_passes_all_o
     assert_eq!(read, 0, "an open breaker with the daemon there passes a read: {log}");
     assert_eq!(gone, 0, "an open breaker with the daemon gone passes everything: {log}");
     assert!(log.contains("skipped_breaker_load"), "the breaker-load skip is logged: {log}");
+}
+
+/// R0 (#969 hardening review): a crash-loop cooldown used to pass every call for its whole length, so a latch was a silent guard
+/// outage. A fresh trip is load: a force push is held, a read passes. Past client.crashloop_hold_max_ms the rest of the cooldown
+/// passes everything, so a broken install never blocks pushes for the whole cooldown.
+#[test]
+fn a_fresh_crash_loop_cooldown_holds_a_force_push_and_passes_all_past_its_backstop() {
+    let _timing = wrapper_timing_lock();
+    let e = Env::new("crashhold", &[("AH_ENGINE_NOSPAWN", "1"), ("AH_ENGINE_CRASHLOOP_HOLD_MAX_MS", "600000")]);
+    std::fs::create_dir_all(e.eng()).unwrap();
+    let cooldown = ah_engine::config::ClientConfig::from_env().crash_cooldown.as_millis() as u64;
+    let now = ah_engine::health::now_ms();
+    std::fs::write(e.eng().join("crashloop.until"), (now + cooldown).to_string()).unwrap(); // tripped just now
+    let (_, held, _) = e.wrapper_hook(DENY_IN);
+    let (_, read, _) = e.wrapper_hook(READ_IN);
+    std::fs::write(e.eng().join("crashloop.until"), (now + 60_000).to_string()).unwrap(); // tripped cooldown - 60 s ago: past the backstop
+    let (_, late, _) = e.wrapper_hook(DENY_IN);
+    let log = e.health_log();
+    assert_eq!(held, 2, "a fresh crash-loop cooldown holds a force push: {log}");
+    assert_eq!(read, 0, "and passes a read: {log}");
+    assert_eq!(late, 0, "past client.crashloop_hold_max_ms the cooldown passes everything: {log}");
+    assert!(log.contains("skipped_crashloop_hold"), "the hold is logged: {log}");
 }
 
 /// #905 review: a live daemon that fails every exchange (it holds the singleton lock, a live pid, and answers no frame) holds a force

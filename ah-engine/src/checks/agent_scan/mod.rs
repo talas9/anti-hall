@@ -87,6 +87,9 @@ pub struct Pending {
     pub live: bool,
     /// The `<name>@<team>` agent id (empty when unknown).
     pub agent_id: String,
+    /// Whether `sent_at_ms` is a message to the teammate (false: it is the spawn prompt, the teammate's first instruction, which is not a
+    /// message the coordinator can have left unanswered).
+    pub messaged: bool,
 }
 
 /// An insertion-ordered map: a JavaScript `Map` (setting an existing key keeps its position).
@@ -141,6 +144,9 @@ pub struct Scan {
     /// Agent ids of teammates a `TaskStop` ended, which names the teammate (`task_id` is the name, not the agent id) and was issued
     /// after its latest spawn. A stop that failed because the task no longer exists counts: the teammate is gone either way.
     pub stopped_agents: HashSet<String>,
+    /// The time (ms) of the latest terminal or stop evidence per id of `terminal` and `stopped_agents`, when the transcript dated it: a
+    /// stop older than an agent's own later writes is history, not a fresh stop (#972 round 2).
+    pub ended_ts: HashMap<String, f64>,
     /// Teammates sent a message they have not reported on.
     pub pending: Vec<(String, Pending)>,
 }
@@ -587,6 +593,7 @@ struct Flags {
     taskstop: bool,
     task_status: bool,
     tool_use: bool,
+    /// A teammate message: an idle notice or plain report in a `<teammate-message` block, or a report the host stamped with a peer origin.
     idle: bool,
 }
 
@@ -601,7 +608,7 @@ impl Flags {
 /// lossily decoded, trimmed line would; otherwise the scan decodes and trims first and searches the string.
 struct Prefilter {
     fast: bool,
-    keys: [&'static str; 10],
+    keys: [&'static str; 12],
     finders: Vec<memchr::memmem::Finder<'static>>,
 }
 
@@ -609,7 +616,7 @@ fn prefilter() -> std::sync::Arc<Prefilter> {
     static P: crate::defaults::Cache<Prefilter> = crate::defaults::Cache::new();
     P.get_or_init(|| {
         let k = defaults::raw("agent_scan.prefilter");
-        let keys: [&'static str; 10] = [
+        let keys: [&'static str; 12] = [
             k.str_field("launch"),
             k.str_field("notification"),
             k.str_field("agent_use"),
@@ -620,6 +627,8 @@ fn prefilter() -> std::sync::Arc<Prefilter> {
             k.str_field("task_status"),
             k.str_field("tool_use"),
             k.str_field("idle"),
+            k.str_field("peer"),
+            k.str_field("peer_spaced"),
         ];
         let blank = |b: u8| b.is_ascii_whitespace() || b == 0x0b;
         let fast = keys.iter().all(|n| n.is_ascii() && n.as_bytes().first().is_some_and(|b| !blank(*b)) && n.as_bytes().last().is_some_and(|b| !blank(*b)));
@@ -637,7 +646,7 @@ impl Prefilter {
             taskstop: has(5) || has(6),
             task_status: has(7),
             tool_use: has(8),
-            idle: has(9),
+            idle: has(9) || has(10) || has(11),
         }
     }
 
@@ -1038,7 +1047,7 @@ impl Walk {
 
         if has_idle {
             for i in self.teammate_idles(&entry, entry_ts)? {
-                self.team_event(&i.0, "idle", i.1, seq);
+                self.team_event(&i.0, i.2, i.1, seq);
             }
         }
 
@@ -1189,8 +1198,15 @@ impl Walk {
     }
 
     /// `teammateIdles(entry, entryTs, spawned)`: `(name, ts, reason)` of each genuine teammate report in this entry.
-    fn teammate_idles(&self, entry: &Value, entry_ts: f64) -> Res<Vec<(String, f64)>> {
+    fn teammate_idles(&self, entry: &Value, entry_ts: f64) -> Res<Vec<(String, f64, &'static str)>> {
         let mut out = Vec::new();
+        // a report the host stamped with a peer origin (#972 wave 2): its sender is structured, whatever envelope wraps the text
+        if let Some(who) = peer_report_from(entry) {
+            if self.team_info.has(who) {
+                out.push((who.to_string(), entry_ts, "report"));
+            }
+            return Ok(out);
+        }
         if sprop(entry, "type") != Some("user") {
             return Ok(out);
         }
@@ -1210,13 +1226,34 @@ impl Walk {
             }
         }
         let skew = defaults::num("agent_scan.report_future_skew_ms") as f64;
+        let mut late: Option<f64> = None;
         let mut at = prefix.len();
         at += c[at..].len() - trim_start(&c[at..]).len();
         while let Some(m) = pats().teammate_block.captures(&c[at..]) {
             let (id, body) = (m.get(1).map_or("", |x| x.as_str()), m.get(2).map_or("", |x| x.as_str()));
             at += m.get(0).map_or(0, |x| x.end());
             at += c[at..].len() - trim_start(&c[at..]).len();
-            if !self.team_info.has(id) || body.contains('\n') || !body.starts_with('{') {
+            if !self.team_info.has(id) {
+                continue;
+            }
+            // a plain-text body is the teammate's own report (a SendMessage to the coordinator), an answer to everything sent before it
+            let lead = body.trim_start();
+            if !lead.starts_with('{') && !lead.is_empty() {
+                out.push((id.to_string(), entry_ts, "report"));
+                // the block closed at the first closing tag inside it: the report quotes earlier teammate messages, and what follows is
+                // quoted text, never another teammate's report
+                if body.contains(defaults::text("agent_scan.teammate_open")) {
+                    // the teammate's own idle notice may follow the quoted text: it dates the report
+                    if let Some(t) = late_idle_ts(&c[at..], id, entry_ts)?
+                        && t < entry_ts
+                    {
+                        late = Some(t);
+                    }
+                    break;
+                }
+                continue;
+            }
+            if body.contains('\n') || !body.starts_with('{') {
                 continue;
             }
             let Some(o) = parse_json(body)? else { continue };
@@ -1231,10 +1268,69 @@ impl Walk {
                 continue;
             }
             let ts = if inner.is_finite() && entry_ts.is_finite() { inner } else { entry_ts };
-            out.push((id.to_string(), ts));
+            out.push((id.to_string(), ts, "idle"));
+        }
+        // a plain report has no time of its own: the idle notice of the same entry (the teammate's turn end, written after the report
+        // text) dates it, the entry's receipt time is its latest possible time
+        let mut idles: Vec<(String, f64)> = out.iter().filter(|o| o.2 == "idle").map(|o| (o.0.clone(), o.1)).collect();
+        if let Some(t) = late {
+            for o in out.iter().filter(|o| o.2 == "report") {
+                idles.push((o.0.clone(), t));
+            }
+        }
+        for o in out.iter_mut().filter(|o| o.2 == "report") {
+            if let Some((_, t)) = idles.iter().find(|(i, t)| *i == o.0 && t.is_finite() && *t < o.1) {
+                o.1 = *t;
+            }
         }
         Ok(out)
     }
+}
+
+/// The sender of a message the host delivered with a peer origin (`agent_scan.peer_report`): a user entry, or an attachment of a listed
+/// type (a message delivered while the session was busy), whose origin kind is the peer word. Its envelope text (`<agent-message`,
+/// `<teammate-message`) and the record keys that mark host-made entries do not matter: the origin names who sent it. The caller decides
+/// whether the sender is a spawned teammate.
+pub(super) fn peer_report_from(entry: &Value) -> Option<&str> {
+    let cfg = defaults::raw("agent_scan.peer_report");
+    let key = cfg.str_field("origin_key");
+    let origin = match sprop(entry, "type") {
+        Some(t) if t == cfg.str_field("entry_type") => prop(entry, key),
+        Some(t) if t == cfg.str_field("attachment_entry_type") => prop(entry, cfg.str_field("attachment_key"))
+            .filter(|a| sprop(a, "type").is_some_and(|at| cfg.get("attachment_types").map(|l| l.strings()).unwrap_or_default().contains(&at)))
+            .and_then(|a| prop(a, key)),
+        _ => None,
+    }?;
+    if sprop(origin, cfg.str_field("kind_key")) != Some(cfg.str_field("kind")) {
+        return None;
+    }
+    sprop(origin, cfg.str_field("from_key")).filter(|w| !w.is_empty())
+}
+
+/// The time of the teammate's own idle notice that follows a report which quotes earlier teammate messages: `rest` is what follows the
+/// block that closed early. Only a single-line idle notice from `id` itself, not dated past the entry, counts; the latest one wins.
+pub(super) fn late_idle_ts(rest: &str, id: &str, entry_ts: f64) -> Res<Option<f64>> {
+    let skew = defaults::num("agent_scan.report_future_skew_ms") as f64;
+    let mut best: Option<f64> = None;
+    for (at, _) in rest.match_indices(defaults::text("agent_scan.teammate_open")) {
+        let Some(m) = pats().teammate_block.captures(&rest[at..]) else { continue };
+        let (who, body) = (m.get(1).map_or("", |x| x.as_str()), m.get(2).map_or("", |x| x.as_str()));
+        if who != id || body.contains('\n') || !body.starts_with('{') {
+            continue;
+        }
+        let Some(o) = parse_json(body)? else { continue };
+        if sprop(&o, "type") != Some("idle_notification") || sprop(&o, "from") != Some(id) {
+            continue;
+        }
+        let t = match sprop(&o, "timestamp") {
+            Some(t) => date_parse(t)?,
+            None => f64::NAN,
+        };
+        if t.is_finite() && entry_ts.is_finite() && t <= entry_ts + skew && best.is_none_or(|b| t > b) {
+            best = Some(t);
+        }
+    }
+    Ok(best)
 }
 
 /// `parseResumeResult(text)` -> `(id, full)`.
@@ -1816,6 +1912,7 @@ fn finish_with(w: &Walk, others_from: u64, path: &str, opts: &Opts, load: &mut d
 
     // A stop names a teammate by its name: the agent id of that spawn ended too (only a stop after the latest spawn counts).
     let mut stopped_agents: HashSet<String> = HashSet::new();
+    let mut stop_ts: HashMap<String, f64> = HashMap::new();
     for s in &stops {
         let Some(tuid) = s.tool_use_id.as_ref() else { continue };
         if (w.errored.contains(tuid.as_str()) && !w.gone.contains(tuid.as_str())) || !(w.answered.contains(tuid.as_str())) {
@@ -1825,6 +1922,10 @@ fn finish_with(w: &Walk, others_from: u64, path: &str, opts: &Opts, load: &mut d
         let spawned_at = team_events.get(&s.id).and_then(|evs| evs.iter().filter(|e| e.kind == "spawn").map(|e| e.seq).max());
         if spawned_at.is_some_and(|sp| s.seq > sp) {
             stopped_agents.insert(info.agent_id.clone());
+            if s.ts.is_finite() {
+                let e = stop_ts.entry(info.agent_id.clone()).or_insert(s.ts);
+                *e = e.max(s.ts);
+            }
         }
     }
 
@@ -1937,7 +2038,7 @@ fn finish_with(w: &Walk, others_from: u64, path: &str, opts: &Opts, load: &mut d
     let names: Vec<String> = team_events.keys().cloned().collect();
     for name in names {
         let Some(evs) = team_events.get(&name) else { continue };
-        if !evs.iter().any(|e| e.kind == "spawn" || e.kind == "idle") {
+        if !evs.iter().any(|e| e.kind == "spawn" || e.kind == "idle" || e.kind == "report") {
             continue;
         }
         if evs.iter().any(|e| !e.ts.is_finite()) {
@@ -1953,12 +2054,16 @@ fn finish_with(w: &Walk, others_from: u64, path: &str, opts: &Opts, load: &mut d
         }
         let mut state = St::Idle;
         let (mut queued, mut pend, mut last_idle) = (f64::NAN, f64::NAN, f64::NAN);
+        // whether `pend` is a message sent to the teammate (not its spawn prompt)
+        let mut pend_sent = false;
         for e in &ordered {
             match e.kind {
+                // the spawn prompt is the teammate's first instruction: it is busy on it until its first idle report (#965)
                 "spawn" => {
                     state = St::Busy;
                     queued = f64::NAN;
-                    pend = f64::NAN;
+                    pend = e.ts;
+                    pend_sent = false;
                 }
                 "stop" => {
                     state = St::Stopped;
@@ -1970,24 +2075,38 @@ fn finish_with(w: &Walk, others_from: u64, path: &str, opts: &Opts, load: &mut d
                     if state == St::Idle {
                         state = St::Busy;
                         pend = e.ts;
+                        pend_sent = true;
                     } else {
                         queued = e.ts;
+                    }
+                }
+                // the teammate's own report to the coordinator: it answers every message sent before it; a teammate still on its spawn prompt stays busy.
+                // It leaves `last_idle` to the idle notices (the same entry usually carries both)
+                "report" => {
+                    queued = f64::NAN;
+                    if pend_sent {
+                        pend = f64::NAN;
+                        pend_sent = false;
+                        state = St::Idle;
                     }
                 }
                 _ => {
                     last_idle = e.ts;
                     if queued.is_finite() {
                         pend = queued;
+                        pend_sent = true;
                         queued = f64::NAN;
                         state = St::Busy;
                     } else {
                         pend = f64::NAN;
+                        pend_sent = false;
                         state = St::Idle;
                     }
                 }
             }
         }
         let sent = if queued.is_finite() { queued } else { pend };
+        let messaged = queued.is_finite() || pend_sent;
         if !sent.is_finite() || background.contains(&name) {
             continue;
         }
@@ -1997,7 +2116,7 @@ fn finish_with(w: &Walk, others_from: u64, path: &str, opts: &Opts, load: &mut d
         let info = w.team_info.get(&name);
         let agent_id = info.map(|i| i.agent_id.clone()).unwrap_or_default();
         let tuid = info.and_then(|i| i.tool_use_id.clone());
-        pending.push((name.clone(), Pending { sent_at_ms: sent, last_idle_ms: last_idle, last_seen_ms: last_seen, live, agent_id }));
+        pending.push((name.clone(), Pending { sent_at_ms: sent, last_idle_ms: last_idle, last_seen_ms: last_seen, live, agent_id, messaged }));
         if !live {
             continue;
         }
@@ -2020,7 +2139,14 @@ fn finish_with(w: &Walk, others_from: u64, path: &str, opts: &Opts, load: &mut d
         );
         terminal.remove(&name);
     }
-    Ok(Some(Scan { launched, terminal, stopped_agents, pending }))
+    let mut ended_ts = stop_ts;
+    for id in &terminal {
+        if let Some(t) = terminal_ev.get(id).and_then(|evs| evs.iter().map(|(_, t)| *t).filter(|t| t.is_finite()).reduce(f64::max)) {
+            let e = ended_ts.entry(id.clone()).or_insert(t);
+            *e = e.max(t);
+        }
+    }
+    Ok(Some(Scan { launched, terminal, stopped_agents, ended_ts, pending }))
 }
 
 /// What `agentCountProof` returns: the running agents (`None`: the count cannot be trusted), the ids the scanned window shows

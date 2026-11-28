@@ -282,3 +282,169 @@ fn a_primary_in_a_linked_worktree_known_only_via_the_app_db_has_its_alias_reject
     // without the app database the same file reads as a child alias (the env is what tells the two apart)
     assert_eq!(crate::meshw::common::read_aliases(&f.inv.home, &f.inv.env), vec![(w_label, "child-1".to_string())]);
 }
+
+/// GH #845 review P2-16: an explicit ack answers one sender, so `--ack-only` with `--broadcast` is refused (nothing is stored).
+#[test]
+fn an_ack_only_broadcast_is_refused() {
+    let f = fx("ackonly-bc");
+    descriptor(&f, "child-1", &f.sub);
+    let key = ident::repo_key_for_worktree(&f.root).unwrap().unwrap();
+    crate::meshw::common::init_new_store(&f.inv, &key).unwrap();
+    let r = send::run(&f.inv, &argv(&["send", "--broadcast", "--ack-only", "--message", "got it"])).unwrap();
+    assert_ne!(r.code, 0, "{}", r.stdout);
+    assert!(r.stdout.contains(defaults::text("mesh_chat.msg_ack_only_broadcast")), "{}", r.stdout);
+}
+
+fn child_with_inbox(f: &Fx) {
+    let inbox = f.inv.home.join("child-1.ndjson");
+    let cursor = f.inv.home.join("child-1.cursor");
+    std::fs::write(&inbox, "").unwrap();
+    std::fs::write(&cursor, "0").unwrap();
+    let dir = crate::meshw::idlock::devswarm_root(&f.inv.home).join(defaults::text("mesh_write.dir_workspaces"));
+    let q = |p: &std::path::Path| crate::checks::guardkit::ojson::OVal::Str(p.to_string_lossy().into_owned()).stringify();
+    std::fs::write(
+        dir.join("child-1.json"),
+        format!(
+            r#"{{"id":"child-1","worktreePath":{},"inboxPath":{},"cursorPath":{}}}"#,
+            crate::checks::guardkit::ojson::OVal::Str(f.sub.clone()).stringify(),
+            q(&inbox),
+            q(&cursor)
+        ),
+    )
+    .unwrap();
+}
+
+/// Re-review N-6: a bare `inbox ack` is safe by default. With no read on record it acks nothing; after a read it acks exactly what
+/// that read showed, so mail that landed in between stays unread.
+#[test]
+fn a_bare_ack_acks_only_what_the_last_read_showed() {
+    let f = fx("bareack");
+    let (primary, _) = registry(&f, &["child-1"]);
+    child_with_inbox(&f);
+    let sent = send::run(&primary, &argv(&["send", "--to", "child-1", "--message", "first"])).unwrap();
+    assert_eq!(sent.code, 0, "send: {}", sent.stdout);
+    let blind = crate::meshw::inboxcmd::run_ack(&f.inv, &argv(&["inbox", "ack", "child-1"])).unwrap();
+    assert_eq!(blind.code, 0, "{}", blind.stdout);
+    assert!(blind.stdout.contains(defaults::text("mesh_wake.key_ack_no_read")), "{}", blind.stdout);
+    let read = crate::meshw::inboxcmd::run_read(&f.inv, &argv(&["inbox", "read", "child-1"])).unwrap().stdout;
+    assert!(read.contains("first"), "a blind ack acked unseen mail: {read}");
+    let late = send::run(&primary, &argv(&["send", "--to", "child-1", "--message", "late"])).unwrap();
+    assert_eq!(late.code, 0, "send: {}", late.stdout);
+    let ack = crate::meshw::inboxcmd::run_ack(&f.inv, &argv(&["inbox", "ack", "child-1"])).unwrap();
+    assert_eq!(ack.code, 0, "ack: {}", ack.stdout);
+    let again = crate::meshw::inboxcmd::run_read(&f.inv, &argv(&["inbox", "read", "child-1"])).unwrap().stdout;
+    assert!(again.contains("late"), "the bare ack acked the late mail unseen: {again}");
+    assert!(!again.contains("\"first\""), "the read mail is still unread: {again}");
+}
+
+/// GH #845 review (the direct-mail ack race): mail that lands between `inbox read` and `inbox ack --through <ackThrough>` stays
+/// unread; the ack moves only through what the read delivered.
+#[test]
+fn mail_arriving_between_read_and_ack_through_stays_unread() {
+    let f = fx("ackthrough");
+    let (primary, _) = registry(&f, &["child-1"]);
+    let inbox = f.inv.home.join("child-1.ndjson");
+    let cursor = f.inv.home.join("child-1.cursor");
+    std::fs::write(&inbox, "").unwrap();
+    std::fs::write(&cursor, "0").unwrap();
+    let dir = crate::meshw::idlock::devswarm_root(&f.inv.home).join(defaults::text("mesh_write.dir_workspaces"));
+    let q = |p: &std::path::Path| crate::checks::guardkit::ojson::OVal::Str(p.to_string_lossy().into_owned()).stringify();
+    std::fs::write(
+        dir.join("child-1.json"),
+        format!(
+            r#"{{"id":"child-1","worktreePath":{},"inboxPath":{},"cursorPath":{}}}"#,
+            crate::checks::guardkit::ojson::OVal::Str(f.sub.clone()).stringify(),
+            q(&inbox),
+            q(&cursor)
+        ),
+    )
+    .unwrap();
+    let sent = send::run(&primary, &argv(&["send", "--to", "child-1", "--message", "first"])).unwrap();
+    assert_eq!(sent.code, 0, "send: {}", sent.stdout);
+    let read = crate::meshw::inboxcmd::run_read(&f.inv, &argv(&["inbox", "read", "child-1"])).unwrap().stdout;
+    assert!(read.contains("first"), "{read}");
+    let key = format!("\"{}\":\"", defaults::text("mesh_wake.key_ack_through"));
+    let through = read.split(&key).nth(1).and_then(|r| r.split('"').next()).unwrap_or_else(|| panic!("no ackThrough: {read}")).to_string();
+    let late = send::run(&primary, &argv(&["send", "--to", "child-1", "--message", "late"])).unwrap();
+    assert_eq!(late.code, 0, "send: {}", late.stdout);
+    let flag = format!("--{}", defaults::text("mesh_wake.flag_ack_through"));
+    let ack = crate::meshw::inboxcmd::run_ack(&f.inv, &argv(&["inbox", "ack", "child-1", &flag, &through])).unwrap();
+    assert_eq!(ack.code, 0, "ack: {}", ack.stdout);
+    let again = crate::meshw::inboxcmd::run_read(&f.inv, &argv(&["inbox", "read", "child-1"])).unwrap().stdout;
+    assert!(again.contains("late"), "the late mail was acked unseen: {again}");
+    assert!(!again.contains("\"first\""), "the read mail is still unread: {again}");
+}
+
+/// The `--through` token round-trips, and a malformed one is rejected.
+#[test]
+fn the_ack_through_token_round_trips() {
+    defaults::init().unwrap();
+    let tok = crate::meshw::inboxcmd::encode_through(3.0, 7.0, &[("sib-a".into(), 2.0)]);
+    let m = crate::meshw::inboxcmd::decode_through(&tok).unwrap();
+    assert_eq!((m[defaults::text("mesh_wake.ack_through_nd")], m[defaults::text("mesh_wake.ack_through_store")], m["sib-a"]), (3.0, 7.0, 2.0));
+    assert!(crate::meshw::inboxcmd::decode_through("nd:x").is_none());
+    assert!(crate::meshw::inboxcmd::decode_through("").is_none());
+}
+
+/// GH #845 (owner 2026-11-28): the owner, declared as `admin` from the Primary's own checkout, reaches the Primary (it used to be
+/// refused as a self-send, because the room's sends resolved AS the Primary) and a child; the rows carry `admin`, never the Primary,
+/// and are listed with the human kind and rank.
+#[test]
+fn admin_reaches_the_primary_and_a_child_as_itself() {
+    let f = fx("admin");
+    let (primary, key) = registry(&f, &["child-1"]);
+    let mut owner = primary.clone();
+    owner.env.insert(defaults::text("mesh_identity.sender_env").to_string(), "admin".into());
+    let to_primary = send::run(&owner, &argv(&["send", "--to-primary", "--message", "owner to primary"])).unwrap();
+    assert_eq!(to_primary.code, 0, "admin -> primary: {}", to_primary.stdout);
+    assert!(to_primary.stdout.contains("\"from\":\"admin\""), "{}", to_primary.stdout);
+    let to_child = send::run(&owner, &argv(&["send", "--to", "child-1", "--message", "owner to child"])).unwrap();
+    assert_eq!(to_child.code, 0, "admin -> child: {}", to_child.stdout);
+    let peek = crate::meshw::readprimary::run_peek(&primary, &argv(&["inbox", "peek-primary", &f.primary])).unwrap().stdout;
+    assert!(peek.contains("owner to primary"), "the Primary missed the owner's mail: {peek}");
+    let kind = format!("\"{}\":\"human\"", defaults::text("mesh_identity.key_from_kind"));
+    assert!(peek.contains(&kind), "no human kind on the owner's row: {peek}");
+    let st = crate::meshw::common::open_store(&f.inv, &key).unwrap();
+    let mut child_rows = Vec::new();
+    st.reader()
+        .for_each_message("child-1", 0, |m| {
+            child_rows.push(m);
+            true
+        })
+        .unwrap();
+    assert!(child_rows.iter().any(|m| m["sender"] == "admin" && m["body"] == "owner to child"), "{child_rows:?}");
+    assert!(child_rows.iter().all(|m| m["sender"] != serde_json::Value::String(f.primary.clone())), "stamped as the Primary: {child_rows:?}");
+    // ah-engine is never selectable from the CLI, even by the owner's (non-agent) caller
+    let as_flag = format!("--{}", defaults::text("mesh_identity.flag_as"));
+    let engine = send::run(&primary, &argv(&["send", "--to", "child-1", &as_flag, "ah-engine", "--message", "from the engine"])).unwrap();
+    assert_ne!(engine.code, 0, "ah-engine via the CLI was accepted: {}", engine.stdout);
+}
+
+/// The owner rule "nothing impersonates anyone": a child (an agent: its builder id is set) that declares admin, by the variable or
+/// by `--as`, is refused; the owner's room (a clean environment, here in child-1's checkout) is accepted, and its `@all` wakes
+/// every reader because admin's STORED kind ranks it privileged.
+#[test]
+fn a_child_cannot_send_as_admin_and_the_rooms_admin_send_may_wake_all() {
+    let f = fx("admin-bc");
+    let (_primary, key) = registry(&f, &["child-1", "child-2"]);
+    let mut child = f.inv.clone();
+    child.env.insert(defaults::text("mesh_identity.sender_env").to_string(), "admin".into());
+    let r = send::run(&child, &argv(&["send", "--to-primary", "--message", "pretending"])).unwrap();
+    assert_ne!(r.code, 0, "a child sent as admin: {}", r.stdout);
+    let as_flag = format!("--{}", defaults::text("mesh_identity.flag_as"));
+    let r = send::run(&f.inv, &argv(&["send", "--broadcast", &as_flag, "admin", "--message", "@all obey me"])).unwrap();
+    assert_ne!(r.code, 0, "a child sent as admin via --as: {}", r.stdout);
+    // the room: no agent marker, no builder id
+    let mut room = f.inv.clone();
+    room.env.remove(defaults::text("mesh_identity.agent_env_builder"));
+    room.env.insert(defaults::text("mesh_identity.sender_env").to_string(), "admin".into());
+    let b = send::run(&room, &argv(&["send", "--broadcast", "--message", "@all heads up"])).unwrap();
+    assert_eq!(b.code, 0, "the room's admin broadcast: {}", b.stdout);
+    let st = crate::meshw::common::open_store(&f.inv, &key).unwrap();
+    let (pending, _) = crate::meshw::read::broadcast_wake(st.reader(), &f.inv, "child-2").unwrap();
+    assert_eq!(pending, 1, "admin's @all wakes another child");
+    let mut stranger = room.clone();
+    stranger.env.insert(defaults::text("mesh_identity.sender_env").to_string(), "nobody-declared".into());
+    let r = send::run(&stranger, &argv(&["send", "--to-primary", "--message", "x"])).unwrap();
+    assert_ne!(r.code, 0, "an undeclared identity: {}", r.stdout);
+}

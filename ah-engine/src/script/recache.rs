@@ -269,7 +269,10 @@ pub fn get(src: &str, flags: &str) -> rquickjs::Result<Arc<Entry>> {
         if crate::mem::global().hard_latched() {
             crate::metrics::bump("regex_compiles_latched", &[]);
         }
-        let (re, weight) = compile(src, flags).ok_or_else(|| err("RegExp", defaults::render("script.msg_invalid_pattern", &[("src", &src)])))?;
+        let (re, weight) = compile(src, flags).ok_or_else(|| {
+            crate::metrics::bump("script_regex_invalid", &[]);
+            err("RegExp", defaults::render("script.msg_invalid_pattern", &[("src", &src)]))
+        })?;
         let entry = Entry {
             re,
             scratch: std::sync::atomic::AtomicU64::new(0),

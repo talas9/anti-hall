@@ -45,6 +45,10 @@ pub struct Meta {
     /// budgets that could outlast it ([`crate::deadline`]). Absent from an older client: the daemon's own default applies.
     #[serde(default)]
     pub deadline_ms: Option<u64>,
+    /// #969: the load factor (permille) the outermost process fitted for this call: the daemon scales the event's hard ceiling by it
+    /// and never samples the load itself. Absent = 1000 (no load, an older client, or no room).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub load_permille: Option<u64>,
     /// The notice turn the client's plan found (`context.injectGateNoticeTurns`): the daemon counts it, because the plan is made in the
     /// hook client, whose own counters are never read. Absent for a prompt typed by the owner and from an older client.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -138,6 +142,7 @@ pub fn evaluate(meta: &Meta, p: &Value, over_cpu: &dyn Fn(u64) -> bool, observe:
     {
         crate::gate::global().turn(sid);
     }
+    crate::script::set_call(p); // a closed guard that cannot answer tells a read-only call from a risky one
     let guard_event = crate::defaults::list("dispatch.guard_events").contains(&meta.event.as_str());
     let mut out = Vec::new();
     let entries: Vec<Entry> = table::select(&meta.host, &meta.event, p, meta.tool.as_deref())
@@ -171,6 +176,12 @@ pub fn evaluate(meta: &Meta, p: &Value, over_cpu: &dyn Fn(u64) -> bool, observe:
             crate::budget::note_shed_session(p.get("session_id").and_then(Value::as_str).unwrap_or_default(), check);
             crate::budget::note_dropped(guard_event, check, &meta.event, "shed");
             Answer::Defer
+        } else if crate::overload::sheds_check(check) {
+            // #969 shed mode (sustained overload, or a request that waited past its class bound): advice is skipped, as a check with
+            // nothing to say (no guard-down notice, no Node hook); fail-closed checks, recorders and kept checks run below
+            crate::budget::note_shed_session(p.get("session_id").and_then(Value::as_str).unwrap_or_default(), check);
+            crate::budget::note_dropped(guard_event, check, &meta.event, crate::defaults::text("overload.drop_reason"));
+            Answer::Decided(HookResult::quiet(&e.id), Vec::new())
         } else if crate::deadline::client_gone() {
             // the client closed its connection: nobody reads this reply, so the check is not worth running.
             // live19: 478 replies in 1000 s hit a closed pipe after their work was done.
@@ -344,6 +355,7 @@ mod tests {
             cfg: String::new(),
             payload_sha1: None,
             deadline_ms: None,
+            load_permille: None,
             notice: None,
         }
     }
@@ -428,6 +440,7 @@ mod tests {
             cfg: String::new(),
             payload_sha1: None,
             deadline_ms: None,
+            load_permille: None,
             notice: None,
         };
         crate::deadline::begin(std::time::Instant::now() - std::time::Duration::from_secs(60));
@@ -436,8 +449,9 @@ mod tests {
         crate::deadline::end();
         let a = got.iter().find(|(id, _)| id == "switch-notice").map(|(_, a)| a.clone());
         assert!(matches!(a, Some(Answer::Decided(..))), "past the deadline the check still answers by its policy: {a:?}");
-        // an open check that could not run tells the user once in THIS request's session (Codex P2: the pre-start cut skipped it)
-        assert!(format!("{a:?}").contains(crate::defaults::text("script.notice_key")), "the guard-down notice is told: {a:?}");
+        // #953: switch-notice is advisory on UserPromptSubmit (not a guard event): its dropped answer is a missing hint, so the user is told
+        // nothing (the guard-event case, where the notice is still told once per session, is script::tests)
+        assert!(!format!("{a:?}").contains(crate::defaults::text("script.notice_key")), "no guard-down notice for an advisory check: {a:?}");
         assert_eq!(crate::script::session(), "s-463-pre-start-notice");
     }
 
@@ -751,6 +765,7 @@ mod tests {
                 cfg: String::new(),
                 payload_sha1: None,
                 deadline_ms: None,
+                load_permille: None,
                 notice: None,
             };
             // the other batches' checks of the same event answer here too (their own tests pin their bytes): only the verify-first
@@ -785,6 +800,7 @@ mod tests {
             cfg: String::new(),
             payload_sha1: None,
             deadline_ms: None,
+            load_permille: None,
             notice: None,
         };
         let answers = evaluate(&meta, &p, &|_| false, &|_, _, _| {});

@@ -388,3 +388,18 @@ fn a_floor_that_climbs_is_a_leak_even_with_bursts_on_top() {
     assert_eq!(v["state"], "suspected", "a floor rising 12 MB/h must still be caught: {v}");
     assert_eq!(v["trend"], true, "{v}");
 }
+
+#[test]
+fn an_expired_entry_is_absent_to_get_and_remove_and_is_dropped() {
+    let (reg, _events) = registry(&CACHE_BASE);
+    let c: BoundedCache<u32, u32> = BoundedCache::new(&reg, SPEC);
+    let now = crate::health::now_ms();
+    assert!(c.insert_with_ttl(1, 10, 100, Some(now.saturating_sub(1))));
+    assert!(c.insert_with_ttl(2, 20, 100, Some(now.saturating_add(600_000))));
+    assert!(c.insert_with_ttl(3, 30, 100, Some(now.saturating_sub(1))));
+    assert_eq!(c.get(&1), None, "get does not serve an expired entry");
+    assert_eq!(c.remove(&3), None, "remove does not hand back an expired entry");
+    assert_eq!(c.get(&2), Some(20), "an unexpired entry is served");
+    assert_eq!(c.remove(&2), Some(20));
+    assert_eq!(c.len(), 0, "the expired entries were dropped");
+}

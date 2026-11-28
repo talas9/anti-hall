@@ -108,7 +108,7 @@ fn launchd_install_writes_an_escaped_agent_loads_it_and_a_rerun_changes_nothing(
         text.contains("<key>KeepAlive</key>\n  <dict>\n    <key>SuccessfulExit</key>\n    <false/>"),
         "launchd starts it again after any non-zero exit: {text}"
     );
-    assert!(text.contains("<key>ThrottleInterval</key>\n  <integer>10</integer>") && text.contains("<string>Background</string>"), "{text}");
+    assert!(text.contains("<key>ThrottleInterval</key>\n  <integer>10</integer>") && text.contains(&format!("<string>{}</string>", defaults::text("units.process_type"))), "{text}");
     // GH #912: launchd's default open-file limit (256) is not the daemon's; the unit sets both limits to daemon.nofile
     let nofile = defaults::num("daemon.nofile");
     assert!(nofile > 256, "the shipped limit is above launchd's default");

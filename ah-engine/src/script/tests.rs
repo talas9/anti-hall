@@ -151,6 +151,33 @@ fn a_script_past_its_memory_ceiling_defers() {
     crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
 }
 
+/// #969 hardening: a runaway script (the CPU limit, through the interrupt handler) and an allocation bomb (the heap ceiling,
+/// `set_memory_limit`) each end in the check's configured failure mode within the time bound, never a hang, and each is counted
+/// as a script failure (a telemetry check event with outcome error). Here the mode is closed, on a guard event: a block.
+#[test]
+fn a_runaway_or_an_allocation_bomb_takes_the_checks_failure_mode_and_is_counted() {
+    use crate::telemetry::event::Outcome;
+    let h = home("failmode");
+    let e = env(&h);
+    put_override(&h, "zz-spin", "function decide() { for (;;) {} }");
+    put_override(&h, "zz-bomb", "function decide() { var a = []; for (;;) a.push('z'.repeat(1 << 16) + a.length); }");
+    let closed = defaults::text("script.failure_mode_closed");
+    defaults::set_overlay(&[("script.failure_mode_by_check", json!({"zz-spin": closed, "zz-bomb": closed}))]);
+    crate::telemetry::emit::take_queued();
+    let bound = std::time::Duration::from_millis(defaults::num("script.time_limit_ms") * defaults::num("script.time_hard_factor") * 3);
+    let push = json!({"tool_name": "Bash", "tool_input": {"command": "git push origin main"}});
+    for name in ["zz-spin", "zz-bomb"] {
+        let t = Instant::now();
+        let v = run_forced(name, &push, &e);
+        assert!(t.elapsed() < bound, "{name} took {:?}", t.elapsed());
+        assert!(matches!(v, Some(Some(Verdict::Block(_)))), "{name}: a closed check that cannot answer blocks: {v:?}");
+        let errors = crate::telemetry::emit::take_queued().into_iter().filter(|ev| ev.h.as_str() == name && ev.o == Outcome::Error).count();
+        assert_eq!(errors, 1, "{name}: counted once as a script failure");
+    }
+    defaults::set_overlay(&[]);
+    crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
+}
+
 /// The teardown assertion: a worker thread's runtime is freed when the thread exits, after normal calls, an interrupt, an
 /// out-of-memory failure, an exception and a reload. An object left alive would abort the whole test process here.
 #[test]
@@ -297,7 +324,7 @@ fn a_call_past_its_request_deadline_is_cut_and_answers_by_its_policy_without_cou
     crate::deadline::end();
     let v = v.flatten().expect("an answer");
     assert_ne!(v, Verdict::Defer, "a cut never defers: no Node hook runs");
-    assert_eq!(without_notice(v.clone()), Verdict::Allow, "switch-notice is `open`: a cut allows (and tells the user once)");
+    assert_eq!(v, Verdict::Allow, "switch-notice is `open` and advisory on UserPromptSubmit: a cut allows and tells the user nothing (#953)");
     assert!(evs.is_empty(), "a cut is not a script error: {evs:?}");
     assert!(took < std::time::Duration::from_millis(defaults::num("script.time_limit_ms") * defaults::num("script.wall_limit_factor")), "{took:?}");
     // the cut is counted per check under the outcome it answered with
@@ -306,6 +333,13 @@ fn a_call_past_its_request_deadline_is_cut_and_answers_by_its_policy_without_cou
     assert_eq!(super::cut_outcome(&Verdict::Advisory("{}".into())), defaults::text("diagnostics.deadline_cut_outcome_notice"));
     // outside a request the same call runs to its own limit and takes the failure policy (this advisory allows)
     assert_eq!(go().flatten().map(without_notice), Some(Verdict::Allow));
+    // #953: the same cut on a guard event still tells the user once (a call went through unchecked there)
+    super::set_session("cut-guard-event-953");
+    crate::deadline::begin(Instant::now());
+    crate::deadline::client_deadline(0);
+    let g = super::run_forced("switch-notice", &json!({}), &Value::Null, "Stop", &e);
+    crate::deadline::end();
+    assert!(matches!(g.flatten(), Some(Verdict::Advisory(j)) if j.contains("systemMessage")), "a cut check on a guard event keeps its notice");
     crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
 }
 
@@ -370,6 +404,36 @@ fn a_failed_open_check_tells_the_user_once_per_session_and_check() {
     assert!(matches!(failed("handover-hygiene", "SubagentStop", "boom"), Verdict::Advisory(_)), "another check in the session is told");
     super::set_session("notice-session-b");
     assert!(matches!(failed("sibling-sweep", "SubagentStop", "boom"), Verdict::Advisory(_)), "another session is told");
+}
+
+/// #953: an advisory check that gave no answer on a non-guard event (a dropped hint) tells the user nothing (logged and counted);
+/// a check that failed open on a guard event still does.
+#[test]
+fn a_dropped_advisory_on_a_non_guard_event_is_silent_but_a_guard_event_still_tells() {
+    super::set_session("notice-session-953");
+    for event in ["UserPromptSubmit", "SessionStart", "PostToolUse"] {
+        assert!(!defaults::list("dispatch.guard_events").contains(&event));
+        assert_eq!(super::unanswered("idle-agent-sweep", event), Verdict::Allow, "{event}: no notice for a dropped advisory");
+        assert_eq!(failed("devswarm-parent-inbox", event, "boom"), Verdict::Allow, "{event}: a failed advisory is silent too");
+    }
+    assert!(matches!(super::unanswered("sibling-sweep", "Stop"), Verdict::Advisory(j) if j.contains("systemMessage")), "a guard event still tells");
+    assert!(matches!(super::unanswered("handover-hygiene", "PreToolUse"), Verdict::Advisory(_)), "a guard event still tells");
+}
+
+/// #953: the guard-down notice names a failure in one short line; the script stack and limits stay out of it.
+#[test]
+fn the_guard_down_notice_tells_one_short_line_never_a_script_stack() {
+    super::set_session("notice-session-why-953");
+    let stack = "Error: interrupted\n    at pgSafeId (eval_script:2222:80)\n    at decide (eval_script:3462:34)\n (interrupted by the cpu limit; cpu limit 500 ms, wall backstop 2000 ms)";
+    let Verdict::Advisory(j) = failed("sibling-sweep", "Stop", stack) else { panic!("a guard event tells") };
+    assert!(j.contains("it ran past its CPU limit"), "{j}");
+    assert!(!j.contains("eval_script") && !j.contains("\\n"), "no stack in the notice: {j}");
+    super::set_session("notice-session-why-953b");
+    let Verdict::Advisory(j) = failed("sibling-sweep", "Stop", "TypeError: x is not a function\n    at a (b)") else { panic!() };
+    assert!(j.contains("it hit an internal error") && !j.contains("TypeError"), "{j}");
+    super::set_session("notice-session-why-953c");
+    let Verdict::Advisory(j) = failed("sibling-sweep", "Stop", "the script is missing") else { panic!() };
+    assert!(j.contains("the script is missing"), "a short single line is told as it is: {j}");
 }
 
 #[test]
@@ -702,6 +766,33 @@ fn handover_and_budget_scripts_match_their_compiled_ports() {
     for check in ["emit-dedupe-reset", "precompact-snapshot", "limit-conserve-inject", "auto-handover", "handover-resume"] {
         golden_report(check, 12);
     }
+}
+
+/// #958: limit conservation speaks when it turns on and when it turns off, never in between (the keepalive is 0: no repeat while it holds),
+/// and speaks again when it turns back on.
+#[test]
+fn limit_conserve_speaks_only_when_conservation_turns_on_or_off() {
+    let h = home("lc-transitions");
+    let p = json!({"hook_event_name": "UserPromptSubmit", "session_id": "lc1", "cwd": "/tmp", "prompt": "go on"});
+    let say = |mode: &str| -> String {
+        let e = RequestEnv::from_pairs([("HOME", h.as_str()), ("ANTIHALL_LIMIT_CONSERVE", mode)]);
+        match super::run_forced("limit-conserve-inject", &p, &Value::Null, "UserPromptSubmit", &e).unwrap().unwrap() {
+            Verdict::Exact(x) => x.out,
+            other => panic!("an exact line: {other:?}"),
+        }
+    };
+    let quiet = defaults::text("ctxbudget.ups_empty");
+    let on = say("on");
+    assert!(on.contains("limit conservation is active"), "turning on speaks: {on}");
+    for i in 0..3 {
+        assert_eq!(say("on"), quiet, "still on, call {i}: nothing repeats");
+    }
+    let off = say("off");
+    assert!(off.contains("limit conservation is over"), "turning off speaks once: {off}");
+    for i in 0..3 {
+        assert_eq!(say("off"), quiet, "still off, call {i}: silent");
+    }
+    assert!(say("on").contains("limit conservation is active"), "turning on again speaks again");
 }
 
 #[test]
@@ -3127,6 +3218,34 @@ fn a_direct_child_stop_without_a_root_option_still_requires_a_report() {
     assert!(!out.out.contains("devswarm.js"), "{}", out.out);
 }
 
+/// #844 item 3: the report duty is a recent heartbeat, not one per turn. A heartbeat this child wrote within
+/// devswarm_gates.cg_report_fresh_ms (without --summary, so no summary row) satisfies the Stop; an older one, or one under another
+/// id, does not.
+#[test]
+fn a_child_gate_honours_the_latest_heartbeat_of_this_child() {
+    let gate = |beat_id: &str, off_ms: i64| {
+        let case = golden::lay(&json!({
+            "env": {"HOME": "{HOME}", "DEVSWARM_REPO_ID": "r1", "DEVSWARM_SOURCE_BRANCH": "feat/x", "DEVSWARM_BUILDER_ID": "b-1", "DEVSWARM_AI_AGENT": "codex"},
+            "event": "Stop", "opts": {"payload_sha1": "hb-fresh"},
+            "payload": {"hook_event_name": "Stop", "session_id": "hb-stop", "cwd": "{HOME}"},
+            "files": {
+                ".anti-hall/devswarm/workspaces/b-1.json": "{}",
+                ".anti-hall/devswarm/heartbeats/b-1.json": format!("{{\"id\":\"{beat_id}\",\"ts\":{{MS:{off_ms}}},\"source\":\"heartbeat\"}}")
+            }
+        }));
+        match golden::run_case("devswarm-child-gate", &case, 1).expect("a shipped gate") {
+            Some(Verdict::Exact(out)) => out.out,
+            _ => String::new(),
+        }
+    };
+    let fresh = gate("b-1", -300_000);
+    assert!(!fresh.contains("no heartbeat or report sent"), "a heartbeat 5 min old is a report: {fresh}");
+    let stale = gate("b-1", -1_000_000);
+    assert!(stale.contains("workspace duty unfinished: no heartbeat or report sent"), "older than cg_report_fresh_ms: {stale}");
+    let other = gate("b-2", -300_000);
+    assert!(other.contains("no heartbeat or report sent"), "a record under another id: {other}");
+}
+
 /// The engine's own wake prompts stay pending in the native queue (a `task` nothing accepts), so the strict native probe counts them
 /// for ever. The child's pull records how many of its pending messages are wake prompts in the fresh wake-tick marker, and the gate
 /// subtracts them: a child whose only pending natives are wake prompts is not blocked as having unread parent mail (GH wake-pings).
@@ -3188,6 +3307,43 @@ fn a_direct_parent_stop_without_a_root_option_still_blocks_neglect() {
     assert_eq!(answer["decision"], "block");
     let details = std::fs::read_to_string(format!("{}/.anti-hall/block-details/devswarm-parent-gate-session.md", case.home)).unwrap();
     assert!(details.contains("c-1"), "{details}");
+}
+
+/// #844 item 4: children the roster flagged (the record the prompt hook writes) are counted by the parent Stop gate; a stale record,
+/// or one with nothing flagged, counts nothing.
+#[test]
+fn the_parent_gate_counts_children_the_roster_flagged() {
+    let gate_n = |rec: Option<Value>, runs: usize| {
+        let case = golden::lay(&json!({
+            "env": {"HOME": "{HOME}", "ANTIHALL_DEVSWARM_SUPERVISOR": "on", "DEVSWARM_AI_AGENT": "codex"},
+            "event": "Stop", "opts": {"payload_sha1": "flags"},
+            "payload": {"hook_event_name": "Stop", "session_id": "flags-parent", "cwd": "{HOME}/repo"},
+            "files": {"repo/.git/HEAD": "ref: refs/heads/main\n"}
+        }));
+        if let Some(r) = rec {
+            let key = crate::meshw::ident::repo_key_for_worktree(&format!("{}/repo", case.home)).unwrap().expect("a project key");
+            let dir = format!("{}/.anti-hall/devswarm/{}", case.home, defaults::text("devswarm_parent.dir_flags"));
+            std::fs::create_dir_all(&dir).unwrap();
+            std::fs::write(format!("{dir}/{key}.json"), r.to_string()).unwrap();
+        }
+        match golden::run_case("devswarm-parent-gate", &case, runs).expect("a shipped gate") {
+            // the visible line is the framed headline; the full reason is in the block-details file
+            Some(Verdict::Exact(out)) if !out.out.is_empty() => {
+                out.out + &std::fs::read_to_string(format!("{}/.anti-hall/block-details/devswarm-parent-gate-session.md", case.home)).unwrap_or_default()
+            }
+            _ => String::new(),
+        }
+    };
+    let gate = |rec: Option<Value>| gate_n(rec, 1);
+    let now = crate::checks::replykit::io::now_ms();
+    let ws = json!([{"id": "c-1", "label": "L5 Login", "reasons": ["straying (burn)", "no progress report for 21 min"]}]);
+    assert!(gate(None).is_empty(), "no record: nothing to count");
+    let o = gate(Some(json!({"at": now, "ws": ws})));
+    assert!(o.contains("\"decision\":\"block\"") && o.contains("1 workspace(s) flagged in the roster: L5 Login (straying (burn), no progress report for 21 min)"), "{o}");
+    assert!(gate(Some(json!({"at": now - 3_600_000.0, "ws": ws}))).is_empty(), "a stale record counts nothing");
+    assert!(gate(Some(json!({"at": now, "ws": []}))).is_empty(), "nothing flagged");
+    // the same flagged set again in the same session (asking the child does not clear it at once): a notice, not a block loop
+    assert!(gate_n(Some(json!({"at": now, "ws": ws})), 2).is_empty(), "the second Stop on the same set does not block");
 }
 
 /// One row of a parent-gate fixture: who sent it and how it reached the store.
@@ -4202,6 +4358,216 @@ mod afk_mode {
         for _ in 0..3 {
             assert!(stop(json!({"last_assistant_message": long})).is_empty());
         }
+    }
+
+    fn task(h: &str, id: &str, subject: &str, status: &str) {
+        let d = format!("{h}/.claude/tasks/session-s1");
+        std::fs::create_dir_all(&d).unwrap();
+        std::fs::write(format!("{d}/{id}.json"), json!({"id": id, "subject": subject, "status": status, "blockedBy": []}).to_string()).unwrap();
+    }
+
+    fn nostop(h: &str) -> Value {
+        serde_json::from_str(&std::fs::read_to_string(format!("{h}/.anti-hall/afk-nostop-s1.json")).unwrap_or_default()).unwrap_or(Value::Null)
+    }
+
+    /// GH #958 (a): the owner's plain-word no-stop orders set a per-session state; a Stop with open work nothing covers is held with the
+    /// next task named; an owner stop phrase ends it; the machine-wide AFK flag is untouched.
+    #[test]
+    fn an_owner_no_stop_phrase_sets_the_state_and_a_stop_with_open_work_is_held() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-nostop");
+        drained();
+        task(&h, "1", "[P1] ship the widget", "pending");
+        task(&h, "2", "[P2] write the docs", "in_progress");
+        let stop = || out(&run(&h, "Stop", json!({}), &[]));
+        assert!(stop().is_empty(), "no order yet: a Stop is not held by this check");
+        for phrase in [
+            "No stopping",
+            "U stop only when i allow you to stop",
+            "You are not allowed to decide it is a good stopping point",
+            "No blocking questions allowed or stopping until full workplan is done",
+            "no more questions, if confused ask advisor",
+            "always ask advisor don't decide on your own",
+        ] {
+            std::fs::remove_file(format!("{h}/.anti-hall/afk-nostop-s1.json")).ok();
+            run(&h, "UserPromptSubmit", json!({"prompt": phrase}), &[]);
+            assert_eq!(nostop(&h)["on"], json!(true), "{phrase}");
+        }
+        assert!(flag(&h).is_null(), "the machine-wide AFK flag is not set by a no-stop order");
+        let o = stop();
+        assert!(o.contains("\"decision\":\"block\""), "{o}");
+        assert!(o.contains("Do now: continue the work plan: [P2] write the docs; consult the advisor if unsure."), "the in-progress task is named first: {o}");
+        let o = out(&run(&h, "Stop", json!({"stop_hook_active": true}), &[]));
+        assert!(o.contains("continue the work plan"), "the host flag does not end the hold, the count does: {o}");
+        // an owner prompt that is not a stop phrase keeps it; a stop phrase ends it
+        run(&h, "UserPromptSubmit", json!({"prompt": "what is the status?"}), &[]);
+        assert_eq!(nostop(&h)["on"], json!(true));
+        run(&h, "UserPromptSubmit", json!({"prompt": "ok, you can stop now"}), &[]);
+        assert_eq!(nostop(&h)["on"], json!(false));
+        assert!(stop().is_empty(), "the owner allowed the stop");
+        let m = drained();
+        assert_eq!(m.counter("afk_nostop", &[("action", "set")]), 1 + 5, "the first phrase and each re-armed one");
+        assert_eq!(m.counter("afk_nostop", &[("action", "held")]), 2);
+        assert_eq!(m.counter("afk_nostop", &[("action", "cleared")]), 1);
+    }
+
+    fn task_rec(h: &str, id: &str, rec: Value) {
+        let d = format!("{h}/.claude/tasks/session-s1");
+        std::fs::create_dir_all(&d).unwrap();
+        let mut r = json!({"id": id, "blockedBy": []});
+        for (k, v) in rec.as_object().cloned().unwrap_or_default() {
+            r[k] = v;
+        }
+        std::fs::write(format!("{d}/{id}.json"), r.to_string()).unwrap();
+    }
+
+    /// A transcript with one background `Agent` launch named `name` (description "integrate the train"), and the tracker's proof
+    /// that it is live: its tracker row is named by the description, never by the launch name.
+    fn live_teammate(h: &str, name: &str) {
+        let ts = "2999-01-01T00:00:00.000Z";
+        let launch = json!({"type": "assistant", "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "toolu_ag0", "name": "Agent", "input": {"description": "integrate the train", "prompt": "p", "run_in_background": true, "name": name}}]}, "timestamp": ts});
+        let text = "Async agent launched successfully. (internal metadata)\nagentId: a000000000000001 (internal ID)\nThe agent is working in the background.\noutput_file: /tmp/x/a000000000000001.output\n";
+        let res = json!({"type": "user", "message": {"role": "user", "content": [{"tool_use_id": "toolu_ag0", "type": "tool_result", "content": [{"type": "text", "text": text}]}]}, "timestamp": ts});
+        std::fs::write(format!("{h}/t.jsonl"), format!("{launch}\n{res}\n")).unwrap();
+        let id = "a000000000000001";
+        let rel = format!("{h}/.claude/projects/p/s1/subagents/agent-{id}.jsonl");
+        std::fs::create_dir_all(std::path::Path::new(&rel).parent().unwrap()).unwrap();
+        std::fs::write(&rel, format!("{}\n", json!({"type": "assistant", "message": {"content": [{"type": "text", "text": "working"}]}}))).unwrap();
+        let mut st = crate::agents::State::default();
+        st.agents.insert(
+            id.into(),
+            crate::agents::Agent { id: id.into(), kind: "subagent".into(), parent: "s1".into(), name: "integrate the train".into(), cwd: h.into(), path: rel, ..Default::default() },
+        );
+        std::fs::create_dir_all(format!("{h}/.anti-hall/agent-tracker")).unwrap();
+        std::fs::write(format!("{h}/.anti-hall/agent-tracker/state.json"), serde_json::to_string(&st).unwrap()).unwrap();
+    }
+
+    /// #844 item 1: a task owned by a live teammate (by its launch name, which the tracker row does not carry), or whose blockedOn names
+    /// that teammate, is not idle work: no-stop does not hold it. A task nothing covers still is.
+    #[test]
+    fn no_stop_skips_tasks_owned_by_or_blocked_on_a_live_teammate() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-nostop-owned");
+        drained();
+        live_teammate(&h, "integ-0331");
+        task_rec(&h, "1", json!({"subject": "[P0] release all", "status": "pending", "owner": "integ-0331"}));
+        task_rec(&h, "2", json!({"subject": "[P0] hold fix", "status": "pending", "metadata": {"blockedOn": "waiting on integ-0331 to merge"}}));
+        run(&h, "UserPromptSubmit", json!({"prompt": "no stopping"}), &[]);
+        let stop = || out(&run(&h, "Stop", json!({}), &[]));
+        assert!(stop().is_empty(), "every open task is owned by or blocked on a live teammate");
+        task_rec(&h, "3", json!({"subject": "[P1] free task", "status": "pending"}));
+        let o = stop();
+        assert!(o.contains("continue the work plan: [P1] free task"), "only the uncovered task is named: {o}");
+        crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
+    }
+
+    /// #844 item 1, the shape of the reported loop: the owner is an in-process teammate (a `teammate_spawned` launch, the team-mode
+    /// shape) that the transcript shows running and the tracker has no row for. Its task is covered; a free task still is not.
+    #[test]
+    fn no_stop_skips_a_task_owned_by_a_running_in_process_teammate() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-nostop-teammate");
+        drained();
+        let ts = "2999-01-01T00:00:00.000Z";
+        let call = json!({"type": "assistant", "timestamp": ts, "message": {"role": "assistant", "content": [{"type": "tool_use", "id": "tu1", "name": "Agent", "input": {"description": "integrate", "prompt": "p", "name": "integ-0331"}}]}});
+        let res = json!({"type": "user", "timestamp": ts, "toolUseResult": {"status": "teammate_spawned", "name": "integ-0331", "agent_id": "ainteg-0331-4e73c1cee12244e6", "teammate_id": "integ-0331@s1"}, "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "tu1", "content": "spawned"}]}});
+        std::fs::write(format!("{h}/t.jsonl"), format!("{call}\n{res}\n")).unwrap();
+        task_rec(&h, "1", json!({"subject": "[P0] release all", "status": "in_progress", "owner": "integ-0331"}));
+        run(&h, "UserPromptSubmit", json!({"prompt": "no stopping"}), &[]);
+        let stop = || out(&run(&h, "Stop", json!({}), &[]));
+        assert!(stop().is_empty(), "the owner is a running teammate");
+        task_rec(&h, "2", json!({"subject": "[P1] free task", "status": "pending"}));
+        assert!(stop().contains("continue the work plan: [P1] free task"), "a free task is still held");
+        crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
+    }
+
+    /// #844 item 1: plain holds within afk.nostop_burst_window_ms escalate once after afk.nostop_burst_max, then no-stop stays quiet for
+    /// afk.nostop_quiet_ms; the quiet ends by itself, and an owner prompt that is no phrase does not reset the burst.
+    #[test]
+    fn no_stop_holds_escalate_once_then_go_quiet() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-nostop-burst");
+        drained();
+        task(&h, "1", "[P1] a", "pending");
+        task(&h, "2", "[P1] b", "pending");
+        run(&h, "UserPromptSubmit", json!({"prompt": "no stopping"}), &[]);
+        let t0 = 1_900_000_000_000.0_f64;
+        let stop_at = |ms: f64| {
+            super::super::host::set_clock(Some(ms));
+            let o = out(&run(&h, "Stop", json!({}), &[]));
+            super::super::host::set_clock(None);
+            o
+        };
+        for i in 0..3 {
+            assert!(stop_at(t0 + f64::from(i) * 60_000.0).contains("continue the work plan"), "plain hold {i}");
+        }
+        run(&h, "UserPromptSubmit", json!({"prompt": "status?"}), &[]);
+        let o = stop_at(t0 + 200_000.0);
+        assert!(o.contains("no-stop held this session 3 times in 10 min") && o.contains("pause for 30 min"), "escalated once: {o}");
+        assert!(stop_at(t0 + 260_000.0).is_empty(), "quiet after the escalation");
+        assert!(stop_at(t0 + 200_000.0 + 1_799_000.0).is_empty(), "still quiet");
+        assert!(stop_at(t0 + 200_000.0 + 1_800_000.0).contains("continue the work plan"), "the quiet ends by itself");
+        let m = drained();
+        assert_eq!(m.counter("afk_nostop", &[("action", "escalated")]), 1);
+        assert_eq!(m.counter("afk_nostop", &[("action", "quiet")]), 2);
+        crate::discard::harmless(std::fs::remove_dir_all(&h)); // keep: cleanup
+    }
+
+    /// GH #958 (a): no open work left ends the state; the hold count is capped per owner prompt and a new prompt restarts it.
+    #[test]
+    fn no_stop_ends_when_no_open_work_remains_and_is_capped_per_owner_prompt() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-nostop-end");
+        drained();
+        task(&h, "1", "[P1] only task", "pending");
+        run(&h, "UserPromptSubmit", json!({"prompt": "no stopping"}), &[]);
+        std::fs::write(format!("{h}/.anti-hall/settings.json"), "{}").unwrap();
+        let stop = || out(&run(&h, "Stop", json!({}), &[]));
+        // holds spaced past afk.nostop_burst_window_ms never escalate (#844): only the per-prompt cap ends them
+        let spaced = |i: u32| {
+            super::super::host::set_clock(Some(1_900_000_000_000.0 + f64::from(i) * 601_000.0));
+            let o = stop();
+            super::super::host::set_clock(None);
+            o
+        };
+        let cap = 30;
+        for i in 0..cap {
+            assert!(spaced(i).contains("only task"), "hold {i}");
+        }
+        assert!(spaced(cap).is_empty(), "capped after afk.nostop_max_holds");
+        assert_eq!(nostop(&h)["on"], json!(true), "capped, not ended");
+        run(&h, "UserPromptSubmit", json!({"prompt": "carry on"}), &[]);
+        assert!(stop().contains("only task"), "an owner prompt restarts the count");
+        task(&h, "1", "[P1] only task", "completed");
+        assert!(stop().is_empty());
+        assert_eq!(nostop(&h)["on"], json!(false), "no open work remains: ended");
+        let m = drained();
+        assert_eq!(m.counter("afk_nostop", &[("action", "capped")]), 1);
+        assert_eq!(m.counter("afk_nostop", &[("action", "done")]), 1);
+    }
+
+    /// GH #958 (b): with AFK on and the context high, auto-handover never advises a stopping point, /compact or /clear; its one message is
+    /// the handover refresh, sent only when the saved handover is older than the last task change.
+    #[test]
+    fn afk_with_high_context_gives_no_stopping_point_advice_and_only_a_stale_handover_refresh() {
+        let _g = COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let h = home("afk-ctx");
+        drained();
+        run(&h, "UserPromptSubmit", json!({"prompt": "afk"}), &[]);
+        let tr = format!("{h}/t.jsonl");
+        let line = json!({"type": "assistant", "message": {"usage": {"input_tokens": 10, "cache_creation_input_tokens": 180000, "cache_read_input_tokens": 0}, "content": [{"type": "text", "text": "x"}]}});
+        std::fs::write(&tr, format!("{line}\n")).unwrap();
+        std::fs::write(format!("{h}/.anti-hall/settings.json"), json!({"autoHandover": {"pct": 85}}).to_string()).unwrap();
+        let ups = || {
+            let p = json!({"hook_event_name": "UserPromptSubmit", "session_id": "s1", "cwd": h, "transcript_path": tr, "prompt": "go on"});
+            out(&super::super::run_forced("auto-handover", &p, &Value::Null, "UserPromptSubmit", &RequestEnv::from_pairs([("HOME", h.as_str()), ("ANTIHALL_CONTEXT_WINDOW_TOKENS", "200000")])))
+        };
+        let o = ups();
+        assert!(!o.contains("stopping point") && !o.contains("/compact") && !o.contains("/clear"), "{o}");
+        assert!(o.contains("Do now:") && o.contains("write the handover"), "no handover saved yet: {o}");
+        let again = ups();
+        assert!(!again.contains("Do now"), "not repeated inside ctxbudget.refresh_interval_ms: {again}");
+        assert_eq!(drained().counter("auto_handover_fired", &[("via", "pct")]), 0, "the fire never ran in quiet mode");
     }
 
     #[test]
@@ -5229,6 +5595,123 @@ mod idle_rule_counters {
         // the tasks were created in 2026 (long ago): the proxy adds the cap, and no start time was missing
         assert_eq!(m.counter("idle_slot_minutes", &[("kind", "open")]), defaults::num("idle_rule.minutes_cap"), "the proxy is capped");
         assert_eq!(m.counter("idle_rule_age_unknown", &[("kind", "open")]), 0);
+    }
+
+    /// A parked marker exempts a task only for nudges.hold.hold_max_ms from when the Stop first saw it; past it the exemption lapses, the
+    /// task is listed again and the lapse is counted.
+    #[test]
+    fn a_parked_exemption_lapses_after_hold_max_and_the_task_is_listed_again() {
+        let _excl = claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let body = lines(&[(1, "[P1] idle one", "", "in_progress"), (2, "[P1] parked", "PARKED: waiting for the owner", "in_progress")]);
+        let h = home("ir-hold-lapse");
+        std::fs::write(format!("{h}/t.jsonl"), &body).unwrap();
+        let run = |sid: &str| {
+            let p = json!({"transcript_path": format!("{h}/t.jsonl"), "session_id": sid, "cwd": h});
+            let pairs = vec![("HOME".to_string(), h.clone()), ("ANTIHALL_IDLE_RULE".to_string(), "1".to_string())];
+            super::super::run_forced("task-guard", &p, &Value::Null, "Stop", &RequestEnv::from_pairs(pairs))
+        };
+        let reason = |v: Option<Option<Verdict>>| match v {
+            Some(Some(Verdict::Exact(x))) => x.out,
+            other => panic!("{other:?}"),
+        };
+        crate::metrics::drain_pending(&mut crate::metrics::Metrics::default());
+        let first = reason(run("hold-a"));
+        assert!(first.contains("#1") && !first.contains("#2"), "inside the hold the parked task is kept out: {first}");
+        let file = format!("{h}/.anti-hall/{}hold-a", defaults::text("task_guard.hold_state_prefix"));
+        let saved = std::fs::read_to_string(&file).expect("the first sight of the hold is saved");
+        // age every clock past hold_max_ms, then ask again as a new Stop
+        let max = defaults::raw("nudges.hold").get("hold_max_ms").and_then(crate::defaults::V::as_integer).unwrap() as u64;
+        let aged: serde_json::Map<String, Value> = serde_json::from_str::<serde_json::Map<String, Value>>(&saved)
+            .unwrap()
+            .into_iter()
+            .map(|(k, v)| (k, json!(v.as_u64().unwrap() - max - 1000)))
+            .collect();
+        std::fs::write(&file, Value::Object(aged).to_string()).unwrap();
+        for f in std::fs::read_dir(format!("{h}/.anti-hall")).unwrap().flatten() {
+            if f.file_name().to_string_lossy().starts_with(&defaults::text("task_guard.state_prefix").to_string()) {
+                std::fs::remove_file(f.path()).unwrap();
+            }
+        }
+        crate::metrics::drain_pending(&mut crate::metrics::Metrics::default());
+        let later = reason(run("hold-a"));
+        assert!(later.contains("#1") && later.contains("#2"), "past hold_max_ms the parked task is listed again: {later}");
+        let mut m = crate::metrics::Metrics::default();
+        crate::metrics::drain_pending(&mut m);
+        assert_eq!(m.counter("idle_rule_hold_lapsed", &[("reason", "parked")]), 1);
+    }
+
+    /// GH #959 item 3: the Stop idle-tasks check classes a blockedOn reason with the engine's ONE owner matcher (a word of
+    /// dispatch_tier.owner_values anywhere, the tracker's hold_owner test), not an exact compare against the bare value.
+    #[test]
+    fn n959_the_stop_check_classes_an_owner_word_anywhere_as_owner_held_with_the_trackers_matcher() {
+        let _excl = claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let ts = "2026-11-01T00:00:00.000Z";
+        let reasons = ["NEEDS OWNER: the release ruleset", "owner: deferred until the release", "owner", "waiting on the CI run of the PR", "ownership of the lane"];
+        let mut body = String::new();
+        for (i, r) in reasons.iter().enumerate() {
+            let n = i + 1;
+            let c = json!({"type": "assistant", "message": {"id": format!("m{n}"), "role": "assistant", "content": [{"type": "tool_use", "id": format!("c{n}"), "name": "TaskCreate", "input": {"subject": format!("[P1] task {n}"), "description": "", "metadata": {"blockedOn": r}}}]}, "timestamp": ts});
+            let res = json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": format!("c{n}"), "content": format!("Task #{n} created successfully: [P1] task {n}")}]}, "timestamp": ts});
+            let u = json!({"type": "assistant", "message": {"id": format!("u{n}"), "role": "assistant", "content": [{"type": "tool_use", "id": format!("t{n}"), "name": "TaskUpdate", "input": {"taskId": n.to_string(), "status": "in_progress"}}]}, "timestamp": ts});
+            body.push_str(&format!("{c}\n{res}\n{u}\n"));
+        }
+        body.push_str(&lines(&[(9, "[P1] idle one", "", "in_progress")]));
+        crate::metrics::drain_pending(&mut crate::metrics::Metrics::default());
+        let v = stop("n959-owner", &body, true);
+        assert!(matches!(v, Some(Some(Verdict::Exact(ref x))) if x.out.contains("#9")), "{v:?}");
+        let mut m = crate::metrics::Metrics::default();
+        crate::metrics::drain_pending(&mut m);
+        let owner = defaults::text("idle_rule.reason_owner");
+        let blocked = defaults::text("idle_rule.reason_blocked_on");
+        assert_eq!(m.counter("idle_rule_suppressed", &[("reason", owner)]), 3, "the three owner-word reasons are owner-held");
+        assert_eq!(m.counter("idle_rule_suppressed", &[("reason", blocked)]), 2, "a plain reason and a partial word are not");
+        // the tracker's matcher agrees on every one of them
+        let tracker: Vec<bool> = reasons.iter().map(|r| crate::agents::owner_named(r)).collect();
+        assert_eq!(tracker, vec![true, true, true, false, false]);
+    }
+
+    /// GH #959 item 3, pinned as it stands (a policy question for the owner, not changed here): an owner-word hold lapses in the Stop
+    /// like every bounded hold; the task then falls to the blocked_on exemption with a fresh clock, and only after a second
+    /// nudges.hold.hold_max_ms is it listed as idle. (The tracker instead routes a confirmed owner hold to the owner.)
+    #[test]
+    fn n959_an_owner_word_hold_lapses_in_the_stop_after_two_hold_max_spans() {
+        let _excl = claim_evidence_guard::COUNTS.write().unwrap_or_else(|e| e.into_inner());
+        let ts = "2026-11-01T00:00:00.000Z";
+        let c = json!({"type": "assistant", "message": {"id": "m1", "role": "assistant", "content": [{"type": "tool_use", "id": "c1", "name": "TaskCreate", "input": {"subject": "[P1] ruleset", "description": "", "metadata": {"blockedOn": "NEEDS OWNER: the release ruleset"}}}]}, "timestamp": ts});
+        let r = json!({"type": "user", "message": {"role": "user", "content": [{"type": "tool_result", "tool_use_id": "c1", "content": "Task #1 created successfully: [P1] ruleset"}]}, "timestamp": ts});
+        let u = json!({"type": "assistant", "message": {"id": "u1", "role": "assistant", "content": [{"type": "tool_use", "id": "t1", "name": "TaskUpdate", "input": {"taskId": "1", "status": "in_progress"}}]}, "timestamp": ts});
+        let body = format!("{c}\n{r}\n{u}\n{}", lines(&[(9, "[P1] idle one", "", "in_progress")]));
+        let h = home("n959-owner-lapse");
+        std::fs::write(format!("{h}/t.jsonl"), &body).unwrap();
+        let run = || {
+            let p = json!({"transcript_path": format!("{h}/t.jsonl"), "session_id": "lapse-a", "cwd": h});
+            let pairs = vec![("HOME".to_string(), h.clone()), ("ANTIHALL_IDLE_RULE".to_string(), "1".to_string())];
+            match super::super::run_forced("task-guard", &p, &Value::Null, "Stop", &RequestEnv::from_pairs(pairs)) {
+                Some(Some(Verdict::Exact(x))) => x.out,
+                other => panic!("{other:?}"),
+            }
+        };
+        let file = format!("{h}/.anti-hall/{}lapse-a", defaults::text("task_guard.hold_state_prefix"));
+        let max = defaults::raw("nudges.hold").get("hold_max_ms").and_then(crate::defaults::V::as_integer).unwrap() as u64;
+        let age = || {
+            let saved = std::fs::read_to_string(&file).expect("the hold clocks are saved");
+            let aged: serde_json::Map<String, Value> =
+                serde_json::from_str::<serde_json::Map<String, Value>>(&saved).unwrap().into_iter().map(|(k, v)| (k, json!(v.as_u64().unwrap() - max - 1000))).collect();
+            std::fs::write(&file, Value::Object(aged).to_string()).unwrap();
+            for f in std::fs::read_dir(format!("{h}/.anti-hall")).unwrap().flatten() {
+                if f.file_name().to_string_lossy().starts_with(&defaults::text("task_guard.state_prefix").to_string()) {
+                    std::fs::remove_file(f.path()).unwrap();
+                }
+            }
+        };
+        let first = run();
+        assert!(first.contains("#9") && !first.contains("#1 "), "inside the owner hold: {first}");
+        age();
+        let second = run();
+        assert!(second.contains("#9") && !second.contains("#1 "), "the owner hold lapsed, the blocked_on hold starts fresh: {second}");
+        age();
+        let third = run();
+        assert!(third.contains("#1 "), "past both spans the task is listed: {third}");
     }
 }
 
@@ -6612,6 +7095,39 @@ fn shared_includes_are_compiled_once_and_a_steady_load_never_reloads() {
 }
 
 // ---- FW-1 (command-family misfires): the counters of the five guard changes ----
+
+/// #945: a risk-weighted closed guard (`script.failure_risk_weighted`) that cannot answer holds a call in a hold class of
+/// `dispatch.capacity_hold` and lets a read through; a guard that is not weighted, or a call of a tool the hold rules do not read,
+/// keeps the check's failure mode.
+#[test]
+fn a_closed_guard_that_cannot_answer_holds_only_risky_calls() {
+    let bash = |c: &str| json!({"tool_name": "Bash", "tool_input": {"command": c}});
+    let blocked = |name: &str, p: &Value| {
+        super::set_call(p);
+        let a = matches!(super::unanswered(name, "PreToolUse"), Verdict::Block(_));
+        let b = matches!(super::failed(name, "PreToolUse", "boom"), Verdict::Block(_));
+        assert_eq!(a, b, "{name}: unanswered and failed agree");
+        a
+    };
+    for read in ["gh pr checks 1", "git ls-remote origin", "ls | grep x", "ps -ef | grep node", "git status", "gh run list", "cargo build"] {
+        assert!(!blocked("git", &bash(read)), "a read passes: {read}");
+        assert!(!blocked("command", &bash(read)), "a read passes the command guard: {read}");
+        super::set_call(&bash(read));
+        assert!(super::cut_at_deadline("git", "PreToolUse"), "a read is cut at the deadline: {read}");
+    }
+    for risky in ["git push --force origin main", "gh pr merge 1", "rm -rf build", "git -C x push", "gh issue comment 1 -b x"] {
+        assert!(blocked("git", &bash(risky)), "a risky call is held: {risky}");
+        super::set_call(&bash(risky));
+        assert!(!super::cut_at_deadline("git", "PreToolUse"), "a risky call keeps the guard's own limit: {risky}");
+    }
+    // not weighted (edit-guard) and not a judged tool: the failure mode decides
+    assert!(blocked("edit-guard", &bash("ls | grep x")));
+    assert!(blocked("git", &json!({"tool_name": "Edit", "tool_input": {"file_path": "/x"}})));
+    assert!(blocked("git", &Value::Null), "no tool call: closed");
+    // an event that is no guard event never blocks
+    super::set_call(&bash("git push -f"));
+    assert!(!matches!(super::unanswered("git", "PostToolUse"), Verdict::Block(_)));
+}
 
 mod fw1_counters {
     use super::*;

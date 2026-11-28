@@ -16,9 +16,11 @@
 // - an absent field is the empty value
 // A failure that must be seen goes through `crate::discard` instead.
 
+mod compliance;
 mod ctl;
 mod escalate;
 mod facts;
+mod lead_wait;
 mod live;
 mod lockwatch;
 pub(crate) mod native_wake;
@@ -29,6 +31,7 @@ mod signals;
 mod sinks;
 mod sources;
 mod status;
+pub(crate) use compliance::{note_task_list, owner_named};
 pub(crate) mod wake;
 pub use status::cost_report;
 #[cfg(test)]
@@ -218,6 +221,9 @@ pub struct Pending {
     /// repository's state decides HARD credit).
     #[serde(default)]
     pub cwd: String,
+    /// A task update that writes this task's blocker fields: recorded in `Agent::blocker_writes` only when its result is no error.
+    #[serde(default)]
+    pub blocker_task: String,
 }
 
 /// A raised signal on one agent.
@@ -244,6 +250,12 @@ pub struct Flag {
     /// The session key the delivered row names (the parent that got it).
     #[serde(default)]
     pub delivered_to: String,
+    /// The agent's task-list calls when it was raised (GH #958).
+    #[serde(default)]
+    pub base_task_calls: u64,
+    /// Already counted `undeliverable` (once per raised flag).
+    #[serde(default)]
+    pub undeliverable: bool,
 }
 
 /// The wake-watch and plan facts of a DevSwarm workspace.
@@ -260,6 +272,23 @@ pub struct Ws {
     /// The workspace is the Primary checkout of its project (judged by the checkout, whatever id the app registered it under).
     #[serde(default)]
     pub primary: bool,
+}
+
+/// One hold a hold_expired reminder names (GH #959): its clock key, the task, and whether it names the owner.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+pub struct HoldDue {
+    /// The hold clock key (task id and reason hash).
+    #[serde(default)]
+    pub key: String,
+    /// The task id.
+    #[serde(default)]
+    pub id: String,
+    /// The task subject the reminder names.
+    #[serde(default)]
+    pub subject: String,
+    /// The reason names the owner: a delivered reminder confirms it.
+    #[serde(default)]
+    pub owner: bool,
 }
 
 /// Everything the tracker keeps about one agent.
@@ -479,6 +508,13 @@ pub struct Agent {
     pub hb_step: String,
     /// Series samples.
     pub samples: Vec<Sample>,
+    /// When the agent's progress (its outcome count) last changed, as the sampler saw it; 0 = not sampled yet. Unlike `samples` it is not
+    /// trimmed with the window, so the time since the last outcome stays true for an agent quiet for hours (the runtime steps read it).
+    #[serde(default)]
+    pub progress_at: u64,
+    /// The agent's total spend (`signals::total_spent`) at `progress_at`: what it spent before its last outcome.
+    #[serde(default)]
+    pub progress_spent: u64,
     /// When the last series record was written.
     pub last_series: u64,
     /// The waste sensor's last evaluation of this agent (score, judge verdict, action).
@@ -517,6 +553,73 @@ pub struct Agent {
     /// When the owner last sent this session a message (0 = not seen); only read for main and workspace sessions.
     #[serde(default)]
     pub owner_ms: u64,
+    /// Work tool calls since the last task-list call (TaskCreate, TaskUpdate or a list rewrite), GH #958.
+    #[serde(default)]
+    pub calls_since_task: u64,
+    /// Tool calls since the owner's last prompt, counted while no task-list call has answered it (`ask_open`), GH #958.
+    #[serde(default)]
+    pub calls_since_ask: u64,
+    /// The owner's last prompt has had no task-list call since.
+    #[serde(default)]
+    pub ask_open: bool,
+    /// Task-list calls made, cumulative: a signal that cleared with this higher than when it was raised was acted on (GH #958).
+    #[serde(default)]
+    pub task_calls: u64,
+    /// Task id -> when it was first seen in progress with no live agent and no background job; any cover clears the entry (GH #958).
+    #[serde(default)]
+    pub ip_since: BTreeMap<String, u64>,
+    /// Held-task key (id and `blockedOn` hash) -> when the engine first saw that reason on an open task: the clock of `nudges.hold.hold_max_ms`.
+    #[serde(default)]
+    pub held_since: BTreeMap<String, u64>,
+    /// Held-task key -> hold_expired reminders sent about that exact reason: the count of "N reminders unanswered". Per task, and gone
+    /// with the key, so a rewritten `blockedOn` (a confirmed blocker) starts again at zero.
+    #[serde(default)]
+    pub hold_n: BTreeMap<String, u64>,
+    /// Task id of an owner-held task (its `blockedOn` names the owner or a human) the session was already asked to confirm once (a
+    /// reminder that reached the session itself): the agent hears nothing further. The value is no longer read (state from before
+    /// `owner_noticed` kept the last owner notice here; it seeds that map).
+    #[serde(default)]
+    pub hold_owner: BTreeMap<String, u64>,
+    /// Task id -> when the engine first saw ANY `blockedOn` reason on that open task (a rewrite does not restart it; clearing the
+    /// reason or closing the task drops it): the total blocked time of the owner notice (GH #959).
+    #[serde(default)]
+    pub blocked_since: BTreeMap<String, u64>,
+    /// Task id of an open owner-held task -> when the owner was last told about it (GH #959: the notice is due on the task's total
+    /// blocked time, not on the session's confirmation, so a rewritten reason never holds it back). Seeded from `hold_owner`'s times.
+    #[serde(default)]
+    pub owner_noticed: BTreeMap<String, u64>,
+    /// The holds past `hold_max_ms` that the next hold_expired reminder names (at most `tasks_shown`), as of the last tick: the only
+    /// counts it reads, bumps and confirms (GH #959: another task's count leaked into "N reminders unanswered").
+    #[serde(default)]
+    pub hold_due: Vec<HoldDue>,
+    /// Held-task key -> when a hold_expired reminder that named it last reached the session (GH #959): the second sort key of the
+    /// rotation (least reminded, then the longest since its last reminder), so a long list rotates and no task starves the others.
+    #[serde(default)]
+    pub hold_last: BTreeMap<String, u64>,
+    /// Task id -> when a hold_expired reminder naming that task last reached the session, kept across a rewrite of its reason (unlike
+    /// `hold_last`, which goes with the key): a write of the task after it is the session's answer (#972, #961).
+    #[serde(default)]
+    pub hold_told: BTreeMap<String, u64>,
+    /// When a stop of this child was first seen (an answered `TaskStop`, a terminal notice; 0 = none): sticky, so the stop outlives the
+    /// launching transcript's tail window that showed it (#972 class 1). Cleared when the child writes again past
+    /// `limits.stop_resume_ms`.
+    #[serde(default)]
+    pub stopped_at: u64,
+    /// Hashes of the reports (messages to its lead) this child already earned credit for, newest last (`report_to.dedupe_max`, #972).
+    #[serde(default)]
+    pub report_keys: Vec<String>,
+    /// Task id -> when this session last wrote that task's blocker fields (blockedOn, owner or status) with a task update: the answer
+    /// that confirms a hold reminder (#972 round 2).
+    #[serde(default)]
+    pub blocker_writes: BTreeMap<String, u64>,
+    /// When the agent last received a message that opened a turn (a user line that is not a tool result): a stopped teammate resumes
+    /// only by a new turn after its stop; its later lines without one are the tail of the killed turn (#972 round 3).
+    #[serde(default)]
+    pub inbound_ms: u64,
+    /// Task id -> the hold key the session confirmed by writing the task after a reminder named it, and when (#972, #961): that hold is
+    /// silent for `nudges.hold.confirm_ms`, tied to the reason it confirmed (a later new reason without a reminder runs the plain clock).
+    #[serde(default)]
+    pub hold_confirmed: BTreeMap<String, (String, u64)>,
     /// Subagent results returned to this agent (a foreground launch's result, a completed task notice), counted as outcomes.
     #[serde(default)]
     pub reports: u64,

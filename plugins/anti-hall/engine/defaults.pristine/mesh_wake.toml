@@ -1,0 +1,254 @@
+# ah-engine shipped defaults for the mesh wake policy and send-path timing (GH #845, phases 0 and 1). Format: see the header of
+# engine.toml.
+#
+# Phase 0 times each stage of one `ah-engine mesh send` (the 4-20 s a send costs under load) and reports it as telemetry, so the
+# gain of later phases is measured against a baseline. Phase 1 wakes only the addressee of a broadcast: the summary carries
+# `broadcastWakeSeq` / `broadcastWakePending` (the unread broadcasts of others that wake this workspace), and the wake-watch's
+# broadcast channel (`wake_watch.field_broadcast_seq` / `field_broadcast_pending`) wakes on that watermark instead of every unread
+# broadcast (`wake_watch.field_broadcast`, the legacy count, is read only from a summary that lacks the new keys).
+
+# ---- phase 0: send stage timer ----------------------------------------------------------------------------------------------
+
+[mesh_wake.stage_labels]
+doc = "The stage names of one mesh send, as the telemetry and the shadow log label them (key = the stage the code times, value = its label): total (the whole verb), heal (self-heal and daemon probe), open (store open with its DDL), ident (roster read and sender identity), resolve (target resolution), lock (per-recipient lock wait), insert (the INSERT), summary (the summary projection and its write), readback (the read-back verify), receipt (receipt, Jev enqueue, sender activity), wake (the native wake of an idle child), hivecontrol (the hivecontrol subprocesses inside it)."
+value = { total = "total", heal = "heal", open = "store_open", ident = "roster_ident", resolve = "resolve", lock = "lock_wait", insert = "insert", summary = "summary", readback = "readback", receipt = "receipt", wake = "native_wake", hivecontrol = "hivecontrol" }
+
+[mesh_wake.stage_event_prefix]
+doc = "Prefix of the telemetry event name of one send stage (`<prefix><stage>`, kind cmd): `ah-engine telemetry` reports p50/p95/p99 per name."
+value = "mesh-send-stage."
+
+[mesh_wake.stage_log_field]
+doc = "The member of the mesh shadow-log line that holds a send's stage times in milliseconds."
+value = "stages"
+
+# ---- phase 0: wake lines per channel ----------------------------------------------------------------------------------------
+
+[mesh_wake.channel_mail]
+doc = "The `channel` label of a wake-watch line for new direct or inbox mail."
+value = "mail"
+
+[mesh_wake.channel_broadcast]
+doc = "The `channel` label of a wake-watch line for a broadcast."
+value = "broadcast"
+
+[metric.mesh_wake_lines]
+doc = "Wake lines the wake-watch printed, by channel (mail or broadcast) and watcher role: each is a woken turn (GH #845 baseline)."
+value = { kind = "counter", unit = "lines", labels = ["channel", "role"] }
+
+[mesh_wake.suppressed_ack]
+doc = "The `reason` label of a native wake skipped because the send stored an explicit ack (mesh_chat.ack_suppression on)."
+value = "ack"
+
+[metric.mesh_wake_suppressed]
+doc = "Native wakes (DevSwarm reactivate) a send skipped, by reason (GH #845)."
+value = { kind = "counter", unit = "wakes", labels = ["reason"] }
+
+# ---- phase 1: who a broadcast wakes (contract MESH-P1-CONTRACT.md §2-§5) ------------------------------------------------------
+
+[mesh_wake.addressed_mode]
+doc = "`on`: a broadcast wakes only its stored audience (mentions, or everyone for a question, a privileged urgent send or a privileged @all); `off`: every broadcast of others wakes, the rule before GH #845. The audience is stored at send either way."
+value = "on"
+
+[mesh_wake.mode_on]
+doc = "The mesh_wake.addressed_mode value that turns the addressed rule on."
+value = "on"
+
+[mesh_wake.primary_reader]
+doc = "What wakes a Primary reader while mesh_wake.addressed_mode is on: `all` (every broadcast of others, as before) or `addressed` (its stored audience, like a child)."
+value = "all"
+
+[mesh_wake.primary_reader_addressed]
+doc = "The mesh_wake.primary_reader value that applies the addressed rule to a Primary."
+value = "addressed"
+
+[mesh_wake.audience_all]
+doc = "The `wake_audience` column text of a broadcast that wakes every reader."
+value = "all"
+
+[mesh_wake.audience_none]
+doc = "The `wake_audience` column text of a broadcast that wakes no reader (a JSON array of registry ids names an explicit audience)."
+value = "none"
+
+[mesh_wake.broadcast_wake_urgency]
+doc = "Urgencies at which an unmentioned broadcast from a role in mesh_wake.broadcast_wake_roles reaches every reader."
+value = ["high", "urgent"]
+
+[mesh_wake.broadcast_wake_roles]
+doc = "Sender roles whose urgent unmentioned broadcast reaches every reader (phase 1 has no admin role: the owner's word comes through the Primary)."
+value = ["primary"]
+
+[mesh_wake.role_primary]
+doc = "The role word of a Primary sender in the wake rule."
+value = "primary"
+
+[mesh_wake.role_child]
+doc = "The role word of any other sender in the wake rule."
+value = "child"
+
+[mesh_wake.mention_re]
+doc = "A mention in a broadcast body (JavaScript regex source, case-insensitive; group 1 is the token): an @ not preceded by a letter, digit or underscore (so an e-mail address is not one)."
+value = '(?:^|[^A-Za-z0-9_])@([A-Za-z0-9][A-Za-z0-9_-]*)'
+
+[mesh_wake.mention_all]
+doc = "Mention tokens that address every reader (honoured only from a role in mesh_wake.mention_all_roles)."
+value = ["all", "everyone"]
+
+[mesh_wake.mention_admin]
+doc = "Mention tokens of an owner/admin relay (`[@admin] …`): from a role in mesh_wake.mention_all_roles they address every recipient of the room, like @all; from anyone else (a child's `RE @admin`) they address no one."
+value = ["admin"]
+
+[mesh_wake.mention_all_roles]
+doc = "Sender roles whose @all reaches every reader; from anyone else it addresses no one."
+value = ["primary"]
+
+[mesh_wake.mention_primary]
+doc = "Mention tokens that address the Primary (every registry id with the Primary prefix)."
+value = ["primary"]
+
+[mesh_wake.mention_min_prefix]
+doc = "Shortest id prefix a mention may use to address a workspace (a shorter token, or one that is no id, such as @admin, addresses no one). Mentions narrow the audience even for a question or an urgent send."
+value = 6
+min = 1
+max = 64
+
+[mesh_wake.allow_broadcast_question]
+doc = "1 = `mesh send --broadcast --question` is allowed (stored with needs_reply; audience by the rule above, a question with an ambiguous mention refused); 0 = refused, as before GH #845. Node's send must allow it in the same release."
+value = 1
+min = 0
+max = 1
+
+[mesh_wake.reason_ambiguous_mention]
+doc = "The refusal `reason` of a broadcast question whose mention prefixes several workspaces."
+value = "ambiguous-mention"
+
+[mesh_wake.msg_ambiguous_mention]
+doc = "The refusal text of a broadcast question whose mention prefixes several workspaces."
+value = "@{token} matches several workspaces ({ids}): mention a longer id so the question reaches the right one."
+
+[mesh_wake.summary_field_seq]
+doc = "The summary member holding the highest seq among a workspace's unread broadcasts that wake it (null when none): the wake-watch's broadcast watermark compares against it, so a drain followed by a new arrival is never missed."
+value = "broadcastWakeSeq"
+
+[mesh_wake.summary_field_pending]
+doc = "The summary member counting a workspace's unread broadcasts that wake it (display and the start-up reconcile only, never a wake edge)."
+value = "broadcastWakePending"
+
+[mesh_wake.summary_field_cursor]
+doc = "The summary member holding a workspace's broadcast cursor (the watcher wakes again when an ack moves it while wake-eligible broadcasts stay unread)."
+value = "broadcastWakeCursor"
+
+# ---- phase 1: readable broadcasts (contract §6) --------------------------------------------------------------------------------
+
+[mesh_wake.inbox_broadcast_cap]
+doc = "Most unread broadcasts that do NOT wake the reader one drain lists, oldest first; the rest stay unread (`broadcastsMore`) for the next drain, and the ack stops before the first row held back. Rows that wake the reader have their own budget (`inbox_broadcast_eligible_cap`), so these never crowd them out."
+value = 50
+min = 1
+max = 5000
+
+[mesh_wake.inbox_broadcast_eligible_cap]
+doc = "Most unread broadcasts that wake the reader one drain lists (their own budget, beside `inbox_broadcast_cap`). A row listed past a held-back row stays unread until the ack reaches it, and the watcher wakes again while such rows remain after an ack."
+value = 50
+min = 1
+max = 5000
+
+[mesh_wake.key_broadcasts]
+doc = "The member of a drain verb's result that lists the unread broadcasts (each with `addressed`)."
+value = "broadcasts"
+
+[mesh_wake.key_broadcast_ack_target]
+doc = "The member of `inbox read`'s result holding the seq of the last broadcast it listed: pass it to `inbox ack <id> --broadcast-to <seq>`."
+value = "broadcastAckTarget"
+
+[mesh_wake.key_broadcasts_more]
+doc = "The member of a drain verb's result that says more unread broadcasts wait past the cap."
+value = "broadcastsMore"
+
+[mesh_wake.key_broadcast_cursor]
+doc = "The member of an acking verb's result that reports where the broadcast cursor moved (only when it moved)."
+value = "broadcastCursor"
+
+[metric.mesh_extras_dropped]
+doc = "Sends whose GH #845 columns (chat_kind, wake_audience) could not be set because the store lacks them (its ALTER at open failed): the row is kept and read as a legacy row."
+value = { kind = "counter", unit = "messages", labels = [] }
+
+[mesh_wake.msg_broadcast_to_not_number]
+doc = "The refusal text of `inbox ack --broadcast-to` with a value that is not a non-negative number."
+value = "--broadcast-to takes the broadcastAckTarget number that `inbox read` printed."
+
+[mesh_wake.channel_broadcast_cursor]
+doc = "The `channel` of a cursorWriteFailures entry for a broadcast-cursor move an ack could not make."
+value = "broadcast-cursor"
+
+# ---- review P1-4: the Codex poll (`inbox tick`) wakes like the watcher ---------------------------------------------------------
+
+[mesh_wake.tick_field_wake]
+doc = "`inbox tick` result field: what should wake a polling workspace, the unread direct mail without explicit acks plus the broadcasts that wake it. A poll loop acts on this; `unreadTotal` stays the full count."
+value = "wake"
+
+[mesh_wake.tick_field_wake_direct]
+doc = "`inbox tick` result field: the unread direct mail without the explicit acks (`send --ack-only`) while `mesh_chat.ack_suppression` is on."
+value = "wakeDirect"
+
+[mesh_wake.tick_line_wake]
+doc = "Appended to the `inbox tick --quiet` line when the wake count differs from the unread count; `{wake}` is filled in."
+value = ", wake {wake}"
+
+[mesh_wake.msg_tick_broadcast_unread]
+doc = "Debug note when `inbox tick` cannot read the broadcasts that wake a workspace (the tick then counts none); `{id}` and `{why}`."
+value = "inbox tick {id}: the broadcast wake count did not read: {why}"
+
+# ---- review P2-8 / P2-13 ---------------------------------------------------------------------------------------------------------
+
+[mesh_wake.key_broadcasts_error]
+doc = "Drain result key (inbox read, read-primary): why the broadcasts could not be read. The direct mail is still read; no broadcast is listed or acked."
+value = "broadcastsError"
+
+[metric.mesh_broadcast_read_failed]
+doc = "Drain reads (inbox read, read-primary) whose broadcast read failed and listed none, while the direct mail was still read."
+value = { kind = "counter", unit = "reads", labels = [] }
+
+[mesh_wake.read_primary_preview_chars]
+doc = "read-primary lists a broadcast that does not address the reader as a preview of at most this many characters (`preview: true`); an addressed one is listed in full. `inbox read` lists every body in full."
+value = 160
+
+# ---- review: the direct-mail ack race (`inbox read` -> `inbox ack --through`) ----------------------------------------------------
+
+[mesh_wake.flag_ack_through]
+doc = "`inbox ack --through <ackThrough>`: hold every cursor to the boundary the `inbox read` delivered, so mail that arrived after it stays unread. A bare `inbox ack` (no --through, no --to) uses the boundary the last `inbox read` kept (`dir_ack_through`), and acks nothing when no read is on record."
+value = "through"
+
+[mesh_wake.key_ack_through]
+doc = "`inbox read` result key: the boundary the read delivered, as the token `inbox ack --through` takes."
+value = "ackThrough"
+
+[mesh_wake.ack_through_sep]
+doc = "Separator between the parts of an `ackThrough` token."
+value = ","
+
+[mesh_wake.ack_through_kv]
+doc = "Separator between a part's key and its position in an `ackThrough` token (the last one in the part)."
+value = ":"
+
+[mesh_wake.ack_through_nd]
+doc = "`ackThrough` key of the NDJSON inbox position."
+value = "nd"
+
+[mesh_wake.ack_through_store]
+doc = "`ackThrough` key of the workspace's own store position (each mesh-group sibling is keyed by its id)."
+value = "store"
+
+[mesh_wake.msg_ack_through_invalid]
+doc = "The refusal text of `inbox ack --through` with a token that is not `<key>:<number>` parts."
+value = "--through takes the ackThrough value that `inbox read` printed."
+
+[mesh_wake.dir_ack_through]
+doc = "Directory under the DevSwarm state root where `inbox read` keeps the boundary it delivered per workspace (`<id>.json`), for a bare `inbox ack` (re-review N-6)."
+value = "ack-through"
+
+[mesh_wake.key_ack_no_read]
+doc = "`inbox ack` result key, set when a bare ack found no `inbox read` on record and so acked nothing."
+value = "ackedNothing"
+
+[mesh_wake.msg_ack_no_read]
+doc = "The note under `key_ack_no_read`."
+value = "no inbox read on record for this workspace: nothing was acked. Run `inbox read` first, then `inbox ack` (it acks exactly what that read showed)."

@@ -1,0 +1,77 @@
+# ah-engine shipped defaults for mesh sender identities (GH #845, owner 2026-11-28). Format: see the header of engine.toml.
+#
+# The owner writes to the mesh as `admin` (a human) and anti-hall's own messages go out as `ah-engine` (a proxy acting on the
+# owner's behalf); neither is ever stamped as the Primary, and nothing impersonates either. Operator use only: the owner's room (or
+# a plain, non-agent shell) declares `admin` with `--as admin` or the `sender_env` variable; a caller whose environment marks it
+# as an agent (`agent_env_markers`, `agent_env_builder`) is refused, and `ah-engine` (`cli = false`) is never selectable from the
+# CLI. Every row stores its `sender_kind`; a row's kind and rank are read from that stored kind, never from the sender's name. A
+# Primary's and a child's rank come from `rank_primary` / `rank_child`. The rank drives wake privilege (`privileged_rank`),
+# precedence when instructions conflict (the higher rank wins) and display (`fromKind` / `fromRank` on listed rows).
+
+[mesh_identity.identities]
+doc = "The declared (non-workspace) senders, by the id stored on their messages: `display` (the name shown), `kind` (stored as the row's sender_kind; unique per identity), `rank`, `cli` (whether a non-agent CLI caller may declare it), and for a proxy `on_behalf_of` (the identity it acts for)."
+value = { admin = { display = "admin", kind = "human", rank = 100, cli = true }, ah-engine = { display = "ah-engine", kind = "human-proxy", on_behalf_of = "admin", rank = 90, cli = false } }
+
+[mesh_identity.identity_fields]
+doc = "The field names of an `identities` entry (the schema the engine reads)."
+value = { display = "display", kind = "kind", rank = "rank", cli = "cli", on_behalf_of = "on_behalf_of" }
+
+[mesh_identity.agent_env_markers]
+doc = "Environment variables whose presence marks the caller as an agent (Claude Code, Codex, a DevSwarm agent): such a caller is refused when it declares an identity. The owner's room spawns its sends with a clean environment that has none of them."
+value = ["CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SESSION_ID", "CLAUDE_PID", "CODEX_COMPANION_SESSION_ID", "CODEX_SANDBOX", "CODEX_THREAD_ID", "CODEX_MANAGED_BY_NPM", "DEVSWARM_AI_AGENT", "AI_AGENT"]
+
+[mesh_identity.agent_env_builder]
+doc = "The DevSwarm builder-id variable: set to anything but the identity being declared, it marks the caller as that builder's agent."
+value = "DEVSWARM_BUILDER_ID"
+
+[mesh_identity.msg_agent_refused]
+doc = "The refusal text of a send whose caller is an agent but declares an identity; `{name}` is filled in."
+value = "an agent cannot send as {name}: declared identities are the owner's (and the engine's) only. Send as yourself (drop --as and the sender variable)."
+
+[mesh_identity.row_kind_field]
+doc = "The member of a store row read that carries its stored sender_kind (attached only for a declared identity's kind)."
+value = "senderKind"
+
+[mesh_identity.sender_env]
+doc = "The environment variable that declares the sender of a send (an id of `identities` with `cli = true`), e.g. the owner's chat room sets it to `admin`; refused for an agent caller. `--as` wins over it."
+value = "AH_MESH_SENDER"
+
+[mesh_identity.flag_as]
+doc = "`send --as <id>` (operator use): send as a declared identity (an id of `identities` with `cli = true`) instead of the caller's workspace; refused for an agent caller."
+value = "as"
+
+[mesh_identity.rank_primary]
+doc = "The rank of a Primary workspace."
+value = 50
+
+[mesh_identity.rank_child]
+doc = "The rank of a child workspace (and of any sender that is not declared or a Primary)."
+value = 10
+
+[mesh_identity.privileged_rank]
+doc = "A sender at or above this rank may wake every reader (an `@all`, a question or an urgent broadcast), as the Primary may."
+value = 50
+
+[mesh_identity.kind_agent]
+doc = "The kind of a workspace sender (stored in `sender_kind`); never a declared identity's kind."
+value = "agent"
+
+[mesh_identity.msg_unknown_sender]
+doc = "The refusal text of a send that declares an identity `identities` does not have; `{name}` and `{known}` are filled in."
+value = "unknown mesh sender {name}: declare one of {known} (--as or the sender variable), or unset it to send as this workspace."
+
+[mesh_identity.key_from_kind]
+doc = "Listed-row key: the kind of a declared sender."
+value = "fromKind"
+
+[mesh_identity.key_from_rank]
+doc = "Listed-row key: the rank of a declared sender (the higher rank wins when instructions conflict)."
+value = "fromRank"
+
+[mesh_identity.key_from_display]
+doc = "Listed-row key: a declared sender's display name, when it differs from its id."
+value = "fromDisplay"
+
+[mesh_identity.key_on_behalf_of]
+doc = "Listed-row key: the identity a proxy sender acts for."
+value = "onBehalfOf"

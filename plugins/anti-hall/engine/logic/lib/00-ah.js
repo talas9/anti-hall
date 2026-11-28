@@ -201,6 +201,9 @@ var ah = {
   // The effective value of a defaults key through the owner's editable layers (settings.json, config.toml, shipped default).
   cfgLive: function (key) { return JSON.parse(ahHost.cfgLive(key)); },
   sha1: function (t) { return ahHost.sha1(ahWf(t)); },
+  // Whether a blockedOn reason names the owner or a human (a word of dispatch_tier.owner_values): the engine's one owner matcher, the
+  // same the agent tracker's hold_owner uses (GH #959).
+  ownerNamed: function (t) { return typeof t === 'string' && ahHost.ownerNamed(ahWf(t)); },
   // The engine's outbound secret scrubber (the `jev.scrub_rules` of the plugin's jev.toml).
   scrub: function (t) { return ahHost.scrubSecrets(t); },
   log: function (kind, t) { ahHost.log(kind, t); },
@@ -261,6 +264,9 @@ var ah = {
     // [timestamp (a string, else null), [[name, file_path|null, command|null]]] per entry with a string timestamp or a tool use
     // (found through the `keys` of nested objects; a non-string name is ''). Blank and invalid lines are left out.
     toolUseScan: function (p, windowBytes, needles, keys) { var r = ahHost.toolUseScan(p, windowBytes || 0, needles, keys); return r === null || r === undefined ? null : JSON.parse(r); },
+    // The lines of the tail that hold a needle, each reduced to the facts a reducer reads (m: marks, r: regex captures, p: parsed paths, q: quoted pieces):
+    // null or an array of {m, r, p, q?}; the engine keeps them between calls, so only the appended bytes are digested. See host_ts.rs `features`.
+    features: function (p, windowBytes, spec) { var r = ahHost.transcriptFeatures(p, windowBytes, JSON.stringify(spec)); if (r === null || r === undefined) return null; var v = JSON.parse(r); return v && v.unsure ? null : v; },
     // Finished-but-not-stopped named teammates of a Claude transcript tail: null, {unsure: true} or {teammates: [{name, idleSinceMs}]}.
     teammates: function (p, tailBytes) { var r = ahHost.transcriptTeammates(p, tailBytes || 0); return r === null || r === undefined ? null : JSON.parse(r); },
     // Finished-but-not-closed agents of a Codex rollout tail: null, {unsure: true} or {agents: [{id, label, idleSinceMs}]}.

@@ -502,3 +502,14 @@ fn zz_scan_digest() {
         eprintln!("DIGEST {p} tail {tail}: {} bytes {:016x}", out.len(), h.finish());
     }
 }
+
+#[test]
+fn zz_debug_w2_peer_scan() {
+    let cases = crate::script::golden_debug_cases("stale-agent-stop-note");
+    for (n, path) in cases {
+        let opts = Opts { now_ms: crate::checks::replykit::io::now_ms(), ignore_unanswered_stops: true };
+        let a = scan_transcript(&path, 1 << 20, &opts).map(|o| o.map(|s| format!("{:?}", s.pending)));
+        let b = scan_transcript_uncached(&path, 1 << 20, &opts).map(|o| o.map(|s| format!("{:?}", s.pending)));
+        eprintln!("DEBUG {n}: cached={a:?} uncached={b:?}");
+    }
+}

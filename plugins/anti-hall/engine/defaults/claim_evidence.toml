@@ -281,6 +281,40 @@ value = [
 doc = "Log reason for a claim covered by an honest label in its own sentence (ack_res, within claim_evidence.reach_label)."
 value = "labelled"
 
+[claim_evidence.attributed_reason]
+doc = "Log reason for a claim whose paragraph or governing heading attributes the result to another agent and says it was not verified here (#972 wave 2; attribution_res plus unverified_scope_res)."
+value = "attributed"
+
+[claim_evidence.attribution_res]
+doc = "Text that attributes a result to another agent or its report (#972 wave 2): 'Lane-reported results', 'lane-busy's report', 'the agent's numbers', 'reported by the lane'. Counts only together with unverified_scope_res in the same scope (the claim's paragraph plus its heading). Regular expressions, case-insensitive."
+value = [
+  '\b(?:lane|agent|worker|subagent|teammate|reviewer|codex)[- ]reported\b',
+  '\b(?:lane|agent|worker|subagent|teammate|reviewer|codex)(?:\x27s)?\s+(?:results?|numbers|report|figures|counts)\b',
+  '\b[\w-]+\x27s\s+(?:report|results?|numbers|figures|counts)\b',
+  '\b(?:reported|relayed)\s+by\s+(?:the\s+)?[\w-]+',
+  '\b(?:according\s+to|per)\s+(?:the\s+)?(?:lane|agent|worker|subagent|teammate|reviewer|codex)\b',
+]
+
+[claim_evidence.unverified_scope_res]
+doc = "An explicit statement that the replier did not check the attributed result (#972 wave 2): 'I haven't re-run them yet', 'I have not verified', 'not re-run here', 'unverified'. Counts only together with attribution_res in the same scope. Regular expressions, case-insensitive."
+value = [
+  '\b(?:i|we)\s+(?:have\s*n.t|have\s+not|haven.t|did\s*n.t|did\s+not|didn.t)\s+(?:yet\s+)?(?:re-?run|re-?checked|re-?verified|verified|checked|run|reproduced|confirmed)\b',
+  '\bnot\s+(?:yet\s+)?(?:re-?run|re-?verified|re-?checked|verified|reproduced)\b',
+  '\bunverified\b',
+]
+
+[claim_evidence.paragraph_break_re]
+doc = "What ends a paragraph of the reply (#972 wave 2: the scope of an attribution and a not-verified marker). Rust regular expression."
+value = '\n[ \t]*\n'
+
+[claim_evidence.list_para_re]
+doc = "A paragraph that is a list (#972 wave 2): its scope also holds the line just before it, the lead-in that governs the list ('Lane-reported results; I have not re-run them yet.' then '- tests pass: 410/410'). Rust regular expression, matched against the paragraph."
+value = '\A\s*(?:[-*+]|[0-9]+[.)])\s'
+
+[claim_evidence.heading_line_re]
+doc = "A line that heads the paragraphs after it (#972 wave 2): a markdown heading, a bold line, or a short line that ends with a colon. Rust regular expression, matched against one line."
+value = '^\s*(?:#{1,6}\s+\S|\*\*[^\n]+\*\*\s*:?\s*$|[^\n.!?]{1,160}:\s*$)'
+
 [claim_evidence.nonsoftware_reason]
 doc = "Log reason for a claim hit right after a non-software subject word (a claim row's not_after): 'the simulator session is released'."
 value = "nonsoftware"
@@ -309,8 +343,8 @@ value = "suppressed ({reason}): \"{quote}\" ({claim})"
 doc = "The result claims rule 1 looks for, in order; not_after (optional): Rust regular expression, case-insensitive, matched against the sentence text before the hit, ending with $: a hit whose sentence opens with such a subject is no claim of that row ('the simulator session is released' is no shipped claim; logged as reason nonsoftware); not_before (optional): Rust regular expression, CASE-SENSITIVE, matched against the sentence text after the hit: a hit followed by such text is no claim of that row ('Live Activity' is a feature name, not 'is Live'; logged as reason featurename); not_before_hit (optional): Rust regular expression, case-sensitive, the hit itself must match for not_before to apply; not_after_hit (optional): Rust regular expression, case-insensitive, the hit itself must match for not_after to apply ('released', never 'deployed' or 'merged'); the first row that matches a reply decides. id: the label in the message and the log. re: Rust regular expression (case-insensitive) on the reply with quoted text and code removed. needs: command patterns (Rust syntax) of which at least one must match a command run this turn; empty means any tool call this turn is enough. check: short words naming a command that would satisfy the row, written into the block advice (msg_satisfy; keep it under 58 characters). With no tool call at all this turn, every row fires."
 value = [
   { id = "tests pass", re = '\b(?:all\s+)?(?:\d[\d,]*\s+)?(?:unit\s+|integration\s+|e2e\s+)?tests?\s+(?:(?:are|is|now|all|still)\s+)*(?:pass(?:es|ed|ing)?|green)\b|\b\d[\d,]*\s+(?:tests?\s+)?passed\b|\b(?:build|ci|suite|checks?|lint)\s+(?:(?:is|are|now|all)\s+)*(?:green|passing|passes|passed)\b', check = "a test runner, gh pr checks or a log read showing it", needs = ['\b(?:cargo\s+(?:test|nextest|check|clippy|build)|node\s+--test|npm\s+(?:run\s+)?(?:test|build|lint)|pnpm\s+(?:run\s+)?(?:test|build|lint)|yarn\s+(?:test|build|lint)|pytest|go\s+(?:test|build|vet)|jest|vitest|flutter\s+(?:test|analyze)|dart\s+(?:test|analyze)|gradlew?\s+\S*(?:test|build)|make\s+(?:test|check|build)|tsc|eslint|clippy|dotnet\s+(?:test|build)|bun\s+(?:test|run)|deno\s+test|swift\s+(?:test|build)|xcodebuild|mvn|rspec|phpunit|mix\s+test|gh\s+run\s+(?:view|watch|list)|gh\s+pr\s+checks|gh\s+pr\s+(?:view|status)\s[^\n]*?statusCheckRollup|gh\s+api\s[^\n]*?check-(?:runs|suites)|\S*test\S*\.(?:sh|js|py))\b'] },
-  { id = "process live", re = '\b(?:process(?:es)?|daemon|server|service|engine|worker|watcher|pid)\s+(?:is|are|was|were|now)\s+(?:now\s+|still\s+)?(?:live|running|up|alive)\b', check = "pgrep, ps, launchctl list or curl of its port", needs = ['\b(?:pgrep|pidof|lsof|ps\s+(?:aux|ax|-[a-zA-Z]+)|launchctl\s+(?:list|print)|systemctl\s+(?:status|is-active)|curl|wget|http)\b'] },
-  { id = "shipped", re = '\b(?:has\s+been|have\s+been|is|are|was|were|now)\s+(?:deployed|released|published|merged|live)\b|\b(?:deployed|released|published)\s+(?:to\s+\S+|as\s+v?\d)|\bnot\s+only\s+(?:is|are|was|were|has\s+been|have\s+been)\s+[\w#-]+\s+(?:deployed|released|published|merged|live)\b', check = "gh pr view, git ls-remote or curl of the live URL", not_after = '^\W*(?:(?:the|a|an|this|that|its|our|my|your|their)\s+)?(?:[\w-]+\s+)?(?:sessions?|locks?|slots?|simulators?|devices?|leases?|handles?|ports?|connections?|seats?)\s+$', not_after_hit = '\breleased\b', not_before = '^\s+[A-Z]', not_before_hit = '\bLive$', needs = ['\b(?:deploy|release|publish|merge|gh\s+(?:pr|release|run|api)|git\s+(?:push|tag|merge)|curl|wget|http|git\s+(?:log|show|branch|status|rev-parse|merge-base|ls-remote|fetch)|firebase|npm\s+publish|cargo\s+publish|kubectl|vercel|fastlane)\b'] },
+  { id = "process live", re = '\b(?:process(?:es)?|daemon|server|service|engine|worker|watcher|pid)\s+(?:is|are|was|were|now)\s+(?:now\s+|still\s+)?(?:live|running|up|alive)\b', check = "pgrep, ps, launchctl list or curl of its port", needs = ['\b(?:pgrep|pidof|lsof|ps\s+(?:aux|ax|-[a-zA-Z]+)|launchctl\s+(?:list|print)|systemctl\s+(?:status|is-active)|curl|wget|http)\b', '\bah-engine["\x27]?\s+(?:version|--version|status)\b'] },
+  { id = "shipped", re = '\b(?:has\s+been|have\s+been|is|are|was|were|now)\s+(?:deployed|released|published|merged|live)\b|\b(?:deployed|released|published)\s+(?:to\s+\S+|as\s+v?\d)|\bnot\s+only\s+(?:is|are|was|were|has\s+been|have\s+been)\s+[\w#-]+\s+(?:deployed|released|published|merged|live)\b', check = "gh pr view, git ls-remote or curl of the live URL", not_after = '^\W*(?:(?:the|a|an|this|that|its|our|my|your|their)\s+)?(?:[\w-]+\s+)?(?:sessions?|locks?|slots?|simulators?|devices?|leases?|handles?|ports?|connections?|seats?)\s+$', not_after_hit = '\breleased\b', not_before = '^\s+[A-Z]', not_before_hit = '\bLive$', needs = ['\b(?:deploy|release|publish|merge|gh\s+(?:pr|release|run|api)|git\s+(?:push|tag|merge)|curl|wget|http|git\s+(?:log|show|branch|status|rev-parse|merge-base|ls-remote|fetch)|firebase|npm\s+publish|cargo\s+publish|kubectl|vercel|fastlane)\b', '\bah-engine["\x27]?\s+(?:version|--version|status)\b'] },
   { id = "verified", re = '\b(?:(?:i|we|it|they|all|now|has|have|is|are|was|were|been|got|fully|also|personally|independently|just|successfully)(?:\x27ve|\x27s|\x27re)?\s+)+(?:verified|confirmed)\b|\b(?:verified|confirmed)\s+(?:that|working|fixed|green|passing|merged|deployed|successful(?:ly)?|every|each|the|it|this|all|both)\b|^\W*(?:verified|confirmed)\b|(?:^|\s)(?:verified|confirmed)\s*(?:[:\u2014-]|$)', check = "any tool call that shows it", needs = [] },
   { id = "fixed", re = '\b(?:is|are|now|been)\s+(?:now\s+)?fixed\b|\bfixed\s+and\s+(?:verified|working|tested)\b', check = "any tool call that shows it", needs = [] },
   { id = "all done", re = '\ball\s+(?:the\s+)?(?:tasks?\s+|items?\s+|work\s+|steps?\s+)?(?:are\s+)?(?:done|complete[d]?|finished)\b', check = "any tool call that shows it", needs = [] },
