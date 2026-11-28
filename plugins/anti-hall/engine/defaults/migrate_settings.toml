@@ -180,6 +180,7 @@ value = [
   "{\"section\":\"guards\",\"key\":\"idleOrder\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_IDLE_ORDER\"}",
   "{\"section\":\"guards\",\"key\":\"idleOrderAfterMin\",\"type\":\"number\",\"default\":30,\"min\":1,\"env\":\"ANTIHALL_IDLE_ORDER_AFTER_MIN\"}",
   "{\"section\":\"guards\",\"key\":\"stallOrder\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_STALL_ORDER\"}",
+  "{\"section\":\"guards\",\"key\":\"stallSkipPushed\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_STALL_SKIP_PUSHED\"}",
   "{\"section\":\"guards\",\"key\":\"stallOrderAfterMin\",\"type\":\"number\",\"default\":60,\"min\":1,\"env\":\"ANTIHALL_STALL_ORDER_AFTER_MIN\"}",
   "{\"section\":\"guards\",\"key\":\"compactAdviceGuard\",\"type\":\"boolean\",\"default\":true,\"pluginOption\":\"guards_compact_advice_guard\"}",
   "{\"section\":\"guards\",\"key\":\"compactAdviceRecentTurns\",\"type\":\"number\",\"default\":10,\"min\":0,\"max\":100,\"pluginOption\":\"guards_compact_advice_recent_turns\"}",

@@ -16,7 +16,7 @@
 //! | `piPid(pid)` | `pidIsAlive(pid)`: `true`, `false` or `null` (no opinion) |
 //! | `piAppChildren(worktree)` | the workspaces the app database lists as open children of the project around `worktree`: `{repo, children: [{id, worktreePath, sessionId}]}` (`appHasLiveChild` before the per-row eligibility) |
 //! | `piFinish(id, worktree, now)` | `{label, key, extras}`: the step-plan label of a working row (`planLib.findPlan` then `finishLabel`), `label` null when the workspace has no plan |
-//! | `piProgress(worktree)` | `{commitMs}`: when the worktree last committed (the supervisor's cached last-commit read), `null` when git cannot say |
+//! | `piProgress(worktree)` | `{commitMs, createdMs}`: when the worktree last committed (the supervisor's cached last-commit read) and when its checkout was created (the oldest HEAD reflog entry), each `null` when git cannot say |
 //! | `piMeshId(worktree)` | `{id}`: `resolveContext(worktree, { missingPath: 'ancestor' }).meshId`, `null` outside a checkout |
 //! | `piSessionPid(session)` | `sessionPidAlive(session)`: `true`, `false` (a record names it and every pid is dead) or `null` (no record) |
 //! | `piJev()` | whether the Jev triage of arrivals may be switched on (then a broadcast feed is labelled by Jev, which the engine does not do)
@@ -445,9 +445,23 @@ fn activity_of(inv: &Inv, id: &str, wt: Option<&str>, sid: Option<&str>, last_ou
 /// that and when it first saw the workspace working, because a fresh worktree holds the commit it was cut from, which can be days old.
 fn progress_of(wt: &str) -> R<Value> {
     if wt.is_empty() || !Path::new(wt).is_dir() {
-        return Ok(json!({"commitMs": Value::Null}));
+        return Ok(json!({"commitMs": Value::Null, "createdMs": Value::Null}));
     }
-    Ok(json!({"commitMs": liveness::worktree_activity(&crate::dsact::runner::System::configured(), wt)}))
+    Ok(json!({"commitMs": liveness::worktree_activity(&crate::dsact::runner::System::configured(), wt), "createdMs": created_ms(wt)}))
+}
+
+/// When the worktree's checkout was created: the time of the oldest entry of its HEAD reflog (`<gitdir>/<devswarm_parent.reflog_head_rel>`,
+/// the line `<old> <new> <name> <<email>> <unix seconds> <zone>\t<message>`), `null` when the reflog is missing, expired or unreadable.
+/// A commit older than this was inherited from the commit the workspace was cut from, not delivered by the workspace.
+fn created_ms(wt: &str) -> Value {
+    let Some(dir) = crate::dswire::facts::git_dir(wt) else { return Value::Null };
+    let Ok(text) = std::fs::read_to_string(dir.join(defaults::text("devswarm_parent.reflog_head_rel"))) else { return Value::Null };
+    let Some(first) = text.lines().next() else { return Value::Null };
+    let secs = first.split('\t').next().and_then(|head| head.rsplit_once("> ")).and_then(|(_, tail)| tail.split_whitespace().next()).and_then(|t| t.parse::<u64>().ok());
+    match secs {
+        Some(s) if s > 0 => json!((s as f64) * defaults::num("devswarm_sup.lv_ms_per_sec") as f64),
+        _ => Value::Null,
+    }
 }
 
 fn mesh_id_of(wt: &str) -> R<Value> {

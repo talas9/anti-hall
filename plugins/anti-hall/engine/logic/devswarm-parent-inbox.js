@@ -765,7 +765,11 @@ function piRoster(ctx, summary) {
         var seenAt = prevSince[id] && piFinite(prevSince[id].at) ? prevSince[id].at : now;
         out.stallSince[id] = { at: seenAt };
         var progressTs = Math.max(piFinite(sp.commitMs) ? sp.commitMs : 0, seenAt);
+        // delivered, not stalled: the workspace's own newest commit is pushed (nothing ahead of an upstream), so the work is on its PR head
+        var pushedOwn = ah.settings.bool('idle_order.sw_stall_pushed') && entry && entry.noUpstream === false && entry.unpushed === 0
+          && piFinite(sp.createdMs) && piFinite(sp.commitMs) && sp.commitMs >= sp.createdMs;
         if (sp.unsure || !piFinite(sp.commitMs)) stallWhy = 'unknown_state';
+        else if (pushedOwn) stallWhy = 'delivered';
         else if (now - progressTs >= idleOrder.stallAfterMs()) out.stallCands.push({ id: id, label: (rowWs && rowWs.label) || piReadName(home, id) || id, idleMs: now - progressTs });
       }
       if (stallWhy !== '') {
@@ -1259,7 +1263,9 @@ function piRowFlags(home, id, wtPath, planKey, heartbeat, entry, now) {
   }
   if (wtPath && piFinite(entry.unpushed) && entry.unpushed > 0) {
     var sp = JSON.parse(ahHost.piProgress(wtPath));
-    if (!sp.unsure && piFinite(sp.commitMs) && sp.commitMs <= now && now - sp.commitMs >= ah.cfgNum('devswarm_parent.flag_unpushed_ms')) {
+    // the newest commit must be the workspace's own: one older than the checkout was inherited from the commit it was cut from
+    var ownCommit = !piFinite(sp.createdMs) || sp.commitMs >= sp.createdMs;
+    if (!sp.unsure && piFinite(sp.commitMs) && ownCommit && sp.commitMs <= now && now - sp.commitMs >= ah.cfgNum('devswarm_parent.flag_unpushed_ms')) {
       out.push(text.render(ah.cfg('devswarm_parent.flag_reason_unpushed'), { n: String(entry.unpushed), min: String(Math.floor((now - sp.commitMs) / minMs)) }));
     }
   }
