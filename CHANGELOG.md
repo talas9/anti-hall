@@ -6,6 +6,14 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.304.0
+
+Ships engine 0.3.33. Highlights:
+
+- Mesh phase 2: rooms (`mesh room create|join|leave|list`, `mesh send --room`; a room message wakes only its members), the owner's admin mailbox (`mesh send --to admin` from any agent, `--reply-to <seq>`), a coalesce window that merges a burst of wake lines into one, faster mid-read wakes (a held wake whose workspace read part of its mail wakes at the next window close, not after 10 minutes), and faster mesh reads (cursor-bounded broadcast reads: the summary read dropped from 129 ms to 8 ms on a 17.9k-row partition).
+- Field fixes from production use: the defect CLI lists valid classes and severities on rejection and accepts `--title`/`--body`; a pushed workspace with its own commits is no longer reported stalled; blocked tasks stay visible in the task window; the edit guard lets the main agent write new `CLAUDE.<variant>.md` files in the host config folder; an adverb-hedged result word is no longer read as a flat claim; the disk warning stays quiet after it was shown and names reclaimable locations with their commands.
+- Phantom unread fix: the parent gate counts the summary's direct unread, not the positional unread, so a parent is no longer blocked on mail it has already read.
+
 ## 0.303.0
 
 First release since v0.301.1: it carries everything merged since then (the notes below and the Engine 0.3.x integration sections). Highlights of the last two engine builds (0.3.31, 0.3.32):
