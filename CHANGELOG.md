@@ -6,6 +6,15 @@ no `version` to avoid the silent-precedence trap where `plugin.json` wins silent
 behavioral change MUST bump `plugin.json` `version` or installed users will not receive
 the update.
 
+## 0.305.0
+
+Ships engine 0.3.34. Highlights:
+
+- Runaway agents: a snooze now needs progress evidence and is capped at 2 per agent, after which the coordinator gets a Stop block; a per-agent token budget (soft and hard limits) is read from config.
+- Owner chat: owner messages are delivered as orders until answered; a declared admin identity is refused when it comes from under an agent ancestor process (forged-admin refusal); mesh room verbs honour the declared sender.
+- Faster checks: a positive-list prefilter (with shadow auto-disable) skips checks that cannot match, and a Stop memo reuses quiet verdicts keyed on the state the blocking checks read.
+- Misfire batch: 10 field fixes from production use.
+
 ## 0.304.0
 
 Ships engine 0.3.33. Highlights:
