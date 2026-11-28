@@ -30,16 +30,16 @@ Updated 2026-11-28. Last releases: plugin **0.303.0** with engine **0.3.32** (bo
 
 - Mesh phase 2: rooms, the owner's admin mailbox, a coalesce window for wake bursts, faster mid-read wakes, and the parent-gate phantom-unread fix.
 - Field fixes from 0.3.32 ([#1003](https://github.com/talas9/anti-hall/issues/1003)): defect CLI, the stalled-workspace false positive, the task window, guard texts.
+- Crate split of the engine into a Cargo workspace ([#1010](https://github.com/talas9/anti-hall/issues/1010)).
+- Faster checks: a per-check prefilter and a Stop memo ([#1011](https://github.com/talas9/anti-hall/issues/1011)), together with late replies under load ([#22](https://github.com/talas9/anti-hall/issues/22), [#628](https://github.com/talas9/anti-hall/issues/628)).
 
 **Next, in order:**
 
-1. Crate split of the engine into a Cargo workspace ([#1010](https://github.com/talas9/anti-hall/issues/1010)).
-2. Faster checks: prefilter hooks and an incremental Stop ([#1011](https://github.com/talas9/anti-hall/issues/1011)), together with late replies under load ([#22](https://github.com/talas9/anti-hall/issues/22), [#628](https://github.com/talas9/anti-hall/issues/628)).
-3. Doctor warnings ([#862](https://github.com/talas9/anti-hall/issues/862), [#741](https://github.com/talas9/anti-hall/issues/741), [#883](https://github.com/talas9/anti-hall/issues/883)).
-4. Mesh follow-ups after phase 2 (group [#327](https://github.com/talas9/anti-hall/issues/327): [#796](https://github.com/talas9/anti-hall/issues/796), [#942](https://github.com/talas9/anti-hall/issues/942), [#950](https://github.com/talas9/anti-hall/issues/950)).
-5. Default-off switches that shipped and wait to be measured and turned on: Stop additionalContext ([#540](https://github.com/talas9/anti-hall/issues/540)), notice-turn skip ([#588](https://github.com/talas9/anti-hall/issues/588)), drop-by-priority context ([#592](https://github.com/talas9/anti-hall/issues/592)).
+1. Doctor warnings ([#862](https://github.com/talas9/anti-hall/issues/862), [#741](https://github.com/talas9/anti-hall/issues/741), [#883](https://github.com/talas9/anti-hall/issues/883)).
+2. Mesh follow-ups after phase 2 (group [#327](https://github.com/talas9/anti-hall/issues/327): [#796](https://github.com/talas9/anti-hall/issues/796), [#942](https://github.com/talas9/anti-hall/issues/942), [#950](https://github.com/talas9/anti-hall/issues/950)).
+3. Default-off switches that shipped and wait to be measured and turned on: Stop additionalContext ([#540](https://github.com/talas9/anti-hall/issues/540)), notice-turn skip ([#588](https://github.com/talas9/anti-hall/issues/588)), drop-by-priority context ([#592](https://github.com/talas9/anti-hall/issues/592)).
 
-**Open issues:** 268, none waiting for triage. P0/P1: 113 (23 P0, 90 P1). The R1 exit gate (0 open P0/P1) is not met. Code-scanning alerts are tracked one issue per alert under [#329](https://github.com/talas9/anti-hall/issues/329); two are critical ([#1005](https://github.com/talas9/anti-hall/issues/1005), [#1006](https://github.com/talas9/anti-hall/issues/1006)).
+**Open issues:** 268, none waiting for triage. P0/P1: 113 (24 P0, 89 P1). The R1 exit gate (0 open P0/P1) is not met. Code-scanning alerts are tracked one issue per alert under [#329](https://github.com/talas9/anti-hall/issues/329); two are critical ([#1005](https://github.com/talas9/anti-hall/issues/1005), [#1006](https://github.com/talas9/anti-hall/issues/1006)).
 
 **Board:** the Now view is `status:in-progress`, Next is `status:accepted` and Backlog is `status:triage`. `Target` holds the release.
 
