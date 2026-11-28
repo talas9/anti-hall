@@ -6691,7 +6691,7 @@ fn n964_completing_the_step_counts_and_ends_it_even_with_closed_statuses_emptied
 
 // ---- #972 class 7: the tracker's wake-watch coverage follows the live lock, every tick -------------------------------
 
-/// The 2026-11-27 SkyCrew layout: the session's own descriptor `primary-p1` (with an archive twin written long ago), the app's
+/// The 2026-11-27 workspace layout: the session's own descriptor `primary-p1` (with an archive twin written long ago), the app's
 /// sessionless row `app-row` on the same checkout, and the watcher's live lock under `primary-p1` naming the session.
 fn sky_layout(h: &Path, n: u64, lock: bool) {
     let d = h.join(".anti-hall/devswarm");
