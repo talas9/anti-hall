@@ -1683,7 +1683,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `docs.external_flags` | `30 items` |  |  | Flags that appear as string literals in the engine's source but belong to other programs it runs (git, gh, cargo, node, claude, hivecontrol) or to the thin client (`ah-hook`), so the flag drift test does not ask for a `[flag.*]` entry. |
+| `docs.external_flags` | `31 items` |  |  | Flags that appear as string literals in the engine's source but belong to other programs it runs (git, gh, cargo, node, claude, hivecontrol) or to the thin client (`ah-hook`), so the flag drift test does not ask for a `[flag.*]` entry. |
 
 ### telemetry.toml / telemetry
 

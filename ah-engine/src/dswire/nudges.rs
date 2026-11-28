@@ -62,7 +62,7 @@ pub fn consumed_attempt(r: &crate::dsact::exec::Report) -> Option<u64> {
 }
 
 #[cfg(test)]
-mod consumed_tests {
+mod tests {
     use super::consumed_attempt;
     use crate::dsact::exec::Report;
     use crate::dsact::ledger::Word;
