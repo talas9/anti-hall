@@ -49,24 +49,16 @@ fn latched() -> bool {
     }
 }
 
-thread_local! {
-    /// The compiled patterns of the current defaults generation: (generation, key, pattern) -> regex (or its error).
-    static RX: std::cell::RefCell<Vec<(u64, String, Option<regex::Regex>)>> = const { std::cell::RefCell::new(Vec::new()) };
-}
+/// The compiled patterns of the current defaults generation (rebuilt after a reload): pattern -> regex (`None` when it does not compile).
+static RX: crate::defaults::Cache<std::sync::Mutex<std::collections::HashMap<String, Option<regex::Regex>>>> = crate::defaults::Cache::new();
 
-/// The pattern `pat` (config `what`), compiled once per defaults generation and thread; `None` when it does not compile (noted).
+/// The pattern `pat` (config `what`), compiled once per defaults generation; `None` when it does not compile (noted).
 fn rx(what: &str, pat: &str) -> Option<regex::Regex> {
-    let generation = defaults::generation();
-    RX.with(|c| {
-        let mut c = c.borrow_mut();
-        c.retain(|(g, _, _)| *g == generation);
-        if let Some((_, _, re)) = c.iter().find(|(_, k, _)| k == pat) {
-            return re.clone();
-        }
-        let re = regex::RegexBuilder::new(pat).case_insensitive(true).build().map_err(|e| crate::discard::note("prefilter_pattern", &format!("{what}: {e}"))).ok();
-        c.push((generation, pat.to_string(), re.clone()));
-        re
-    })
+    let cache = RX.get_or_init(Default::default);
+    let mut m = cache.lock().unwrap_or_else(|e| e.into_inner());
+    m.entry(pat.to_string())
+        .or_insert_with(|| regex::RegexBuilder::new(pat).case_insensitive(true).build().map_err(|e| crate::discard::note("prefilter_pattern", &format!("{what}: {e}"))).ok())
+        .clone()
 }
 
 /// Whether the words of one pipeline element (`words`, its command word first) are a listed reader, or a command of
@@ -213,6 +205,11 @@ pub fn decide(check: &str, event: &str, p: &Value) -> Pre {
         return Pre::Shadow;
     }
     Pre::Skip
+}
+
+/// Whether the prefilter is on for `check` on `event` (it has a positive list): the calls it leaves to the full check are counted.
+pub fn applies(check: &str, event: &str) -> bool {
+    defaults::num("prefilter.enabled") == 1 && defaults::list("prefilter.events").contains(&event) && defaults::raw("prefilter.safe_cmds_by_check").get(check).is_some()
 }
 
 /// Count one outcome (`prefilter.outcome_*`) for `check`.

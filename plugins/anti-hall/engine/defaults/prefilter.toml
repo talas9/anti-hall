@@ -110,6 +110,10 @@ value = "prefilter: the {check} check spoke on a call the prefilter passed as re
 doc = "Metric prefilter outcome label: the check was skipped."
 value = "skip"
 
+[prefilter.outcome_run]
+doc = "Metric prefilter outcome label: the prefilter was on for the check but could not vouch for the call, so the full check ran."
+value = "run"
+
 [prefilter.outcome_agree]
 doc = "Metric prefilter outcome label: a shadow run of the full check allowed quietly, as the prefilter would have."
 value = "agree"
@@ -119,5 +123,5 @@ doc = "Metric prefilter outcome label: a shadow run of the full check blocked or
 value = "disagree"
 
 [metric.prefilter]
-doc = "PreToolUse prefilter outcomes (#969 R1, defaults/prefilter.toml), by check and outcome (skip, agree, disagree)."
+doc = "PreToolUse prefilter outcomes (#969 R1, defaults/prefilter.toml), by check and outcome (skip, run, agree, disagree)."
 value = { kind = "counter", unit = "calls", labels = ["check", "outcome"] }

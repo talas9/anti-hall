@@ -36,6 +36,7 @@ pub mod prefilter;
 pub mod shellwords;
 pub mod shrink;
 pub mod spill;
+pub mod stopmemo;
 pub mod stopchan;
 pub mod stoploop;
 pub mod table;
