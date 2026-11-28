@@ -137,6 +137,10 @@ value = "broadcastWakePending"
 doc = "The summary member holding a workspace's broadcast cursor (the watcher wakes again when an ack moves it while wake-eligible broadcasts stay unread)."
 value = "broadcastWakeCursor"
 
+[mesh_wake.summary_field_head]
+doc = "The summary member holding the newest broadcast seq of the store (GH #845 P2-10): a watcher whose saved watermark is above it knows the store was recreated or re-homed (seq only ever grows) and reconciles instead of staying silent until the new seq passes the old watermark."
+value = "broadcastWakeHead"
+
 # ---- phase 1: readable broadcasts (contract §6) --------------------------------------------------------------------------------
 
 [mesh_wake.inbox_broadcast_cap]

@@ -131,6 +131,9 @@ pub struct Snapshot {
     pub bc_pending: Option<f64>,
     /// The reader's broadcast cursor (the summary's `broadcastWakeCursor`), when the row has it (re-review N-3).
     pub bc_cursor: Option<f64>,
+    /// The newest broadcast seq in the store (the summary's `broadcastWakeHead`), when the row has it (GH #845 P2-10): a head below the
+    /// saved watermark means the store was recreated or re-homed (seq only ever grows), so the watermark is stale.
+    pub bc_head: Option<f64>,
     /// The workspace's direct mail it has not read yet (the summary's `directUnread`), `None` when unknown.
     pub unread: Option<f64>,
     /// Wake coalescing (GH #884, `devswarm.wakeWatchCoalesce`): `Some(ms)` when it applies to this watcher, the time after which a
@@ -458,12 +461,25 @@ fn tick_core(state: &State, snap: &Snapshot) -> (State, Vec<String>) {
         // GH #845 watermark: wake when the highest eligible unread seq passes the saved one (never on a count edge, which a drain
         // plus a new arrival between two polls would hide). A watcher with no saved watermark wakes once for pending eligible mail.
         let pending = snap.bc_pending.unwrap_or(0.0);
+        // GH #845 P2-10: seq only ever grows, so a store head below the saved watermark means the store was recreated or re-homed and the
+        // watermark belongs to the old one: forget it (and what was seen of it) and reconcile like a watcher with no watermark
+        if snap.bc_head.is_some_and(|head| head < st.last_bc_seq) {
+            st.last_bc_seq = 0.0;
+            st.bc_seq_missing = true;
+            st.last_bc_pending = None;
+            st.last_bc_cursor = None;
+        }
         // the line shows how many unread broadcasts wake the workspace (`0 -> N`), in the legacy line text
         let line = || wake_line(snap, 0.0, pending.max(1.0), Some(text("wake_watch.label_broadcast")));
         // review P1-2: a (re)armed watcher, or one with no trusted watermark, prints once for pending eligible mail, so a line lost
         // to a closed pipe or a restart after the watermark was saved still reaches the workspace
         let cursor_moved = matches!((snap.bc_cursor, st.last_bc_cursor), (Some(now), Some(was)) if now > was);
         let reacked = pending > 0.0 && (st.last_bc_pending.is_some_and(|was| pending < was) || cursor_moved);
+        // GH #845 P2-11: more rows wake the workspace than at the last read while none passed the watermark: rows at or under it became
+        // eligible after the fact (the audience mode changed, or a legacy row now resolves against a roster that gained an id). Only
+        // from an outstanding set (the old count above 0): a row that reappears under the watermark after a drain is a stale write,
+        // and eligibility that widens from nothing waits for the next arrival or re-arm (documented limit)
+        let widened = st.last_bc_pending.is_some_and(|was| was > 0.0 && pending > was);
         if st.bc_seq_missing || st.bc_arm_due {
             st.bc_arm_due = false;
             if pending > 0.0 {
@@ -476,7 +492,7 @@ fn tick_core(state: &State, snap: &Snapshot) -> (State, Vec<String>) {
             lines.push(line());
             st.woke_broadcast += 1;
             st.last_bc_seq = s;
-        } else if reacked {
+        } else if reacked || widened {
             lines.push(line());
             st.woke_broadcast += 1;
         }

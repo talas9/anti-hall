@@ -124,6 +124,8 @@ pub struct Part {
     pub pending: Option<f64>,
     /// Broadcast channel only: `wake_watch.field_broadcast_cursor` (the reader's broadcast cursor), when the row has it.
     pub cursor: Option<f64>,
+    /// Broadcast channel only: `wake_watch.field_broadcast_head` (the newest broadcast seq in the store), when the row has it.
+    pub head: Option<f64>,
 }
 
 fn unresolvable() -> Part {
@@ -183,7 +185,8 @@ pub fn read_broadcast(home: &Path, hashes: Option<&Hashes>, id: &str) -> Part {
     let seq = row.and_then(|w| w.get(text("wake_watch.field_broadcast_seq")).map(|v| finite(Some(v))));
     let pending = row.and_then(|w| finite(w.get(text("wake_watch.field_broadcast_pending"))));
     let cursor = row.and_then(|w| finite(w.get(text("wake_watch.field_broadcast_cursor"))));
-    Part { ok: true, error: None, total: row.and_then(|w| finite(w.get(text("wake_watch.field_broadcast")))), unread: None, seq, pending, cursor }
+    let head = row.and_then(|w| finite(w.get(text("wake_watch.field_broadcast_head"))));
+    Part { ok: true, error: None, total: row.and_then(|w| finite(w.get(text("wake_watch.field_broadcast")))), unread: None, seq, pending, cursor, head }
 }
 
 /// `attachBroadcastChannel`: fold the broadcast channel into a snapshot, failing closed with whatever the direct channels said.
@@ -193,6 +196,7 @@ pub fn attach_broadcast(mut snap: Snapshot, home: &Path, hashes: Option<&Hashes>
     snap.bc_seq = b.seq;
     snap.bc_pending = b.pending;
     snap.bc_cursor = b.cursor;
+    snap.bc_head = b.head;
     let base_ok = snap.ok;
     snap.ok = base_ok && b.ok;
     let b_err = b.error.unwrap_or_default();

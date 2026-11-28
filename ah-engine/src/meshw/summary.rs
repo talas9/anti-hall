@@ -648,6 +648,7 @@ pub fn compute(st: &MeshStore, inv: &Inv, _touched: Option<&str>) -> R<OVal> {
     let pq_cap = defaults::num("mesh_write.summary_pending_questions_cap") as usize;
     let bpart = defaults::text("mesh_write.broadcast_partition");
     let broadcast_all = messages(st, bpart, 0.0)?;
+    let bc_head = broadcast_all.iter().filter_map(|r| r.store_seq).filter(|q| q.is_finite()).reduce(f64::max);
     // GH #845 (contract §3-§4): who each unread broadcast wakes. The stored audience is decoded, and a legacy row's audience
     // resolved, once per call, the first time some reader has the row unread.
     let mode = crate::meshw::wakepolicy::Mode::load();
@@ -886,6 +887,8 @@ pub fn compute(st: &MeshStore, inv: &Inv, _touched: Option<&str>) -> R<OVal> {
             (defaults::text("mesh_wake.summary_field_pending").into(), n(wake_pending as f64)),
             // re-review N-3: the reader's broadcast cursor, so a watcher sees an ack that left wake-eligible rows unread
             (defaults::text("mesh_wake.summary_field_cursor").into(), n(bc_cursor)),
+            // P2-10: the newest broadcast seq of the store, so a watcher sees a store that was recreated (its seq restarted below the watermark)
+            (defaults::text("mesh_wake.summary_field_head").into(), opt_num(bc_head)),
             ("urgencyMax".into(), urgency_max),
             ("broadcastUrgencyMax".into(), max_urgency(unread_bc.iter().map(|(_, r)| *r))),
             ("working_on".into(), working_on),

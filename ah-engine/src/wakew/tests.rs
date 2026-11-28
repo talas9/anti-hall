@@ -628,3 +628,44 @@ fn held_mail_nobody_read_still_waits_for_the_rewake_window() {
     let (st, lines) = tick(&st, &win(60_000.0, 2.0, 2.0, None, 0.0));
     assert!(lines.is_empty() && st.win_open_ms.is_none(), "{lines:?}");
 }
+
+// ---- review follow-ups P2-10 / P2-11 (GH #845 phase 2) -----------------------------------------------------------------------
+
+/// P2-10: the store was recreated or re-homed, so its seq restarts low while the saved watermark stays high. A head below the
+/// watermark (seq only ever grows) means the watermark is stale: the watcher reconciles, and wakes once for the pending mail.
+#[test]
+fn a_store_reset_below_the_saved_watermark_reconciles_instead_of_going_silent() {
+    let st = State { armed: true, last_total: 1.0, last_total2: 1.0, last_bc_seq: 500.0, last_bc_pending: Some(0.0), ..State::default() };
+    let reset = |seq: f64, head: f64| Snapshot { bc_head: Some(head), ..bc(Some(seq), 1.0) };
+    let (after, lines) = tick(&st, &reset(9.0, 10.0));
+    assert_eq!((lines.len(), after.last_bc_seq, after.bc_seq_missing), (1, 9.0, false), "the new store's mail wakes: {lines:?}");
+    let (_, lines) = tick(&after, &reset(11.0, 12.0));
+    assert_eq!(lines.len(), 1, "and the watermark follows the new store: {lines:?}");
+}
+
+/// P2-10: a head at or above the watermark is the same store; a row without the head (an older writer) is never read as a reset.
+#[test]
+fn a_head_at_or_above_the_watermark_or_no_head_is_never_a_reset() {
+    let st = State { armed: true, last_total: 1.0, last_total2: 1.0, last_bc_seq: 500.0, last_bc_pending: Some(1.0), ..State::default() };
+    let (after, lines) = tick(&st, &Snapshot { bc_head: Some(500.0), ..bc(Some(500.0), 1.0) });
+    assert!(lines.is_empty() && after.last_bc_seq == 500.0, "{lines:?}");
+    let (_, lines) = tick(&st, &bc(Some(9.0), 1.0));
+    assert!(lines.is_empty(), "no head: nothing says the store was reset: {lines:?}");
+}
+
+/// P2-11: rows at or under the watermark that become wake-eligible after the fact (the config changed, or a legacy row now resolves
+/// against a roster that gained an id) raise the pending count without raising the highest seq: that wakes.
+#[test]
+fn rows_that_become_eligible_under_the_watermark_wake() {
+    let st = State { armed: true, last_total: 1.0, last_total2: 1.0, last_bc_seq: 100.0, last_bc_pending: Some(1.0), ..State::default() };
+    let (after, lines) = tick(&st, &bc(Some(100.0), 3.0));
+    assert_eq!(lines.len(), 1, "pending rose 1 -> 3 with the highest seq unchanged: {lines:?}");
+    assert_eq!(after.last_bc_seq, 100.0, "the watermark never goes down");
+    let (_, lines) = tick(&after, &bc(Some(100.0), 3.0));
+    assert!(lines.is_empty(), "once: {lines:?}");
+    let (_, lines) = tick(&st, &bc(Some(100.0), 1.0));
+    assert!(lines.is_empty(), "an unchanged count is not new eligibility: {lines:?}");
+    let from_nothing = State { last_bc_pending: Some(0.0), ..st };
+    let (_, lines) = tick(&from_nothing, &bc(Some(100.0), 1.0));
+    assert!(lines.is_empty(), "a row reappearing under the watermark after a drain is a stale write, not a wake: {lines:?}");
+}

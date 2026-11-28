@@ -283,6 +283,10 @@ value = "broadcastWakePending"
 doc = "The summary member holding the workspace's broadcast cursor: an ack that moves it while wake-eligible broadcasts stay unread wakes the workspace again (re-review N-3)."
 value = "broadcastWakeCursor"
 
+[wake_watch.field_broadcast_head]
+doc = "The summary member holding the newest broadcast seq of the store (GH #845 P2-10): a saved watermark above it means the store was recreated or re-homed, so the watcher drops the watermark and reconciles."
+value = "broadcastWakeHead"
+
 [wake_watch.seen_version]
 doc = "The `seenVersion` this build writes into the cursor file; a file below it has no broadcast watermark yet and is reconciled from field_broadcast_pending."
 value = 2
