@@ -61,6 +61,15 @@ pub struct State {
     /// The arm print is still owed: set when the watcher arms, cleared only by a tick that reads the broadcast watermark, so an arm
     /// whose first read failed or lacked the field still prints (re-review N-4).
     pub bc_arm_due: bool,
+    /// The coalesce window (GH #845 phase 2) is open since this time (memory only): the first wake edge opens it, nothing prints and no
+    /// cursor or watermark moves until it closes, then one line covers every channel. `None`: no window is open.
+    pub win_open_ms: Option<f64>,
+    /// The workspace's unread direct count at the last read (memory only): a held wake whose unread count fell since was used, so
+    /// the mail still unread wakes again at the next window close instead of after the re-wake window.
+    pub last_unread: Option<f64>,
+    /// The last tick's broadcast line was merged into the mail line of the same tick: the watermark moved with it, so a failed print
+    /// rolls it back like a line of its own.
+    pub bc_merged: bool,
 }
 
 impl Default for State {
@@ -88,6 +97,9 @@ impl Default for State {
             last_bc_pending: None,
             last_bc_cursor: None,
             bc_arm_due: false,
+            win_open_ms: None,
+            last_unread: None,
+            bc_merged: false,
         }
     }
 }
@@ -124,6 +136,9 @@ pub struct Snapshot {
     /// Wake coalescing (GH #884, `devswarm.wakeWatchCoalesce`): `Some(ms)` when it applies to this watcher, the time after which a
     /// still-undrained workspace is woken again (`devswarm.wakeWatchRewakeMs`); `None` when off.
     pub coalesce_ms: Option<f64>,
+    /// The coalesce window (GH #845 phase 2, `devswarm.wakeWatchWindowMs`): `Some(ms)` when it applies to this watcher (setting above 0
+    /// and the role in `wake_watch.window_roles`), `None` when off: the lines are then exactly the ones of the phase 1 watcher.
+    pub window_ms: Option<f64>,
 }
 
 fn text(key: &str) -> &'static str {
@@ -230,18 +245,85 @@ fn note_wake(st: &mut State, snap: &Snapshot) {
     }
 }
 
-/// Review P1-2: the tick's lines were (`printed`) or were not all written out. A broadcast line that did not reach the workspace
-/// must not move the watermark: the old one is kept and marked unknown (never saved), so the next tick prints again.
+/// Review P1-2: the tick's lines were (`printed`) or were not all written out. A wake line that did not reach the workspace must not
+/// move what it announced: the broadcast watermark is kept and marked unknown (never saved), the direct cursors and the outstanding
+/// wake are restored, and an open coalesce window stays due, so the next tick prints again.
 pub fn undo_unprinted(before: &State, mut after: State, printed: bool) -> State {
-    if !printed && after.woke_broadcast > 0 {
+    if printed {
+        return after;
+    }
+    if after.woke_broadcast > 0 || after.bc_merged {
         after.last_bc_seq = before.last_bc_seq;
         after.bc_seq_missing = true;
+    }
+    if after.woke_mail > 0 {
+        after.last_total = before.last_total;
+        after.last_total2 = before.last_total2;
+        after.woke_ms = before.woke_ms;
+        after.woke_total2 = before.woke_total2;
+        after.woke_unread = before.woke_unread;
+        after.held_pending = before.held_pending;
+    }
+    if after.woke_mail > 0 || after.woke_broadcast > 0 || after.bc_merged {
+        after.win_open_ms = before.win_open_ms;
     }
     after
 }
 
-/// `tick(state, snapshot)` -> the new state and the lines to print.
+/// `tick(state, snapshot)` -> the new state and the lines to print: the phase 1 core plus the coalesce window (GH #845 phase 2).
+///
+/// With a window (`snap.window_ms`), the first wake edge opens it and nothing prints: no cursor, watermark or outstanding wake moves
+/// either (a restart inside the window loses nothing), only the arm bookkeeping and the error recovery do. Once `window_ms` has
+/// passed, the edge, if it still holds, prints ONE line for every channel due; a mesh-direct edge the workspace has since read
+/// (unread count 0) prints nothing and its cursors advance silently. Without a window the lines are the core's own.
 pub fn tick(state: &State, snap: &Snapshot) -> (State, Vec<String>) {
+    let (mut st, mut lines) = tick_core(state, snap);
+    st.bc_merged = false;
+    let Some(window) = snap.window_ms.filter(|w| *w > 0.0).filter(|_| snap.ok) else {
+        return (st, lines);
+    };
+    let wake = (st.woke_mail + st.woke_broadcast) as usize;
+    if wake == 0 {
+        st.win_open_ms = None;
+        return (st, lines);
+    }
+    let prefix = lines.len().saturating_sub(wake);
+    let opened = state.win_open_ms;
+    if opened.is_none_or(|o| snap.now_ms - o < window) {
+        let mut kept = state.clone();
+        kept.held = 0;
+        kept.woke_mail = 0;
+        kept.woke_broadcast = 0;
+        kept.armed = st.armed;
+        kept.bc_arm_due = kept.bc_arm_due || (!state.armed && st.armed);
+        kept.consec_errors = st.consec_errors;
+        kept.backoff_idx = st.backoff_idx;
+        kept.last_error_emit_ms = st.last_error_emit_ms;
+        kept.win_open_ms = Some(opened.unwrap_or(snap.now_ms));
+        lines.truncate(prefix);
+        return (kept, lines);
+    }
+    st.win_open_ms = None;
+    let ndjson_moved = snap.total.is_some_and(|t| t > state.last_total);
+    if st.woke_broadcast == 0 && !ndjson_moved && snap.unread.is_some_and(|u| u <= 0.0) {
+        // the workspace read its mail inside the window: no wake is owed, no wake is outstanding
+        lines.truncate(prefix);
+        st.woke_mail = 0;
+        st.woke_ms = None;
+        st.held_pending = false;
+        return (st, lines);
+    }
+    if st.woke_mail > 0 && st.woke_broadcast > 0 {
+        // one line covers both channels: the drain delivers the direct and the broadcast mail together
+        lines.pop();
+        st.woke_broadcast = 0;
+        st.bc_merged = true;
+    }
+    (st, lines)
+}
+
+/// The phase 1 core of [`tick`]: every edge prints at once.
+fn tick_core(state: &State, snap: &Snapshot) -> (State, Vec<String>) {
     let mut st = state.clone();
     st.held = 0;
     st.woke_mail = 0;
@@ -304,6 +386,12 @@ pub fn tick(state: &State, snap: &Snapshot) -> (State, Vec<String>) {
         st.woke_ms = None;
         st.held_pending = false;
     }
+    // GH #845 item 2: the workspace read part of the mail a held wake stood for (its unread count fell and some is still unread): the
+    // wake was used, and the mail left (it landed between a drain's scan and its ack) is owed a wake of its own
+    let reread = st.held_pending && snap.unread.zip(st.last_unread).is_some_and(|(now, was)| now > 0.0 && now < was);
+    if snap.unread.is_some() {
+        st.last_unread = snap.unread;
+    }
     let has_channel2 = snap.total2.is_some();
     let total = snap.total;
     let total2 = snap.total2.flatten();
@@ -331,7 +419,7 @@ pub fn tick(state: &State, snap: &Snapshot) -> (State, Vec<String>) {
         }
     } else if st.held_pending
         && let (Some(rewake), Some(at), Some(Some(t2))) = (snap.coalesce_ms, st.woke_ms, snap.total2)
-        && snap.now_ms - at >= rewake
+        && (snap.now_ms - at >= rewake || reread)
     {
         // held mail still unread after the re-wake window: one wake for all of it
         lines.push(wake_line(snap, st.woke_total2, t2, Some(text("wake_watch.label_mesh_direct"))));

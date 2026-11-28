@@ -389,6 +389,7 @@ value = [
   "{\"section\":\"devswarm\",\"key\":\"wakeWatchIdleSkip\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_DEVSWARM_WAKE_WATCH_IDLE_SKIP\",\"pluginOption\":\"devswarm_wake_watch_idle_skip\"}",
   "{\"section\":\"devswarm\",\"key\":\"wakeWatchCoalesce\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_DEVSWARM_WAKE_WATCH_COALESCE\"}",
   "{\"section\":\"devswarm\",\"key\":\"wakeWatchRewakeMs\",\"type\":\"number\",\"default\":600000,\"min\":0,\"env\":\"ANTIHALL_DEVSWARM_WAKE_WATCH_REWAKE_MS\"}",
+  "{\"section\":\"devswarm\",\"key\":\"wakeWatchWindowMs\",\"type\":\"number\",\"default\":4000,\"min\":0,\"max\":60000,\"env\":\"ANTIHALL_DEVSWARM_WAKE_WATCH_WINDOW_MS\"}",
   "{\"section\":\"devswarm\",\"key\":\"dispatchTierText\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_DEVSWARM_DISPATCH_TIER_TEXT\"}",
   "{\"section\":\"devswarm\",\"key\":\"inlineWorkNudge\",\"type\":\"boolean\",\"default\":true,\"env\":\"ANTIHALL_DEVSWARM_INLINE_WORK_NUDGE\"}",
   "{\"section\":\"devswarm\",\"key\":\"inlineWorkNudgeThreshold\",\"type\":\"number\",\"default\":5,\"min\":1,\"env\":\"ANTIHALL_DEVSWARM_INLINE_WORK_NUDGE_THRESHOLD\"}",

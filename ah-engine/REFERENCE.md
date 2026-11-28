@@ -6942,7 +6942,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `migrate.settings_schema` | `478 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
+| `migrate.settings_schema` | `479 items` |  |  | Every settings entry the forward-migration of settings.json reads: section, key, type, bounds, default, environment names, legacy file and key, and plugin option. |
 
 ### doctor.toml / doctor
 
@@ -9423,7 +9423,7 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
-| `settings_cli.items` | `491 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
+| `settings_cli.items` | `492 items` |  |  | Every setting with the fields `settings show` prints: type, default (null kept), advanced, locked, safetyNote and description. |
 | `settings_cli.not_toggleable` | `9 items` |  |  | The parts of anti-hall that deliberately have no switch, with the reason `settings show` prints. |
 | `settings_cli.sections` | `23 items` |  |  | The settings sections in display order: key, label, description. |
 
@@ -13777,10 +13777,12 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 | `wake_watch.set_idle_skip` | `6 entries` |  |  | The setting devswarm.wakeWatchIdleSkip: a Primary with no live child workspace need not arm (Node prints its one idle line). |
 | `wake_watch.set_poll_ms` | `7 entries` |  |  | The setting devswarm.wakeWatchPollMs: the tick of the watcher in milliseconds (lock heartbeat, parent check, stale-build check, reads). A change of a watched file wakes the tick early. |
 | `wake_watch.set_rewake_ms` | `6 entries` |  |  | The setting devswarm.wakeWatchRewakeMs: how long after a wake held mail waits before a child that still has not drained is woken again, with or without further mail (milliseconds; 0 wakes on every message). |
+| `wake_watch.set_window_ms` | `7 entries` |  |  | The setting devswarm.wakeWatchWindowMs (GH #845 phase 2): the coalesce window of the wake-watch in milliseconds. The first new-mail edge (direct or broadcast) opens it; nothing prints and no cursor or watermark moves until it closes, then ONE wake line covers every channel that is due. Mail the workspace read inside the window prints nothing. 0 wakes at once, as before. The tick is shortened to the window's end while one is open. |
 | `wake_watch.sweep_fallback_ms` | `900000` |  |  | The reconcile-sweep interval the cache age bound uses when the setting is no positive number: 15 minutes. |
 | `wake_watch.tmp_suffix` | `.tmp` |  |  | End of the temporary file a cursor is written to before the rename. |
 | `wake_watch.user_settings_rel` | `.claude/settings.json` |  |  | The user's harness settings file, relative to the home: it says which installs are enabled. |
 | `wake_watch.verb` | `wake-watch` |  |  | The `ah-engine devswarm` verb that runs the idle-wake Monitor. |
+| `wake_watch.window_roles` | `child` |  |  | The watcher roles the coalesce window applies to (wake_watch.role_primary, wake_watch.role_child). The Primary is not windowed: its summary row carries no unread count, so a line for mail it already read inside the window could not be told from a wake it still needs. |
 | `wake_watch.word_unavailable` | `unavailable` |  |  | Said where the session of a lock holder is not recorded. |
 | `wake_watch.word_unknown` | `unknown` |  |  | Said where a role, id or version is not known. |
 | `wake_watch.word_unknown_error` | `unknown read error` |  |  | Said where a failed read gave no reason. |

@@ -39,6 +39,14 @@ value = { section = "devswarm", key = "wakeWatchCoalesce", type = "boolean", env
 doc = "The setting devswarm.wakeWatchRewakeMs: how long after a wake held mail waits before a child that still has not drained is woken again, with or without further mail (milliseconds; 0 wakes on every message)."
 value = { section = "devswarm", key = "wakeWatchRewakeMs", type = "number", min = 0, default = 600000, env = "ANTIHALL_DEVSWARM_WAKE_WATCH_REWAKE_MS" }
 
+[wake_watch.set_window_ms]
+doc = "The setting devswarm.wakeWatchWindowMs (GH #845 phase 2): the coalesce window of the wake-watch in milliseconds. The first new-mail edge (direct or broadcast) opens it; nothing prints and no cursor or watermark moves until it closes, then ONE wake line covers every channel that is due. Mail the workspace read inside the window prints nothing. 0 wakes at once, as before. The tick is shortened to the window's end while one is open."
+value = { section = "devswarm", key = "wakeWatchWindowMs", type = "number", min = 0, max = 60000, default = 4000, env = "ANTIHALL_DEVSWARM_WAKE_WATCH_WINDOW_MS" }
+
+[wake_watch.window_roles]
+doc = "The watcher roles the coalesce window applies to (wake_watch.role_primary, wake_watch.role_child). The Primary is not windowed: its summary row carries no unread count, so a line for mail it already read inside the window could not be told from a wake it still needs."
+value = ["child"]
+
 [wake_watch.coalesce_roles]
 doc = "The watcher roles wake coalescing applies to (wake_watch.role_primary, wake_watch.role_child). The Primary's own mail is not coalesced: it is the coordinator."
 value = ["child"]
