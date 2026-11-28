@@ -15833,6 +15833,8 @@ Defaults ship with the plugin in `engine/defaults/*.toml` and are read at run ti
 
 | Key | Default | Env override | Unit | What it is |
 |---|---|---|---|---|
+| `mesh_identity.agent_ancestor_depth` | `16` |  |  | How many parent processes up the caller's ancestry are checked against `agent_ancestor_names`. |
+| `mesh_identity.agent_ancestor_names` | `claude, codex` |  |  | Executable names (the basename of the process path) of an agent harness (Claude Code, Codex). A caller with any of these as an ancestor process is an agent, whatever its environment says (`env -i` strips the markers, not the parentage): it is refused when it declares an identity. The owner's room server is not under one. |
 | `mesh_identity.agent_env_builder` | `DEVSWARM_BUILDER_ID` |  |  | The DevSwarm builder-id variable: set to anything but the identity being declared, it marks the caller as that builder's agent. |
 | `mesh_identity.agent_env_markers` | `10 items` |  |  | Environment variables whose presence marks the caller as an agent (Claude Code, Codex, a DevSwarm agent): such a caller is refused when it declares an identity. The owner's room spawns its sends with a clean environment that has none of them. |
 | `mesh_identity.flag_as` | `as` |  |  | `send --as <id>` (operator use): send as a declared identity (an id of `identities` with `cli = true`) instead of the caller's workspace; refused for an agent caller. |

@@ -28,6 +28,16 @@ value = ["CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SESSION_ID", "CLAU
 doc = "The DevSwarm builder-id variable: set to anything but the identity being declared, it marks the caller as that builder's agent."
 value = "DEVSWARM_BUILDER_ID"
 
+[mesh_identity.agent_ancestor_names]
+doc = "Executable names (the basename of the process path) of an agent harness (Claude Code, Codex). A caller with any of these as an ancestor process is an agent, whatever its environment says (`env -i` strips the markers, not the parentage): it is refused when it declares an identity. The owner's room server is not under one."
+value = ["claude", "codex"]
+
+[mesh_identity.agent_ancestor_depth]
+doc = "How many parent processes up the caller's ancestry are checked against `agent_ancestor_names`."
+value = 16
+min = 1
+max = 64
+
 [mesh_identity.msg_agent_refused]
 doc = "The refusal text of a send whose caller is an agent but declares an identity; `{name}` is filled in."
 value = "an agent cannot send as {name}: declared identities are the owner's (and the engine's) only. Send as yourself (drop --as and the sender variable)."
