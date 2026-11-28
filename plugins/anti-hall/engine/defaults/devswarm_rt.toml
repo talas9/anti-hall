@@ -112,6 +112,10 @@ value = "branchName"
 doc = "The `builders` repository id column."
 value = "repositoryId"
 
+[devswarm_rt.col_parent]
+doc = "The `builders` parent workspace id column (a poke runs in the parent's worktree)."
+value = "parentBuilderId"
+
 [devswarm_rt.col_label]
 doc = "The `builders` label column."
 value = "label"
