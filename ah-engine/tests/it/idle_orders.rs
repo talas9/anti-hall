@@ -464,3 +464,77 @@ fn a_working_child_with_a_stale_heartbeat_is_ordered_and_recorded_for_the_gate()
     std::fs::write(e.dir.join("home/.anti-hall/settings.json"), r#"{"devswarm":{"rosterOrders":false}}"#).unwrap();
     assert!(!turn(&e, "flag-2", &[]).contains("Do now: ask"), "switched off");
 }
+
+// ---- field report 0.3.32: a workspace that delivered (own commits, pushed) is not "delivered nothing"; an inherited commit is not unpushed work ----
+
+/// A working child whose checkout was created at `created` (a git date) and whose one own commit is dated `commit` (`None`: no own commit);
+/// its heartbeat reports `push` (`noUpstream`, `unpushed`).
+fn workspace_with(name: &str, created: &str, commit: Option<&str>, push: (bool, u32)) -> Env {
+    let e = Env::new(name);
+    let git = |dir: &std::path::Path, date: &str, args: &[&str]| {
+        let o = Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .env("GIT_CEILING_DIRECTORIES", &e.dir)
+            .env("GIT_AUTHOR_NAME", "t")
+            .env("GIT_AUTHOR_EMAIL", "t@example.invalid")
+            .env("GIT_COMMITTER_NAME", "t")
+            .env("GIT_COMMITTER_EMAIL", "t@example.invalid")
+            .env("GIT_COMMITTER_DATE", date)
+            .env("GIT_AUTHOR_DATE", date)
+            .output()
+            .unwrap();
+        assert!(o.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&o.stderr));
+    };
+    git(&e.repo, "2020-01-01T00:00:00", &["commit", "-q", "--allow-empty", "-m", "base"]);
+    let wt = e.dir.join("home/.devswarm/repos/3/8205fc11/child-wt");
+    std::fs::create_dir_all(wt.parent().unwrap()).unwrap();
+    git(&e.repo, created, &["worktree", "add", "-q", "-b", "child", wt.to_str().unwrap()]);
+    if let Some(c) = commit {
+        git(&wt, c, &["commit", "-q", "--allow-empty", "-m", "own work"]);
+    }
+    e.summary(wt.to_str().unwrap(), 0, "normal", false);
+    e.materialize();
+    e.put(&format!("heartbeats/{CHILD}.json"), serde_json::json!({"ts": now_ms() - 60_000, "summary": "working", "noUpstream": push.0, "unpushed": push.1}));
+    e
+}
+
+/// A git date `min` minutes ago (`@<unix seconds> <zone>`).
+fn minutes_ago(min: i64) -> String {
+    format!("@{} +0000", now_ms() as i64 / 1000 - min * 60)
+}
+
+#[test]
+fn a_pushed_workspace_with_its_own_commits_is_not_stalled_delivered_nothing() {
+    // created long ago, last own commit 108 min ago and pushed: waiting on review or CI, not stalled
+    let e = workspace_with("deliv-pushed", "2020-01-02T00:00:00", Some(&minutes_ago(108)), (false, 0));
+    turn(&e, "deliv-1", &[]);
+    first_seen(&e, 200);
+    let out = turn(&e, "deliv-1", &[]);
+    assert!(!out.contains(STALL_FIRST), "pushed own work is delivered, got: {out}");
+    // controls: the same workspace with a commit not pushed, or with no upstream, is still named
+    for (name, push) in [("deliv-unpushed", (false, 1)), ("deliv-noup", (true, 0))] {
+        let e = workspace_with(name, "2020-01-02T00:00:00", Some(&minutes_ago(108)), push);
+        turn(&e, "deliv-2", &[]);
+        first_seen(&e, 200);
+        let out = turn(&e, "deliv-2", &[]);
+        assert!(out.contains(STALL_FIRST), "{name}: not delivered, still stalled, got: {out}");
+    }
+    // control: a pushed workspace with no commit of its own (the commit it was cut from is old) is still stalled
+    let e = workspace_with("deliv-nocommit", &minutes_ago(300), None, (false, 0));
+    turn(&e, "deliv-3", &[]);
+    first_seen(&e, 200);
+    assert!(turn(&e, "deliv-3", &[]).contains(STALL_FIRST), "no commit of its own: nothing delivered");
+}
+
+#[test]
+fn an_unpushed_commit_older_than_the_checkout_is_not_the_workspaces_work() {
+    const FLAG: &str = "unpushed, newest";
+    // control: its own unpushed commit, 40 min old (past the 30 min threshold)
+    let e = workspace_with("unp-own", "2020-01-02T00:00:00", Some(&minutes_ago(40)), (false, 1));
+    assert!(turn(&e, "unp-1", &[]).contains(FLAG), "an own unpushed commit past the threshold is flagged");
+    // the commit it was cut from is 569 min old and the checkout is newer: inherited, not flagged
+    let e = workspace_with("unp-inherited", &minutes_ago(120), Some(&minutes_ago(569)), (false, 1));
+    let out = turn(&e, "unp-2", &[]);
+    assert!(!out.contains(FLAG), "an inherited commit is not the workspace's unpushed work, got: {out}");
+}

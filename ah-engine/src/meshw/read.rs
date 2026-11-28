@@ -125,9 +125,18 @@ fn run_inner(inv: &Inv, a: &Args, history: bool) -> R<Answer> {
     }
     let aliases = common::read_aliases(home, &inv.env);
     let mut unseen: Vec<serde_json::Value> = Vec::new();
+    // GH #845 phase 2a: a room message the caller was not a member of is not listed (a consuming read still moves past it)
+    let extras = st.reader().extras_of(defaults::text("mesh_write.broadcast_partition"), since_seq as i64).unwrap_or_default();
+    let room_of = |m: &serde_json::Value| {
+        let q = m["storeSeq"].as_f64()? as i64;
+        crate::meshw::wakepolicy::decode(extras.get(&q)?.1.as_deref())
+    };
     st.reader()
         .for_each_message(defaults::text("mesh_write.broadcast_partition"), 0, |m| {
-            if !m["isHeartbeat"].as_bool().unwrap_or(false) && m["storeSeq"].as_f64().is_some_and(|q| q > since_seq) {
+            if !m["isHeartbeat"].as_bool().unwrap_or(false)
+                && m["storeSeq"].as_f64().is_some_and(|q| q > since_seq)
+                && !crate::meshw::wakepolicy::hidden(room_of(&m).as_ref(), &cursor_key)
+            {
                 unseen.push(m);
             }
             true
@@ -266,7 +275,7 @@ fn scan_broadcasts(r: &crate::mesh::MeshReader, inv: &Inv, reader: &str, list: b
     let (mut listed_other, mut listed_waking) = (0usize, 0usize);
     let mut contiguous = true;
     let (mut wake_pending, mut wake_seq) = (0usize, None::<i64>);
-    r.for_each_message(bpart, 0, |m| {
+    r.for_each_message_after_seq(bpart, cursor, |m| {
         let Some(q) = m["storeSeq"].as_f64().filter(|q| q.is_finite() && *q as i64 > cursor).map(|q| q as i64) else { return true };
         let sender = m["sender"].as_str();
         if m["isHeartbeat"].as_bool().unwrap_or(false) || sender.is_some_and(|x| family.contains(x)) {
@@ -277,6 +286,10 @@ fn scan_broadcasts(r: &crate::mesh::MeshReader, inv: &Inv, reader: &str, list: b
         let needs_reply = m["needsReply"].as_bool().unwrap_or(false);
         let (kind, stored) = extras.get(&q).map_or((None, None), |(k, a)| (k.as_deref(), a.as_deref()));
         let stored = crate::meshw::wakepolicy::decode(stored);
+        // GH #845 phase 2a: a room message the reader was not a member of is passed over (an ack moves through it)
+        if crate::meshw::wakepolicy::hidden(stored.as_ref(), reader) {
+            return true;
+        }
         let legacy = || {
             let kind = m[defaults::text("mesh_identity.row_kind_field")].as_str();
             let b = crate::meshw::wakepolicy::Bc { sender, urgency: m["urgency"].as_str(), question: needs_reply, heartbeat: false, body, kind };
@@ -311,6 +324,9 @@ fn scan_broadcasts(r: &crate::mesh::MeshReader, inv: &Inv, reader: &str, list: b
             .put("seq", n(q as f64))
             .put("needsReply", OVal::Bool(needs_reply))
             .put("addressed", OVal::Bool(addressed));
+        if let Some(room) = crate::meshw::wakepolicy::room_of(stored.as_ref()) {
+            b.put(defaults::text("mesh_room.key_room"), s(room));
+        }
         if alias.is_some() {
             b.put("fromLabel", s_or_null(sender));
         }
@@ -450,6 +466,100 @@ mod tests {
         let again = unread_broadcasts(st.reader(), &inv, "w-a").unwrap();
         assert_eq!(again.rows.len(), 1, "the arrival is still unread");
         assert_eq!(again.rows[0].get("message"), Some(&OVal::Str("arrived during the read".into())));
+    }
+
+    /// GH #845 P2-12: a drain reads the rows past its cursor, not the whole partition: a reader at the head of a long partition
+    /// materialises nothing it has already read, and what it lists is what the full scan listed.
+    #[test]
+    fn a_drain_reads_only_the_rows_past_the_cursor() {
+        let (_d, st, inv) = scratch("bounded");
+        for i in 0..300 {
+            broadcast(&st, "w-b", &format!("m{i}"), i + 1);
+        }
+        let head = st.reader().broadcast_cursor("w-b").unwrap().max(300) as i64;
+        st.raise_broadcast_cursor("w-a", head, 1).unwrap();
+        broadcast(&st, "w-b", "new one", 1_000);
+        let (mut read, mut past) = (0usize, 0usize);
+        let cursor = st.reader().broadcast_cursor("w-a").unwrap() as i64;
+        st.reader()
+            .for_each_message_after_seq(defaults::text("mesh_write.broadcast_partition"), cursor, |m| {
+                read += 1;
+                past += usize::from(m["storeSeq"].as_i64().is_some_and(|q| q > cursor));
+                true
+            })
+            .unwrap();
+        assert_eq!((read, past), (1, 1), "only the arrival past the cursor is read");
+        let again = unread_broadcasts(st.reader(), &inv, "w-a").unwrap();
+        assert_eq!(again.rows.len(), 1);
+        assert_eq!(again.rows[0].get("message"), Some(&OVal::Str("new one".into())));
+    }
+
+    /// GH #845 P2-12 measurement (not a gate): `AH_BENCH_STORE=<devswarm.db> cargo-q.sh nextest run --run-ignored only --no-capture -E
+    /// 'test(bench_bounded_scans)'` times the old whole-partition read patterns against the cursor-bounded ones on a real store,
+    /// opened read-only (nothing is copied or written).
+    #[test]
+    #[ignore = "measurement against a real store: set AH_BENCH_STORE"]
+    fn bench_bounded_scans() {
+        let Some(db) = std::env::var_os("AH_BENCH_STORE") else { return };
+        let r = crate::mesh::MeshReader::open(std::path::Path::new(&db)).unwrap();
+        let bpart = defaults::text("mesh_write.broadcast_partition");
+        let head = r.max_seq_of(bpart).unwrap().unwrap_or(0);
+        let cursor = head - 20;
+        let time = |name: &str, f: &dyn Fn() -> usize| {
+            let t = std::time::Instant::now();
+            let (mut n, runs) = (0, 5);
+            for _ in 0..runs {
+                n = f();
+            }
+            eprintln!("{name:<44} {:>8.2} ms/call  ({n} rows materialised)", t.elapsed().as_secs_f64() * 1000.0 / runs as f64);
+        };
+        let full = || {
+            let mut n = 0;
+            r.for_each_message(bpart, 0, |_| {
+                n += 1;
+                true
+            })
+            .unwrap();
+            n + r.extras_of(bpart, 0).unwrap().len()
+        };
+        let bounded = || {
+            let mut n = 0;
+            r.for_each_message_after_seq(bpart, cursor, |_| {
+                n += 1;
+                true
+            })
+            .unwrap();
+            n + r.extras_of(bpart, cursor).unwrap().len()
+        };
+        eprintln!("partition head seq {head}, reader cursor {cursor}");
+        time("drain/tick  OLD whole partition", &full);
+        time("drain/tick  NEW past the cursor", &bounded);
+        let summary_old = || full();
+        let summary_new = || {
+            let mut n = bounded();
+            n += usize::from(r.max_seq_of(bpart).unwrap().is_some());
+            n += r.last_heartbeats_of(bpart).unwrap().len();
+            n + r.last_messages(bpart, 51).unwrap().len()
+        };
+        time("summary     OLD whole partition (+extras)", &summary_old);
+        time("summary     NEW unread+heartbeats+tail 51", &summary_new);
+    }
+
+    /// GH #845 P2-12: opening the store for writing creates the indexes the bounded reads walk (additive; Node ignores them).
+    #[test]
+    fn opening_the_store_creates_the_seq_heartbeat_and_workspace_indexes() {
+        let (d, _st, _inv) = scratch("indexes");
+        let c = rusqlite::Connection::open_with_flags(d.join("devswarm.db"), rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+        let names: Vec<String> = c
+            .prepare("SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = 'messages'")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(0))
+            .unwrap()
+            .filter_map(Result::ok)
+            .collect();
+        for want in ["idx_messages_seq", "idx_messages_heartbeat", "idx_messages_workspace"] {
+            assert!(names.iter().any(|n| n == want), "{want} missing from {names:?}");
+        }
     }
 
     /// The cap lists the OLDEST unread and the ack stops at the last listed: the rest wait for the next drain (`more`).

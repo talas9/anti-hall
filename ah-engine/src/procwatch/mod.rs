@@ -38,6 +38,7 @@ pub struct Sweep {
     sessions: HashMap<u32, String>,
     growth: Vec<(std::path::PathBuf, u64)>,
     growth_s: u64,
+    reclaim: Vec<disk::Reclaim>,
     disk_seen: HashMap<u64, (disk::Level, u64)>,
     leaks: Vec<broker::Leak>,
     leak_known: HashSet<(u32, u64)>,
@@ -185,8 +186,10 @@ pub fn run_with(host: &mut dyn Host, sw: &mut Sweep, state_dir: &Path, home: &st
         sw.disk_seen.retain(|d, _| vols.iter().any(|v| v.space.dev == *d && v.level != disk::Level::Ok));
         if worst == disk::Level::Ok {
             sw.growth.clear();
+            sw.reclaim.clear();
         } else if now.saturating_sub(sw.growth_s) >= defaults::num("disk_watch.growth_every_s") {
             sw.growth = disk::growth(&paths);
+            sw.reclaim = disk::reclaim(std::path::Path::new(home));
             sw.growth_s = now;
         }
         let vj: Vec<Value> = vols
@@ -194,7 +197,8 @@ pub fn run_with(host: &mut dyn Host, sw: &mut Sweep, state_dir: &Path, home: &st
             .map(|v| json!({"path": v.path.to_string_lossy(), "dev": v.space.dev, "free": disk::human(v.space.free), "pct": format!("{:.0}", disk::pct_free(&v.space)), "level": v.level.name()}))
             .collect();
         let gj: Vec<Value> = sw.growth.iter().map(|(p, s)| json!({"path": p.to_string_lossy(), "size": disk::human(*s)})).collect();
-        disk_json = json!({"volumes": vj, "growth": gj});
+        let rj: Vec<Value> = sw.reclaim.iter().map(|r| json!({"path": r.path.to_string_lossy(), "size": disk::human(r.size), "cmd": r.cmd})).collect();
+        disk_json = json!({"volumes": vj, "growth": gj, "reclaim": rj});
     }
 
     // ---- report ----

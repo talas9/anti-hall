@@ -11,7 +11,7 @@ Read the DevSwarm message store and per-project mailboxes.
 
 | Verb | What it does | Roles |
 |---|---|---|
-| `ah-engine mesh` | `<unread\|dump\|read <id>> [--db <devswarm.db>] [--since <n>] [--last <n>] \| roster --db <devswarm.db> \| <mesh verb argv>` DevSwarm mesh store (D45) | main, codex, workspace*, subagent |
+| `ah-engine mesh` | `<unread\|dump\|read <id>> [--db <devswarm.db>] [--since <n>] [--last <n>] \| roster --db <devswarm.db> \| room <create\|join\|leave> <name> \| room list \| send --room <name> --message <text> \| send --to admin --message <text> \| send --reply-to <seq> --message <text> \| <mesh verb argv>` DevSwarm mesh store (D45) | main, codex, workspace*, subagent |
 | `ah-engine proj` | `<cwd> <put\|take\|len\|set\|setex\|get> [args]` Per-project state in hot.db: a mailbox (put, take, len) and key-value pairs (set, setex with a... | main, codex, workspace* |
 
 ## Switches
@@ -21,6 +21,7 @@ Read the DevSwarm message store and per-project mailboxes.
 - `devswarm.wakeWatchIdleSkip` = true: The setting devswarm.wakeWatchIdleSkip: a Primary with no live child workspace need not arm...
 - `devswarm.wakeWatchPollMs` = 2000: The setting devswarm.wakeWatchPollMs: the tick of the watcher in milliseconds (lock heartbeat,...
 - `devswarm.wakeWatchRewakeMs` = 600000: The setting devswarm.wakeWatchRewakeMs: how long after a wake held mail waits before a child...
+- `devswarm.wakeWatchWindowMs` = 4000: The setting devswarm.wakeWatchWindowMs (GH #845 phase 2): the coalesce window of the wake-watch...
 - `devswarm.wakeWatchRearmCooldownMs` = 1800000: Minimum gap between watcher arm orders, milliseconds
 
 _Generated from the engine registry by `ah-engine docs --format skill`; do not edit by hand._

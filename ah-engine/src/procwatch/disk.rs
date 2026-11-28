@@ -203,6 +203,85 @@ pub fn growth(roots: &[PathBuf]) -> Vec<(PathBuf, u64)> {
     finish(found, min)
 }
 
+/// One known-reclaimable location found on disk (`disk_watch.reclaim_locations`): its path, size and the command that frees it.
+pub struct Reclaim {
+    /// The directory.
+    pub path: PathBuf,
+    /// Its size in bytes (a floor when the scan budget ran out).
+    pub size: u64,
+    /// The command that frees it, `None` for a location the owner's own tool clears.
+    pub cmd: Option<String>,
+}
+
+/// Whether `name` fits `pattern`, where `*` stands for any run of characters (no other wildcard).
+pub(super) fn wild(pattern: &str, name: &str) -> bool {
+    let parts: Vec<&str> = pattern.split('*').collect();
+    let (first, last) = (parts[0], parts[parts.len() - 1]);
+    if parts.len() == 1 {
+        return pattern == name;
+    }
+    if !name.starts_with(first) || name.len() < first.len() + last.len() || !name.ends_with(last) {
+        return false;
+    }
+    let mut at = first.len();
+    let end = name.len() - last.len();
+    for mid in &parts[1..parts.len() - 1] {
+        match name[at..end].find(mid) {
+            Some(i) => at += i + mid.len(),
+            None => return false,
+        }
+    }
+    true
+}
+
+/// The directories a home-relative pattern names: each path segment is a name or a `*` pattern.
+pub(super) fn expand(home: &Path, pattern: &str) -> Vec<PathBuf> {
+    let mut level = vec![home.to_path_buf()];
+    for seg in pattern.split('/').filter(|s| !s.is_empty()) {
+        let mut next = Vec::new();
+        for d in &level {
+            if seg.contains('*') {
+                let Ok(rd) = std::fs::read_dir(d) else { continue };
+                next.extend(rd.flatten().filter(|e| wild(seg, &e.file_name().to_string_lossy())).map(|e| e.path()));
+            } else {
+                let p = d.join(seg);
+                if p.exists() {
+                    next.push(p);
+                }
+            }
+        }
+        level = next;
+    }
+    level
+}
+
+/// The biggest known-reclaimable locations under `home` (`disk_watch.reclaim_locations`: regenerable caches and build output,
+/// archived worktrees), biggest first, within the same entry and time budget as the growth scan.
+pub fn reclaim(home: &Path) -> Vec<Reclaim> {
+    let min = defaults::num("disk_watch.growth_min_mb") * defaults::num("disk_watch.bytes_per_mb");
+    let mut b = Budget {
+        until: Instant::now() + Duration::from_millis(defaults::num("disk_watch.growth_budget_ms")),
+        entries: defaults::num("disk_watch.growth_max_entries") as usize,
+    };
+    let mut found: Vec<Reclaim> = Vec::new();
+    for row in defaults::raw("disk_watch.reclaim_locations").as_array().unwrap_or_default() {
+        let Some(pattern) = row.get("path").and_then(defaults::V::as_str) else { continue };
+        let cmd = row.get("cmd").and_then(defaults::V::as_str).map(str::to_string);
+        for dir in expand(home, pattern) {
+            if b.spent() {
+                break;
+            }
+            let size = tree_size(&dir, &mut b);
+            let cmd = cmd.as_ref().map(|c| c.replace("{path}", &dir.to_string_lossy()));
+            found.push(Reclaim { path: dir, size, cmd });
+        }
+    }
+    found.retain(|r| r.size >= min);
+    found.sort_by_key(|r| std::cmp::Reverse(r.size));
+    found.truncate(defaults::num("disk_watch.reclaim_top") as usize);
+    found
+}
+
 fn finish(mut found: Vec<(PathBuf, u64)>, min: u64) -> Vec<(PathBuf, u64)> {
     found.retain(|(_, s)| *s >= min);
     found.sort_by_key(|(_, s)| std::cmp::Reverse(*s));

@@ -53,6 +53,15 @@ impl Proc {
         Some(get_num(&self.st, defaults::raw("wake_watch.set_rewake_ms")).max(0.0))
     }
 
+    /// The coalesce window of a watcher of `role` (GH #845 phase 2): `Some(ms)` when `devswarm.wakeWatchWindowMs` is above 0 and the
+    /// role is one of `wake_watch.window_roles`, else `None` (every wake edge prints at once, as in phase 1).
+    pub fn window_ms(&self, role: &str) -> Option<f64> {
+        if !defaults::list("wake_watch.window_roles").contains(&role) {
+            return None;
+        }
+        Some(get_num(&self.st, defaults::raw("wake_watch.set_window_ms"))).filter(|ms| *ms > 0.0)
+    }
+
     /// `pollMsFromEnv`: the poll interval in milliseconds, clamped to the schema's bounds.
     pub fn poll_ms(&self) -> u64 {
         let entry = defaults::raw("wake_watch.set_poll_ms");

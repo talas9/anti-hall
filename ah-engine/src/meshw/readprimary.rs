@@ -1805,9 +1805,16 @@ fn plan(inv: &Inv, a: &Args, promoted: Option<bool>, hops: &Redirect, peek: bool
     if peek && with_broadcasts {
         let aliases = common::read_aliases(&inv.home, &inv.env);
         let mut found: Vec<Value> = Vec::new();
+        // GH #845 phase 2a: a room message the reader was not a member of is not merged (mesh_room.hide_nonmembers)
+        let extras = o.reader.extras_of(defaults::text("mesh_write.broadcast_partition"), 0).unwrap_or_default();
+        let reader = crate::meshw::read::reader_key(&o.reader, inv, id);
+        let hidden = |m: &Value| {
+            let stored = m["storeSeq"].as_f64().and_then(|q| extras.get(&(q as i64))).and_then(|(_, a)| crate::meshw::wakepolicy::decode(a.as_deref()));
+            crate::meshw::wakepolicy::hidden(stored.as_ref(), &reader)
+        };
         o.reader
             .for_each_message(defaults::text("mesh_write.broadcast_partition"), 0, |m| {
-                if !m["isHeartbeat"].as_bool().unwrap_or(false) && m["storeSeq"].as_f64().is_some_and(f64::is_finite) {
+                if !m["isHeartbeat"].as_bool().unwrap_or(false) && m["storeSeq"].as_f64().is_some_and(f64::is_finite) && !hidden(&m) {
                     found.push(m);
                 }
                 true

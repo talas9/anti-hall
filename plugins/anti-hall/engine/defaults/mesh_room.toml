@@ -1,0 +1,139 @@
+# ah-engine shipped defaults for mesh rooms (GH #845 phase 2a). Format: see the header of engine.toml.
+#
+# A room is a named channel of a project's mesh store that workspaces subscribe to (`mesh room create|join|leave|list`). A message
+# sent with `mesh send --room <name>` is ONE row of the broadcast partition whose stored audience (`wake_audience`) names the room,
+# its members at send time and the members it wakes: every member but the sender, or, when the body @mentions members, only those.
+# Every reader of the broadcast channel (the summary the wake-watch reads, the drain verbs and the Codex `inbox tick`) obeys that
+# audience, so a room message wakes only subscribers on both ports; a reader that is not a member neither lists nor counts it.
+
+[mesh_room.enabled]
+doc = "Whether rooms are on: 1 (default) lets `mesh room` create, join and leave rooms and `mesh send --room` post to one; 0 refuses both (mesh_room.msg_disabled). Rows already stored keep their audience either way."
+value = 1
+
+[mesh_room.hide_nonmembers]
+doc = "1 (default): a room message is not listed or counted for a reader that was not a member when it was sent (it is passed over like a heartbeat, so an ack moves through it); 0 lists it to every broadcast reader (it still wakes members only)."
+value = 1
+
+[mesh_room.creator_joins]
+doc = "1 (default): `mesh room create` also subscribes the caller; 0 creates the room empty."
+value = 1
+
+[mesh_room.name_re]
+doc = "The pattern a room name must match (JavaScript syntax, matched against the whole name)."
+value = '^[a-z0-9][a-z0-9._-]{0,47}$'
+
+[mesh_room.flag_room]
+doc = "The `mesh send` flag (`--room <name>`, the name without its dashes here) that posts the message to a room instead of a workspace or the whole project."
+value = "room"
+
+[mesh_room.verb_room]
+doc = "The mesh verb word of the room commands (`mesh room <sub> [<name>]`)."
+value = "room"
+
+[mesh_room.sub_create]
+doc = "The `mesh room` subcommand that creates a room."
+value = "create"
+
+[mesh_room.sub_join]
+doc = "The `mesh room` subcommand that subscribes the caller to a room."
+value = "join"
+
+[mesh_room.sub_leave]
+doc = "The `mesh room` subcommand that unsubscribes the caller from a room."
+value = "leave"
+
+[mesh_room.sub_list]
+doc = "The `mesh room` subcommand that lists the project's rooms, their members and whether the caller is one."
+value = "list"
+
+[mesh_room.action]
+doc = "`action` of a `mesh room` result."
+value = "room"
+
+[mesh_room.audience_room]
+doc = "The member of a room message's stored audience (a JSON object in `wake_audience`) that names the room."
+value = "room"
+
+[mesh_room.audience_members]
+doc = "The member of a room message's stored audience that lists the room's members (registry ids) when it was sent: who may read it."
+value = "members"
+
+[mesh_room.audience_wake]
+doc = "The member of a room message's stored audience that lists the members (registry ids) it wakes."
+value = "wake"
+
+[mesh_room.key_room]
+doc = "The field of a listed broadcast, a send result and a send receipt that names the room of a room message."
+value = "room"
+
+[mesh_room.key_rooms]
+doc = "The field of a `mesh room list` result that holds the rooms."
+value = "rooms"
+
+[mesh_room.key_members]
+doc = "The field of a room in a `mesh room` result that lists its members."
+value = "members"
+
+[mesh_room.key_member]
+doc = "The field of a room in a `mesh room` result that says whether the caller is a member."
+value = "member"
+
+[mesh_room.key_changed]
+doc = "The field of a `mesh room create|join|leave` result that says whether the store changed (false: it already was so)."
+value = "changed"
+
+[mesh_room.msg_disabled]
+doc = "Refusal of a room command or a `send --room` while mesh_room.enabled is 0."
+value = "rooms are off (mesh_room.enabled = 0)"
+
+[mesh_room.msg_usage]
+doc = "Refusal of a `mesh room` call without a known subcommand or without the room name it needs."
+value = "usage: mesh room create|join|leave <name> | mesh room list"
+
+[mesh_room.msg_bad_name]
+doc = "Refusal of a room name that does not match mesh_room.name_re; {name} is the name given."
+value = "bad room name {name}: use lower-case letters, digits, '.', '_' or '-' (at most 48)"
+
+[mesh_room.msg_no_room]
+doc = "Refusal of a join or a `send --room` to a room that does not exist; {name} is the room."
+value = "no room {name}: create it first with `mesh room create {name}`"
+
+[mesh_room.msg_no_member]
+doc = "Refusal of a room command from a caller the project's registry does not hold (it cannot subscribe)."
+value = "this workspace is not registered in the project's mesh, so it cannot join a room"
+
+[mesh_room.reason_no_room]
+doc = "`reason` of a refusal for a room that does not exist."
+value = "no-room"
+
+[mesh_room.reason_bad_name]
+doc = "`reason` of a refusal for a bad room name."
+value = "bad-room-name"
+
+[metric.mesh_room_ops]
+doc = "`mesh room` commands, by subcommand and outcome (changed, unchanged, refused)."
+value = { kind = "counter", unit = "ops", labels = ["op", "outcome"] }
+
+[metric.mesh_room_sends]
+doc = "Room messages stored, by whether the body narrowed the wake to mentioned members (mentions) or woke every member (members)."
+value = { kind = "counter", unit = "messages", labels = ["wake"] }
+
+[mesh_room.wake_mentions]
+doc = "`wake` label of metric mesh_room_sends: the body's @mentions narrowed the wake."
+value = "mentions"
+
+[mesh_room.wake_members]
+doc = "`wake` label of metric mesh_room_sends: every member but the sender is woken."
+value = "members"
+
+[mesh_room.outcome_changed]
+doc = "`outcome` label of metric mesh_room_ops: the store changed."
+value = "changed"
+
+[mesh_room.outcome_unchanged]
+doc = "`outcome` label of metric mesh_room_ops: it already was so."
+value = "unchanged"
+
+[mesh_room.outcome_refused]
+doc = "`outcome` label of metric mesh_room_ops: refused."
+value = "refused"

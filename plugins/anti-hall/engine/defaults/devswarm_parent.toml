@@ -801,6 +801,10 @@ value = 900000
 min = 60000
 max = 86400000
 
+[devswarm_parent.reflog_head_rel]
+doc = "The path, inside a worktree's git directory, of its HEAD reflog: its oldest entry dates the checkout, so a commit older than that is inherited from the commit the workspace was cut from, not its own delivery."
+value = "logs/HEAD"
+
 [devswarm_parent.flag_unpushed_ms]
 doc = "A working child with unpushed commits whose newest commit is at least this old (milliseconds) is flagged."
 value = 1800000
