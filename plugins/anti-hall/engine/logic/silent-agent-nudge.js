@@ -353,7 +353,9 @@ function snFreshOutcome(a, now, windowMs) {
 
 // blockRow: the row is a block-step row (a long run past the block step). Only that row rests on fresh progress (GH #818): a loop/burn/stall
 // escalation (block false) is the unhealthy signal itself and must keep escalating however recently the child wrote.
-function snRuntimeVerdict(child, name, session, evidence, blockRow) {
+// hardRow: the row is a hard block (#862: the agent used all its snoozes or passed the hard token budget): only a stop answer or the agent
+// ending retires it; a snooze, extension or message answer and fresh progress do not.
+function snRuntimeVerdict(child, name, session, evidence, blockRow, hardRow) {
   // Unreadable evidence cannot retire a candidate: preserve its normal nudge decision.
   if (evidence === null) return { retired: null, since: 0 };
   var a = evidence.state.agents && evidence.state.agents[child];
@@ -380,7 +382,8 @@ function snRuntimeVerdict(child, name, session, evidence, blockRow) {
     var until = answer.ts;
     if (answer.answer === words.stop || answer.answer === words.acted) until = answer.ts + Math.min(ttl, limits.window_ms);
     if (answer.answer === words.msg) until = answer.ts + limits.window_ms;
-    if (answer.answer === words.other || answer.answer === words.snooze) {
+    if (hardRow === true && answer.answer !== words.stop && answer.answer !== words.acted) until = 0;
+    else if (answer.answer === words.other || answer.answer === words.snooze) {
       var minutes = answer.answer === words.snooze && snNum(answer.min) && answer.min > 0 ? answer.min : limits.snooze_default_min;
       minutes = Math.max(limits.snooze_min_min, Math.min(minutes, limits.snooze_max_min));
       until = answer.ts + minutes * ah.cfg('agent_tracker.fmt').unit_ms[1];
@@ -390,7 +393,7 @@ function snRuntimeVerdict(child, name, session, evidence, blockRow) {
   // (a workspace child's own tracker row names itself as parent, so the raw row is read here, not the parent-checked one)
   // A fresh outcome (its progress changed inside rt_progress_window_ms) is progress, not a stuck child: the row rests until the window ends (GH #818).
   var fresh = snFreshOutcome(evidence.state.agents && evidence.state.agents[child], evidence.now, ah.cfgNum('silent_nudge.rt_progress_window_ms'));
-  if (blockRow === true && !terminal && fresh !== null) return { retired: true, until: fresh, since: since, answer_at: 0 };
+  if (blockRow === true && hardRow !== true && !terminal && fresh !== null) return { retired: true, until: fresh, since: since, answer_at: 0 };
   if (terminal) return { retired: true, until: evidence.now + ttl, since: since, answer_at: 0 };
   return { retired: live !== null || (a && a.running === true) ? false : null, since: since };
 }
@@ -423,7 +426,7 @@ function snRuntimeRows(p, home, session, doc) {
   var changed = false, kept = [];
   rows.forEach(function (r) {
     var key = JSON.stringify([r.child, r.name]), old = jx.isObj(overlay.rows[key]) ? overlay.rows[key] : null;
-    var verdict = snRuntimeVerdict(r.child, r.name, session, evidence, r.block === true);
+    var verdict = snRuntimeVerdict(r.child, r.name, session, evidence, r.block === true, r.hard === true);
     var active = old && old[cfg.marker] === true && snNum(old.until) && old.until > evidence.now && old.since === verdict.since && snNum(firstSeen[JSON.stringify([session, r.child])] );
     if (verdict.retired === true) {
       if (!active || old.answer_at !== verdict.answer_at || old.until > verdict.until) {

@@ -78,6 +78,32 @@ fn is_agent(env: &crate::meshw::ident::Env, asked: &str) -> bool {
         || env.get(defaults::text("mesh_identity.agent_env_builder")).is_some_and(|b| !b.is_empty() && b != asked)
 }
 
+/// Whether an ancestor process of this one is an agent harness (`mesh_identity.agent_ancestor_names`, at most
+/// `mesh_identity.agent_ancestor_depth` parents up). The environment can be stripped (`env -i`); the parentage cannot. Unit tests of
+/// the crate run under whatever started them, so they never read the real ancestry (they go through [`has_agent_ancestor`]).
+fn agent_ancestor() -> bool {
+    !cfg!(test)
+        && has_agent_ancestor(std::process::id(), &crate::procid::parent, &|pid| {
+            crate::procid::exe(pid).and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+        })
+}
+
+/// The ancestry walk of [`agent_ancestor`] from `start`, over the given parent and executable-name lookups.
+fn has_agent_ancestor(start: u32, parent: &dyn Fn(u32) -> Option<u32>, name: &dyn Fn(u32) -> Option<String>) -> bool {
+    let names = defaults::list("mesh_identity.agent_ancestor_names");
+    let mut cur = start;
+    for _ in 0..defaults::num("mesh_identity.agent_ancestor_depth") {
+        match parent(cur).filter(|p| *p > 1) {
+            Some(p) => cur = p,
+            None => return false,
+        }
+        if name(cur).is_some_and(|n| names.contains(&n.as_str())) {
+            return true;
+        }
+    }
+    false
+}
+
 /// The identity a CLI send declares: `--as <id>`, else the `mesh_identity.sender_env` variable. `Ok(None)` when neither is set;
 /// `Err(text)` (the refusal) when the caller is an agent, or the id is not declared or not selectable from the CLI.
 pub fn cli_declared(env: &crate::meshw::ident::Env, a: &Args) -> Result<Option<Declared>, String> {
@@ -89,7 +115,7 @@ pub fn cli_declared(env: &crate::meshw::ident::Env, a: &Args) -> Result<Option<D
     else {
         return Ok(None);
     };
-    if is_agent(env, asked) {
+    if is_agent(env, asked) || agent_ancestor() {
         return Err(defaults::render("mesh_identity.msg_agent_refused", &[("name", &asked)]));
     }
     match declared(asked).filter(|d| d.cli) {
@@ -213,6 +239,30 @@ mod tests {
         let mut via_env = plain.clone();
         via_env.insert(defaults::text("mesh_identity.sender_env").to_string(), "admin".into());
         assert_eq!(cli_declared(&via_env, &args(&["send"])).unwrap().map(|d| d.id), Some("admin"));
+    }
+
+    /// An `env -i` caller carries no marker, but a harness ancestor still marks it an agent; a clean chain (the owner's room server
+    /// started from a terminal) does not.
+    #[test]
+    fn a_harness_ancestor_marks_the_caller_an_agent_whatever_its_environment_says() {
+        defaults::init().unwrap();
+        // 100 (the caller) <- 90 (env's parent: bash) <- 80 (claude) <- 70 (a terminal launcher)
+        let parent = |p: u32| match p {
+            100 => Some(90),
+            90 => Some(80),
+            80 => Some(70),
+            _ => None,
+        };
+        let forged = |p: u32| Some(match p { 90 => "bash", 80 => "claude", _ => "launchd-child" }.to_string());
+        assert!(has_agent_ancestor(100, &parent, &forged), "claude two levels up marks the caller an agent");
+        let codex = |p: u32| Some(match p { 80 => "codex", _ => "zsh" }.to_string());
+        assert!(has_agent_ancestor(100, &parent, &codex));
+        let clean = |p: u32| Some(match p { 90 => "python3", 80 => "zsh", _ => "Terminal" }.to_string());
+        assert!(!has_agent_ancestor(100, &parent, &clean), "a plain python process under a terminal is not an agent");
+        let too_far = |p: u32| Some(if p == 70 { "claude" } else { "zsh" }.to_string());
+        let deep = |p: u32| Some(p + 1);
+        assert!(!has_agent_ancestor(1, &deep, &too_far), "nothing past the configured depth is read");
+        assert!(!has_agent_ancestor(100, &|_| None, &forged), "an unreadable parent ends the walk");
     }
 
     /// The engine's own sends go through one helper: the row carries the engine id and the proxy kind, a broadcast is addressed to

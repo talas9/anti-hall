@@ -447,12 +447,11 @@ fn a_shadowed_answer_is_decided_and_suppressed_never_delivered() {
     }
     e.stop();
     assert_eq!((code, out.as_str(), err.as_str()), (0, "", ""), "shadow: nothing reaches the agent");
-    for check in ["task-tracker"] {
-        assert_eq!(stage_sum(&f, check, "decided"), 1, "{check}: {f}");
-        assert_eq!(stage_sum(&f, check, "suppressed"), 1, "{check}: {f}");
-        assert_eq!(stage_sum(&f, check, "delivered"), 0, "{check} is not delivered: {f}");
-        assert_eq!(channel_sum(&f, check), 0, "{check} is in no channel: {f}");
-    }
+    let check = "task-tracker";
+    assert_eq!(stage_sum(&f, check, "decided"), 1, "{check}: {f}");
+    assert_eq!(stage_sum(&f, check, "suppressed"), 1, "{check}: {f}");
+    assert_eq!(stage_sum(&f, check, "delivered"), 0, "{check} is not delivered: {f}");
+    assert_eq!(channel_sum(&f, check), 0, "{check} is in no channel: {f}");
 }
 
 /// GH #894: a quiet UserPromptSubmit check whose reply is an empty `additionalContext` (auto-handover and limit-conserve-inject print

@@ -126,12 +126,10 @@ pub fn resolve(b: &Bc<'_>, roster: &[&str]) -> Result<Audience, Ambiguous> {
                     exact
                 } else if t.chars().count() >= min {
                     let pre: Vec<&str> = roster.iter().copied().filter(|id| id.to_lowercase().starts_with(&t)).collect();
-                    if pre.len() > 1 {
-                        if b.question {
-                            return Err(Ambiguous { token: t, ids: pre.iter().map(|x| x.to_string()).collect() });
-                        }
-                        // an ambiguous mention on a plain broadcast addresses every workspace it names (never fewer)
+                    if pre.len() > 1 && b.question {
+                        return Err(Ambiguous { token: t, ids: pre.iter().map(|x| x.to_string()).collect() });
                     }
+                    // an ambiguous mention on a plain broadcast addresses every workspace it names (never fewer)
                     pre
                 } else {
                     Vec::new()

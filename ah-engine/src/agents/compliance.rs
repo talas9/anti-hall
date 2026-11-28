@@ -60,7 +60,7 @@ pub(crate) fn note_task_list(req: &crate::reqenv::RequestEnv, p: &Value) {
         crate::health::log_event("agents", "tasklist_note", &e.to_string());
         return;
     }
-    if let Err(e) = crate::atomic::write(&file, list.to_string()) {
+    if let Err(e) = crate::atomic::write(&file, list) {
         crate::health::log_event("agents", "tasklist_note", &e.to_string());
     }
 }
@@ -221,7 +221,7 @@ pub(super) fn watched(env: &Env, a: &Agent) -> bool {
         && defaults::raw("nudges.compliance").get("kinds").map(V::strings).unwrap_or_default().contains(&a.kind.as_str())
 }
 
-fn open_tasks<'a>(tasks: &'a [Task]) -> Vec<&'a Task> {
+fn open_tasks(tasks: &[Task]) -> Vec<&Task> {
     let closed = defaults::raw("nudges.idle_wake").get("closed_statuses").map(V::strings).unwrap_or_default();
     tasks.iter().filter(|t| !t.held && !closed.contains(&t.status.as_str())).collect()
 }

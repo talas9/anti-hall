@@ -48,7 +48,7 @@ fn git_check_cpu_per_command() {
     let pct = |p: usize| cpu[(cpu.len() * p / 100).min(cpu.len() - 1)];
     let total: u64 = cpu.iter().sum();
     println!("check {check}: {} calls, cpu p50 {} us, p95 {} us, max {} us, mean {} us, total {} ms", cpu.len(), pct(50), pct(95), cpu[cpu.len() - 1], total / cpu.len() as u64, total / 1000);
-    rows.sort_by(|a, b| b.0.cmp(&a.0));
+    rows.sort_by_key(|r| std::cmp::Reverse(r.0));
     for (c, w, cmd) in rows.iter().take(15) {
         println!("{c:>8} us cpu {w:>8} us wall  {}", cmd.replace('\n', "\\n").chars().take(160).collect::<String>());
     }

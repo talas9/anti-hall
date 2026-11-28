@@ -508,6 +508,21 @@ fn a_stale_workspace_is_poked_then_escalated_once() {
     assert_eq!(act(&d2, &live2, &Scripted::new()).poke_sweep()[0].kind, "escalate");
 }
 
+/// A poke is sent through the parent workspace: `hivecontrol workspace message-child` resolves the sender from the working directory,
+/// so a poke run with no directory failed ("Not in a git repository", "not a child of this workspace"). The decision names it.
+#[test]
+fn a_poke_runs_in_the_parent_workspace_directory() {
+    let d = scratch("poke-cwd");
+    let mut facts = stale_facts(0, None, true);
+    facts["parentCwd"] = json!("/work/parent");
+    let mut live = Fixture::new().with("poke-or-escalate:ws-1", vec![facts]);
+    live.stale = vec!["ws-1".into()];
+    let r = Scripted::new();
+    let out = act(&d, &live, &r).poke_sweep();
+    assert_eq!((out[0].kind.as_str(), out[0].word), ("poke", Word::Done));
+    assert_eq!(r.calls.borrow().last().unwrap().cwd.as_deref(), Some("/work/parent"));
+}
+
 #[test]
 fn delete_needs_the_owner_approved_exact_unexpired_plan() {
     let d = scratch("del");

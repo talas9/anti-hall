@@ -3559,6 +3559,42 @@ mod claim_evidence_guard {
         }
     }
 
+    /// Field reports 2026-11-28: a quoted phrase that is MENTIONED ("the \"check passes\" claim") is no claim; a bare quoted claim still is.
+    #[test]
+    fn a_quoted_mention_of_a_claim_phrase_is_no_claim_but_a_quoted_claim_still_is() {
+        let held = |tag: &str, reply: &str| {
+            let lines = [json!({"type": "user", "message": {"role": "user", "content": "go"}}), assistant("m1", reply, &[])];
+            blocked(&stop(tag, &lines, reply, &[], json!({})).0).is_some()
+        };
+        for (i, reply) in [
+            "The \"check passes\" claim false positive couldn't be reproduced.",
+            "The \"all tests pass\" phrase was the trigger.",
+            "A false positive on \u{201c}tests pass\u{201d} in the quoted text.",
+        ]
+        .iter()
+        .enumerate()
+        {
+            assert!(!held(&format!("ce-mention-{i}"), reply), "a mention is no claim: {reply}");
+        }
+        for (i, reply) in ["CI is \"green\".", "\"All tests pass.\"", "I checked, and \"tests pass\".", "The phrase \"tests pass\" holds now."].iter().enumerate() {
+            assert!(held(&format!("ce-quoted-claim-{i}"), reply), "a quoted claim is still held: {reply}");
+        }
+    }
+
+    /// Field report 2026-11-28: the engine's own doctor and an update dry run are checks that count as evidence for "checks passed".
+    #[test]
+    fn the_engine_doctor_and_an_update_dry_run_back_a_checks_passed_claim() {
+        let reply = "61 checks passed.";
+        let held = |tag: &str, cmd: &str| {
+            let lines = [json!({"type": "user", "message": {"role": "user", "content": "go"}}), assistant("m1", reply, &[cmd])];
+            blocked(&stop(tag, &lines, reply, &[], json!({})).0).is_some()
+        };
+        assert!(!held("ce-doctor", "~/.anti-hall/ah-engine/bin/ah-engine doctor"));
+        assert!(!held("ce-update-dry", "ah-engine engine-update --channel stable --dry-run"));
+        assert!(held("ce-update-real", "ah-engine engine-update --channel stable"), "only the dry run is a check");
+        assert!(held("ce-unrelated", "ls -la"), "an unrelated command backs nothing");
+    }
+
     /// Field report 0.3.32: a result word inside a sentence that already hedges it ("likely") is no flat claim.
     #[test]
     fn a_result_word_inside_a_hedged_sentence_is_no_claim() {

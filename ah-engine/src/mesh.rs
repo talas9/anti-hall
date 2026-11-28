@@ -68,6 +68,8 @@ impl From<rusqlite::Error> for MeshError {
 }
 
 type Res<T> = Result<T, MeshError>;
+/// A row's GH #845 columns: `(chat_kind, wake_audience)`.
+type Extras = (Option<String>, Option<String>);
 
 /// JavaScript's number-to-JSON: a whole number prints as an integer, NaN and infinities as null.
 fn num_value(f: f64) -> Value {
@@ -314,7 +316,7 @@ impl MeshReader {
 
     /// The GH #845 columns (`chat_kind`, `wake_audience`) of workspace `id`'s rows with seq above `since`, by seq; rows with neither
     /// are left out (a legacy row). None at all on a store without the columns.
-    pub fn extras_of(&self, id: &str, since: i64) -> Res<std::collections::HashMap<i64, (Option<String>, Option<String>)>> {
+    pub fn extras_of(&self, id: &str, since: i64) -> Res<std::collections::HashMap<i64, Extras>> {
         let Ok(mut st) = self.conn.prepare_cached(sql::MESH_EXTRAS_OF) else { return Ok(std::collections::HashMap::new()) };
         let rows = st.query_map(params![id, since], |r| Ok((r.get::<_, i64>(0)?, (r.get::<_, Option<String>>(1)?, r.get::<_, Option<String>>(2)?))))?;
         Ok(rows.collect::<Result<std::collections::HashMap<_, _>, _>>()?)
@@ -424,12 +426,22 @@ impl MeshReader {
     /// The newest `n` messages of workspace `id`, oldest first, with their positional index.
     pub fn last_messages(&self, id: &str, n: u64) -> Res<Vec<Value>> {
         let total = self.message_count(id)?;
+        // GH #862: a declared identity's row carries its stored sender_kind here too (the owner's rows are told apart by it)
+        let kinds = self.sender_kinds(id);
+        let kind_field = crate::defaults::text("mesh_identity.row_kind_field");
         let mut st = self.conn.prepare_cached(sql::MESH_MESSAGES_LAST)?;
         let mut rows = st.query(params![id, n as i64])?;
         let mut out = Vec::new();
         let mut index = total;
         while let Some(r) = rows.next()? {
-            out.push(Self::message(r, index)?);
+            let mut m = Self::message(r, index)?;
+            if !kinds.is_empty()
+                && let Some(k) = m["storeSeq"].as_i64().and_then(|q| kinds.get(&q))
+                && let Value::Object(o) = &mut m
+            {
+                o.insert(kind_field.into(), Value::from(k.clone()));
+            }
+            out.push(m);
             index = index.saturating_sub(1);
         }
         out.reverse();

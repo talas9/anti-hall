@@ -209,6 +209,31 @@ fn build_runs(rows: &[Msg], aliases: &[(String, String)]) -> Vec<Run> {
     runs
 }
 
+/// Whether a stored sender kind is the owner's: the kind of a declared identity with a mailbox that acts for nobody (GH #862).
+fn is_owner_kind(kind: Option<&str>) -> bool {
+    kind.and_then(crate::meshw::senders::by_kind).is_some_and(|d| d.mailbox && d.on_behalf_of.is_none())
+}
+
+/// The owner's chat rows in `parts` (the broadcast partition and the Primary's own), oldest first, the newest
+/// `mesh_write.owner_chat_cap` kept: rows from the owner younger than `mesh_write.owner_chat_max_age_ms`. Answered rows are
+/// dropped by the reader (the reply records), exactly as a question is.
+fn owner_rows(st: &MeshStore, parts: &[&str], now: f64) -> Vec<Msg> {
+    let scan = defaults::num("mesh_write.owner_chat_scan_rows");
+    let max_age = defaults::num("mesh_write.owner_chat_max_age_ms") as f64;
+    let mut out: Vec<Msg> = Vec::new();
+    for part in parts {
+        for m in st.reader().last_messages(part, scan).unwrap_or_else(|e| soft("owner-chat", e)).iter().map(msg_of) {
+            if is_owner_kind(m.sender_kind.as_deref()) && !m.is_heartbeat && m.store_seq.is_some() && (!m.ts.is_finite() || now - m.ts <= max_age) {
+                out.push(m);
+            }
+        }
+    }
+    out.sort_by(|a, b| a.ts.partial_cmp(&b.ts).unwrap_or(std::cmp::Ordering::Equal));
+    let cap = defaults::num("mesh_write.owner_chat_cap") as usize;
+    let skip = out.len().saturating_sub(cap);
+    out.split_off(skip)
+}
+
 /// The last `cap` runs of partition `id`, read from its tail only (GH #845 P2-12): newest rows are read in growing windows until the
 /// window holds more than `cap` runs (then the oldest, possibly cut, run is dropped and the `cap` after it are whole) or reaches the
 /// start of the partition. The result equals the last `cap` runs of the whole partition.
@@ -217,6 +242,8 @@ fn recent_runs(st: &MeshStore, id: &str, cap: usize, aliases: &[(String, String)
     loop {
         let rows: Vec<Msg> = st.reader().last_messages(id, want).unwrap_or_else(|e| soft("messages", e)).iter().map(msg_of).collect();
         let whole = (rows.len() as u64) < want;
+        // GH #862: the owner's chat rows are orders (pendingQuestions of the Primary), never part of the advisory roster feed
+        let rows: Vec<Msg> = rows.into_iter().filter(|m| !is_owner_kind(m.sender_kind.as_deref())).collect();
         let mut runs = build_runs(&rows, aliases);
         if whole || runs.len() > cap {
             let skip = runs.len().saturating_sub(cap);
@@ -847,11 +874,27 @@ pub fn compute(st: &MeshStore, inv: &Inv, _touched: Option<&str>) -> R<OVal> {
             }
         }
         let collapsed = collapse(resolved);
-        let kept: Vec<OVal> = collapsed.iter().take(pq_cap).cloned().collect();
+        let mut kept: Vec<OVal> = collapsed.iter().take(pq_cap).cloned().collect();
         let dropped = collapsed.len() - kept.len();
+        // GH #862: the owner's chat rows reach a Primary as pending questions flagged `owner` (never collapsed: each is its own order)
+        let owner_chat: Vec<Msg> = if crate::meshw::wakepolicy::is_primary(&d.id) { owner_rows(st, &[bpart, &d.id], now) } else { Vec::new() };
+        for m in &owner_chat {
+            kept.push(OVal::Obj(vec![
+                ("from".into(), s_or_null(m.sender.as_deref())),
+                ("ts".into(), num(m.ts)),
+                ("seq".into(), opt_num(m.store_seq)),
+                (defaults::text("mesh_write.owner_chat_flag").into(), OVal::Bool(true)),
+            ]));
+        }
         let mut previews: Option<OVal> = None;
         if !kept.is_empty() {
             let mut p = OVal::Obj(Vec::new());
+            let body_max = defaults::num("mesh_write.owner_chat_body_max") as usize;
+            for m in &owner_chat {
+                if let Some(q) = m.store_seq {
+                    p.set(&crate::checks::jsport::num::to_js_string(q), s(&m.body.chars().take(body_max).collect::<String>()));
+                }
+            }
             for e in &kept {
                 if let Some(OVal::Num(q)) = e.get("seq")
                     && q.is_finite()
@@ -1077,7 +1120,8 @@ pub fn compute(st: &MeshStore, inv: &Inv, _touched: Option<&str>) -> R<OVal> {
     let (mut orphans, mut stranded, mut held_out): (Vec<OVal>, Vec<OVal>, Vec<OVal>) = (Vec::new(), Vec::new(), Vec::new());
     let mut sorter = crate::meshw::orphan::Classifier::new(home, rows.iter().filter_map(|r| r.worktree_path.clone()).filter(|w| !w.is_empty()).collect());
     for id in &candidates {
-        if id == bpart || registry_ids.contains(id) || !is_safe_id(id) {
+        // a declared human identity (the owner's `admin` mailbox) is read in the owner's room, never by a workspace
+        if id == bpart || registry_ids.contains(id) || !is_safe_id(id) || crate::meshw::senders::declared(id).is_some_and(|d| d.kind == defaults::text("mesh_identity.kind_human")) {
             continue;
         }
         let total = st.reader().message_count(id).unwrap_or_else(|e| soft("count", e)) as f64;
@@ -1283,6 +1327,25 @@ mod tests {
             _ => panic!("{k} is no number"),
         };
         assert_eq!((num("unread"), num("directUnread")), (3, 2));
+        crate::discard::harmless(std::fs::remove_dir_all(dir)); // keep: test cleanup; an absent directory is the goal state
+    }
+
+    /// A declared human identity (the owner's `admin` mailbox) is read in the owner's room, never by a workspace: unread mail there is
+    /// no orphan, while an unread partition of an unknown id still is.
+    #[test]
+    fn a_declared_human_mailbox_is_not_an_orphan() {
+        defaults::init().unwrap();
+        let dir = scratch("orphan-admin");
+        let st = MeshStore::open(&dir.join(defaults::text("mesh_write.store_file"))).unwrap();
+        for part in ["admin", "ghost-ws"] {
+            st.append_message_from(part, 1_700_000_000_000, Some(&format!("h-{part}")), "hello", Some("other")).unwrap();
+        }
+        let sum = compute(&st, &inv_in(&dir), None).unwrap();
+        let ids: Vec<String> = match sum.get("orphans") {
+            Some(OVal::Arr(a)) => a.iter().filter_map(|e| e.get("id").and_then(|i| if let OVal::Str(x) = i { Some(x.clone()) } else { None })).collect(),
+            other => panic!("no orphans array: {other:?}"),
+        };
+        assert_eq!(ids, vec!["ghost-ws".to_string()], "only the unknown partition is an orphan");
         crate::discard::harmless(std::fs::remove_dir_all(dir)); // keep: test cleanup; an absent directory is the goal state
     }
 

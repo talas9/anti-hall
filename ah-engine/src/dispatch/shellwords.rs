@@ -209,14 +209,27 @@ pub fn is_engine_program(word: &str, cfg: &Cfg, home: Option<&std::ffi::OsStr>) 
     !cfg.ro_programs.is_empty() && ro_expand(word, Exp::Quoted, &[], cfg, home, At::Command).is_some_and(|w| cfg.ro_programs.contains(&w))
 }
 
-/// Whether the words after the engine program are one of its local verbs (`ro_verbs`).
+/// Whether the words after the engine program are one of its local verbs (`ro_verbs`). An entry's words: the leading words (a flag
+/// that stands before any plain word is one too: `--version`), then flags that must stand as a whole word somewhere after
+/// (`config set --check`), and `!--flag` words that must NOT appear anywhere (`doctor !--repair`: the read-only form of a verb
+/// that also writes).
 fn ro_verb(words: &[String], verbs: &[String]) -> bool {
     verbs.iter().any(|v| {
-        let (flags, lead): (Vec<&str>, Vec<&str>) = v.split_whitespace().partition(|w| w.starts_with('-'));
+        let (mut lead, mut need, mut deny) = (Vec::new(), Vec::new(), Vec::new());
+        for w in v.split_whitespace() {
+            if let Some(d) = w.strip_prefix('!') {
+                deny.push(d);
+            } else if w.starts_with('-') && !lead.is_empty() {
+                need.push(w);
+            } else {
+                lead.push(w);
+            }
+        }
         !lead.is_empty()
             && lead.len() <= words.len()
             && lead.iter().zip(words).all(|(p, w)| *p == "*" || *p == w.as_str())
-            && flags.iter().all(|f| words.iter().any(|w| w.as_str() == *f))
+            && need.iter().all(|f| words.iter().any(|w| w.as_str() == *f))
+            && !deny.iter().any(|f| words.iter().any(|w| w.as_str() == *f))
     })
 }
 
@@ -1032,10 +1045,8 @@ fn split_at(cmd: &str, cfg: &Cfg) -> Option<(Vec<Tok>, Vec<Span>)> {
                 if c == '{' && (i == 0 || cs[i - 1] != '$') {
                     brace = true;
                 }
-                if arith == 0 {
-                    if let Some(h) = heredoc_at(&cs, i) {
-                        pending.push(h);
-                    }
+                if arith == 0 && let Some(h) = heredoc_at(&cs, i) {
+                    pending.push(h);
                 }
                 cur.push(c);
                 raw.push(c);
@@ -1432,31 +1443,25 @@ fn once(cmd: &str, cfg: &Cfg, depth: usize) -> Option<(Normalised, Vec<String>)>
             return;
         }
         // gh <pr|issue|release> ...: the value words of the text options are data
-        if !cfg.text_verb.is_empty() {
-            if let Some(v) = group.iter().position(|(w, ..)| base(w) == cfg.text_verb) {
-                let sub = group[v + 1..].iter().map(|(w, ..)| w.as_str()).find(|w| cfg.text_subs.iter().any(|s| s == w) || *w == "api");
-                if sub.is_some_and(|s| s != "api") {
-                    let mut k = v + 1;
-                    while k < group.len() {
-                        let w = group[k].0.clone();
-                        if cfg.text_opts.iter().any(|o| *o == w) {
-                            if let Some(val) = group.get_mut(k + 1) {
-                                if !val.1 && !val.0.is_empty() {
-                                    val.0.clear();
-                                    *stripped = true;
-                                }
-                            }
-                            k += 2;
-                            continue;
+        if !cfg.text_verb.is_empty() && let Some(v) = group.iter().position(|(w, ..)| base(w) == cfg.text_verb) {
+            let sub = group[v + 1..].iter().map(|(w, ..)| w.as_str()).find(|w| cfg.text_subs.iter().any(|s| s == w) || *w == "api");
+            if sub.is_some_and(|s| s != "api") {
+                let mut k = v + 1;
+                while k < group.len() {
+                    let w = group[k].0.clone();
+                    if cfg.text_opts.contains(&w) {
+                        if let Some(val) = group.get_mut(k + 1) && !val.1 && !val.0.is_empty() {
+                            val.0.clear();
+                            *stripped = true;
                         }
-                        if let Some(o) = cfg.text_opts.iter().find(|o| o.starts_with("--") && w.starts_with(&format!("{o}="))) {
-                            if !group[k].1 && w.len() > o.len() + 1 {
-                                group[k].0 = format!("{o}=");
-                                *stripped = true;
-                            }
-                        }
-                        k += 1;
+                        k += 2;
+                        continue;
                     }
+                    if let Some(o) = cfg.text_opts.iter().find(|o| o.starts_with("--") && w.starts_with(&format!("{o}="))) && !group[k].1 && w.len() > o.len() + 1 {
+                        group[k].0 = format!("{o}=");
+                        *stripped = true;
+                    }
+                    k += 1;
                 }
             }
         }
@@ -1621,7 +1626,7 @@ mod tests {
             ro_placeholder: "_".into(),
             ro_home: "HOME".into(),
             ro_programs: v(&["ah-engine", "~/.anti-hall/ah-engine/bin/ah-engine"]),
-            ro_verbs: v(&["mesh send", "status", "config set --check", "agents nudge * msg"]),
+            ro_verbs: v(&["mesh send", "status", "config set --check", "agents nudge * msg", "--version", "doctor !--repair !--fix"]),
             ..cfg()
         }
     }
@@ -1641,12 +1646,18 @@ mod tests {
         assert_eq!(parts("E=/Users/me/.anti-hall/ah-engine/bin/ah-engine; $E status | head -3"), Some(vec![local("head -3")]), "the home path reads as ~");
         assert_eq!(parts("ah-engine config set daemon.nice 0 --check"), Some(vec![local("")]));
         assert_eq!(parts("ah-engine agents nudge abc msg hi"), Some(vec![local("")]), "* is any one word");
+        assert_eq!(parts("ah-engine --version"), Some(vec![local("")]), "a leading flag is the verb's own word");
+        assert_eq!(parts("ah-engine doctor"), Some(vec![local("")]), "the read-only form of a verb that can also write");
+        assert_eq!(parts("ah-engine doctor --json --quiet"), Some(vec![local("")]));
         assert_eq!(parts("cd x; ls -la"), Some(vec![read("ls -la")]), "the caller's read pattern judges what is left");
         assert_eq!(parts("cd /tmp > f && ls"), Some(vec![read("cd /tmp > f"), read("ls")]), "a cd with a redirection is not dropped");
         assert_eq!(parts("cd -P /tmp && ls"), Some(vec![read("cd -P /tmp"), read("ls")]), "only a bare cd <dir> is dropped");
         assert_eq!(parts("A=1 grep x"), Some(vec![read("A=1 grep x")]), "an assignment in front of a command is left for the read pattern to refuse");
         for (cmd, why) in [
             ("ah-engine config set daemon.nice 0", "config set without --check writes"),
+            ("ah-engine doctor --repair", "a denied flag turns the verb into a writing one"),
+            ("ah-engine doctor --json --fix", "a denied flag anywhere after the verb"),
+            ("ah-engine --versions", "the flag stands as a whole word"),
             ("ah-engine config set daemon.nice 0 --check=x", "the flag must stand as a whole word"),
             ("ah-engine agents nudge abc stop", "a verb not on the list"),
             ("ah-engine --json status", "the verb words lead"),
@@ -1998,7 +2009,7 @@ mod tests {
     #[test]
     fn issue_928_a_script_is_identified_by_its_repo_relative_path_and_bytes() {
         let root = std::env::temp_dir().join(format!("ah-928id-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root); // keep: this test's own scratch dir, named by pid
+        crate::discard::harmless(std::fs::remove_dir_all(&root)); // keep: this test's own scratch dir, named by pid
         let (repo, out) = (root.join("repo"), root.join("out"));
         std::fs::create_dir_all(repo.join("ah-engine")).unwrap();
         std::fs::create_dir_all(&out).unwrap();
@@ -2011,7 +2022,7 @@ mod tests {
         assert!(id("t.sh", &out, 100).is_none(), "outside any repo");
         assert!(id("ah-engine/test.sh", &repo, 3).is_none(), "over the cap");
         assert!(id("ah-engine/test.sh", &repo, 0).is_none(), "off");
-        assert!(script_identity("ah-engine/test.sh", &[repo.clone()], None, 100, "").is_none(), "off without the marker");
+        assert!(script_identity("ah-engine/test.sh", std::slice::from_ref(&repo), None, 100, "").is_none(), "off without the marker");
         std::fs::remove_dir_all(&root).unwrap(); // keep: this test's own scratch dir
     }
 
@@ -2076,7 +2087,7 @@ mod tests {
     #[test]
     fn issue_928_a_tool_in_a_project_local_dir_inside_the_repo_is_known() {
         let root = std::env::temp_dir().join(format!("ah-928-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&root); // keep: this test's own scratch dir, named by pid
+        crate::discard::harmless(std::fs::remove_dir_all(&root)); // keep: this test's own scratch dir, named by pid
         let (repo, other) = (root.join("repo"), root.join("other"));
         let bin = repo.join(".venv/bin");
         let sub = repo.join("pkg/src");

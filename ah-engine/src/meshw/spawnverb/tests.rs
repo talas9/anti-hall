@@ -120,7 +120,7 @@ fn the_setting_turns_the_fallback_off() {
 /// The nothing-created answer: ok:false, created:false, exit 2, an error that opens with the verdict and a retry that is the exact command.
 #[test]
 fn the_nothing_created_answer_says_so_and_gives_the_retry() {
-    let ans = nothing_created(s("spawn"), "feat-x", &["-p", "go", "a b", "-s", "main"], "boom", OVal::Null, OVal::Null, None, None);
+    let ans = nothing_created(s("spawn"), "feat-x", &["-p", "go", "a b", "-s", "main"], "boom", OVal::Null, OVal::Null, (None, None));
     let out = OVal::parse(ans.stdout.trim()).unwrap();
     assert_eq!(ans.code, 2);
     assert_eq!(out.get("ok"), Some(&OVal::Bool(false)));

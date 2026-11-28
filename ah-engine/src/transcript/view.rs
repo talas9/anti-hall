@@ -46,7 +46,7 @@ pub struct DigestQuery<'a> {
     /// Longest line held, in bytes (0 = no bound); a longer one is counted, not held.
     pub line_max: u64,
     /// The digest of a line.
-    pub digest: &'a dyn Fn(&str) -> Option<Option<(Item, usize)>>,
+    pub digest: &'a dyn Fn(&str) -> DigestOut,
 }
 
 /// The answer of [`digests`]: the kept items oldest first, and what [`Found`] says of the window.
@@ -80,6 +80,11 @@ pub struct Found {
 
 /// One kept item: what a reader digested from a line, shared between calls.
 pub type Item = std::sync::Arc<dyn std::any::Any + Send + Sync>;
+/// What a digest function answers for a line: `None` aborts the read, `Some(None)` skips the line, `Some(Some((item, bytes)))` keeps it.
+pub type DigestOut = Option<Option<(Item, usize)>>;
+/// The digest function aborted the read (it answered `None`).
+#[derive(Debug)]
+pub struct Aborted;
 
 #[derive(Clone)]
 struct Line {
@@ -119,7 +124,7 @@ struct Kept {
 pub fn key_of(parts: &[&str]) -> String {
     use std::fmt::Write;
     parts.iter().fold(String::new(), |mut k, p| {
-        let _ = write!(k, "{}:{p};", p.len());
+        crate::discard::harmless(write!(k, "{}:{p};", p.len())); // keep: writing into a String cannot fail
         k
     })
 }
@@ -235,8 +240,8 @@ fn text_of(bytes: &[u8], crlf: bool) -> String {
 
 /// The lines of the last `q.window` bytes of `path` that `q.wants`, from the kept lines plus what was appended. `Ok(None)`: the
 /// file cannot be opened or read. `Err`: `q.wants` gave `None`.
-pub fn matching(path: &str, q: &Query) -> Result<Option<Found>, ()> {
-    let digest = |line: &str| -> Option<Option<(Item, usize)>> { Some((q.wants)(line)?.then(|| (std::sync::Arc::new(line.to_string()) as Item, line.len()))) };
+pub fn matching(path: &str, q: &Query) -> Result<Option<Found>, Aborted> {
+    let digest = |line: &str| -> DigestOut { Some((q.wants)(line)?.then(|| (std::sync::Arc::new(line.to_string()) as Item, line.len()))) };
     let dq = DigestQuery { key: q.key, window: q.window, crlf: q.crlf, line_max: q.line_max, digest: &digest };
     Ok(digests(path, &dq)?.map(|d| Found {
         lines: d.items.iter().filter_map(|i| i.downcast_ref::<String>().cloned()).collect(),
@@ -248,7 +253,7 @@ pub fn matching(path: &str, q: &Query) -> Result<Option<Found>, ()> {
 
 /// The items [`DigestQuery::digest`] kept for the lines of the last `q.window` bytes of `path`, from the kept items plus what was
 /// appended. `Ok(None)`: the file cannot be opened or read. `Err`: the digest function aborted.
-pub fn digests(path: &str, q: &DigestQuery) -> Result<Option<Digests>, ()> {
+pub fn digests(path: &str, q: &DigestQuery) -> Result<Option<Digests>, Aborted> {
     let Ok(f) = std::fs::File::open(path) else { return Ok(None) };
     let Ok(m) = f.metadata() else { return Ok(None) };
     if !m.is_file() {
@@ -350,7 +355,7 @@ pub fn digests(path: &str, q: &DigestQuery) -> Result<Option<Digests>, ()> {
             } else {
                 let text = text_of(&carry, q.crlf);
                 match (q.digest)(&text) {
-                    None => return Err(()),
+                    None => return Err(Aborted),
                     Some(Some((item, weight))) => k.lines.push_back(Line { start, item, weight }),
                     Some(None) => {}
                 }
@@ -369,7 +374,7 @@ pub fn digests(path: &str, q: &DigestQuery) -> Result<Option<Digests>, ()> {
     } else {
         let text = text_of(&carry, false);
         match (q.digest)(&text) {
-            None => return Err(()),
+            None => return Err(Aborted),
             Some(Some((item, _))) => last = Some((k.parsed_to, item)),
             Some(None) => {}
         }
@@ -554,7 +559,9 @@ mod tests {
         for budget in [4_194_304u64, 1_048_576] {
             let _budget = Setting::set("transcript.view_verify_bytes", budget);
             let cpu = || {
+                // SAFETY: an all-zero `rusage` is a valid value (plain integers), and `getrusage` only writes into that out-buffer.
                 let mut u: libc::rusage = unsafe { std::mem::zeroed() };
+                // SAFETY: as above; `u` is a live, exclusively borrowed `rusage`.
                 unsafe { libc::getrusage(libc::RUSAGE_SELF, &mut u) };
                 u.ru_utime.tv_sec as u64 * 1_000_000 + u.ru_utime.tv_usec as u64 + u.ru_stime.tv_sec as u64 * 1_000_000 + u.ru_stime.tv_usec as u64
             };
@@ -781,7 +788,7 @@ mod tests {
         let p = d.join("w.jsonl").to_string_lossy().to_string();
         let block = crate::transcript::scan::block_bytes() as u64;
         let _budget = Setting::set("transcript.view_verify_bytes", block); // one ring record a call
-        let line = |i: usize| format!("{i:06} {} {}\n", if i % 500 == 0 { "needle" } else { "plain" }, "p".repeat(85));
+        let line = |i: usize| format!("{i:06} {} {}\n", if i.is_multiple_of(500) { "needle" } else { "plain" }, "p".repeat(85));
         let text: String = (0..20_000).map(line).collect(); // about 2 MiB: eight records
         std::fs::write(&p, &text).unwrap();
         let window = 1_500_000u64;

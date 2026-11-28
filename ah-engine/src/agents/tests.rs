@@ -2211,6 +2211,12 @@ fn arm_wake(e: &Env, session: &str) {
     std::fs::OpenOptions::new().write(true).open(&stamp).unwrap().set_modified(std::time::UNIX_EPOCH + std::time::Duration::from_millis(e.now_ms)).unwrap();
 }
 
+/// #862: the agent committed since the nudge (a snooze needs that evidence). Only the commit count moves: the sampler's outcome clock
+/// (`progress_at`) stays where the scenario put it.
+fn grant_progress(st: &mut State, child: &str) {
+    st.agents.get_mut(child).expect("the agent is tracked").commits += 1;
+}
+
 /// Append the verb's row: `agents nudge <child> snooze <min>`.
 fn answer_snooze(e: &Env, child: &str, min: u64) {
     let row = json!({"ts": e.now_ms, "child": child, "answer": "snooze", "text": "", "min": min});
@@ -2262,13 +2268,14 @@ fn snooze_scenario(tag: &str, extra: &[(&str, &str)], cycles: u64, snooze_min: u
         append(&child, &spend);
         let e = tick_at(&mut st, b + 18 * MIN);
         if st.nudges.get("abc").is_some_and(|n| n.first_answer_at == 0) {
+            grant_progress(&mut st, "abc");
             answer_snooze(&e, "abc", snooze_min);
             answers += 1;
         }
         tick_at(&mut st, b + 19 * MIN);
     }
     let sig = defaults::raw("agent_nudge.words").str_field("signal");
-    let rows: Vec<Value> = queue(&h, "parent").into_iter().chain(wake_rows(&h, "parent")).filter(|r| r["signal"] == sig).collect();
+    let rows: Vec<Value> = queue(&h, "parent").into_iter().chain(wake_rows(&h, "parent")).filter(|r| r["signal"] == sig && !r["text"].as_str().is_some_and(|t| t.contains("snooze refused"))).collect();
     let ids: std::collections::BTreeSet<String> = rows.iter().map(|r| r["id"].as_str().unwrap_or("").to_string()).collect();
     let opened = st.nudges.len() + st.nudge_log.iter().filter(|n| n.trigger != "dead").count();
     let most = st.nudges.values().chain(st.nudge_log.iter()).map(|n| n.snoozes).max().unwrap_or(0);
@@ -2476,6 +2483,7 @@ fn n430_a_snoozed_nudge_is_not_requeued_by_the_wake_fallback() {
     // the parent's wake-watch delivered the nudge line
     let seen = json!({"signal": sig, "agent": "abc", "key": "parent", "id": format!("{id}-1")});
     assert!(nudge::delivered(&mut st, &seen, n + 18 * MIN + 1000));
+    grant_progress(&mut st, "abc");
     answer_snooze(&e, "abc", 180);
     for m in [19, 23, 30, 45, 60, 78] {
         tick_at(&mut st, n + m * MIN);
@@ -2732,6 +2740,7 @@ fn nudge_sent_and_answered_suppression_are_counted() {
     let sig = defaults::raw("agent_nudge.words").str_field("signal");
     let id = st.nudges.get("abc").expect("a nudge is open").id.clone();
     nudge::delivered(&mut st, &json!({"signal": sig, "agent": "abc", "key": "parent", "id": format!("{id}-1")}), n + 18 * MIN + 1000);
+    grant_progress(&mut st, "abc");
     answer_snooze(&e, "abc", 180);
     for m in [19, 23, 30] {
         tick_at(&mut st, n + m * MIN);
@@ -4886,20 +4895,21 @@ fn rt_step_1_fires_on_one_budget_of_tokens_before_45_minutes() {
     assert_eq!(rt_fired("advise"), 1, "1.1M tokens since the last outcome >= 1.0 x budget fires step 1 at 10 minutes after it");
 }
 
-/// A productive agent (a fresh outcome every 30 minutes, 2M tokens spent in all) is never nudged on its total runtime or spend (#958).
+/// A productive agent (a fresh outcome every 30 minutes) is not nudged on its total runtime or a spend under `token_soft` (#958); past
+/// the total token budget it is (#862, `n862_past_the_hard_token_budget_the_nudge_blocks_the_stop`).
 #[test]
 fn rt_a_productive_long_running_agent_is_not_nudged() {
     let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
     let (h, n, child) = nudge_home("rt958-productive");
     drained();
     let mut st = State::default();
-    for k in 0..6u64 {
+    for k in 0..2u64 {
         let (commit, spend) = spend_cycle(&child, k, n + k * 30 * MIN);
         append(&child, &commit);
         append(&child, &spend);
         rt_tick(&h, &child, &mut st, n + k * 30 * MIN + 5 * MIN, k);
     }
-    assert_eq!(rt_fired("advise") + rt_fired("order") + rt_fired("block"), 0, "3 hours of running and 4M tokens, but an outcome every 30 minutes");
+    assert_eq!(rt_fired("advise") + rt_fired("order") + rt_fired("block"), 0, "an outcome every 30 minutes and a spend under the soft token budget");
     assert!(rt_texts(&h).is_empty(), "no runtime nudge: {:?}", rt_texts(&h));
 }
 
@@ -4923,6 +4933,7 @@ fn rt_steps_climb_extend_moves_on_and_block_gates_the_stop() {
     let e = at(&mut st, 46);
     assert_eq!(rt_fired("advise"), 1);
     let ans = e.dir().join(defaults::raw("agent_nudge.paths").str_field("answers"));
+    grant_progress(&mut st, "abc");
     sinks::append(&ans, &json!({"ts": e.now_ms, "child": "abc", "answer": "other", "text": "waiting on a long CI job", "min": 0})).unwrap();
     at(&mut st, 47);
     assert_eq!(crate::metrics::bumped_on_this_thread("agent_runtime_step_acted", &[("step", "advise"), ("action", "extend")]), 1, "acted_on extend counted");
@@ -4942,6 +4953,7 @@ fn rt_steps_climb_extend_moves_on_and_block_gates_the_stop() {
     assert!(last.starts_with("⛔") && last.contains("Do now: stop it, or extend it with a stated reason"), "{last}");
     let first = rt_stop(&h);
     assert!(first.contains("\"decision\":\"block\""), "step 3 blocks the coordinator's Stop: {first}");
+    grant_progress(&mut st, "abc");
     sinks::append(&ans, &json!({"ts": e.now_ms + 124 * MIN, "child": "abc", "answer": "other", "text": "final integration run", "min": 60})).unwrap();
     at(&mut st, 125);
     let body = std::fs::read_to_string(h.join(".anti-hall/agent-tracker/runtime-escalations.json")).unwrap_or_default();
@@ -4975,6 +4987,7 @@ fn rt_block_step_blocks_every_stop_until_extended_and_never_says_advisory() {
         assert!(s.contains("Stop stays blocked until you act") && s.contains("stop it, or extend it"), "the fact and the action in view: {s}");
     }
     let ans = e.dir().join(defaults::raw("agent_nudge.paths").str_field("answers"));
+    grant_progress(&mut st, "abc");
     sinks::append(&ans, &json!({"ts": e.now_ms, "child": "abc", "answer": "other", "text": "final integration run", "min": 60})).unwrap();
     at(&mut st, 126);
     assert!(!rt_stop(&h).contains("decision"), "an extended block step lets the Stop pass");
@@ -4994,6 +5007,7 @@ fn rt_snooze_without_a_reason_ignores_a_stale_reason() {
     let e = rt_tick(&h, &child, &mut st, n + 46 * MIN, 2);
     let path = e.dir().join(defaults::raw("agent_nudge.paths").str_field("answers"));
     sinks::append(&path, &json!({"ts": e.now_ms, "child": "abc", "answer": "wrong", "text": "an old explanation", "min": 0})).unwrap();
+    grant_progress(&mut st, "abc");
     sinks::append(&path, &json!({"ts": e.now_ms, "child": "abc", "answer": "snooze", "text": "", "min": 60})).unwrap();
     rt_tick(&h, &child, &mut st, n + 47 * MIN, 3);
     let nd = st.nudges.get("abc").expect("the nudge stays open");
@@ -5015,6 +5029,7 @@ fn rt_snooze_holds_a_reopened_runtime_nudge_until_it_runs_out() {
     let e = rt_tick(&h, &child, &mut st, n + 46 * MIN, 2);
     let first = st.nudges.get("abc").expect("step 1 opens").ref_id.clone();
     let path = e.dir().join(defaults::raw("agent_nudge.paths").str_field("answers"));
+    grant_progress(&mut st, "abc");
     sinks::append(&path, &json!({"ts": e.now_ms, "child": "abc", "answer": "snooze", "text": "the export is still running", "min": 60})).unwrap();
     rt_tick(&h, &child, &mut st, n + 47 * MIN, 3);
     assert!(st.nudge_snooze.keys().any(|k| k.starts_with("abc|")), "the snooze is kept per child and trigger");
@@ -5025,7 +5040,7 @@ fn rt_snooze_holds_a_reopened_runtime_nudge_until_it_runs_out() {
     // the child runs again: inside the snooze no new nudge opens, so no new ref
     rt_tick(&h, &child, &mut st, n + 50 * MIN, 4);
     rt_tick(&h, &child, &mut st, n + 90 * MIN, 5);
-    assert!(st.nudges.get("abc").is_none(), "held for the snooze period; first ref was {first}");
+    assert!(!st.nudges.contains_key("abc"), "held for the snooze period; first ref was {first}");
     // after the snooze ran out the next step opens a new nudge
     rt_tick(&h, &child, &mut st, n + 120 * MIN, 6);
     assert!(st.nudges.get("abc").is_some_and(|nd| nd.ref_id != first), "a new nudge once the snooze is over");
@@ -5078,6 +5093,7 @@ fn health_snooze_holds_across_a_finished_close() {
     let e = tick_at(&mut st, n + 18 * MIN);
     let first = st.nudges.get("abc").expect("the waste flag opens a health nudge").clone();
     // nudge_env turns the runtime steps off, so this is a health trigger (waste), opened by open_new
+    grant_progress(&mut st, "abc");
     answer_snooze(&e, "abc", 240);
     let e = tick_at(&mut st, n + 19 * MIN);
     assert!(st.nudge_snooze.contains_key(&format!("abc|{}", first.trigger)), "the snooze is kept per child and trigger");
@@ -5091,7 +5107,7 @@ fn health_snooze_holds_across_a_finished_close() {
     tick_at(&mut st, b + MIN);
     append(&child, &spend);
     tick_at(&mut st, b + 18 * MIN);
-    assert!(st.nudges.get("abc").is_none(), "held by the snooze; first ref was {}", first.ref_id);
+    assert!(!st.nudges.contains_key("abc"), "held by the snooze; first ref was {}", first.ref_id);
 }
 
 /// #972 wave 2 (item 6): a snooze the parent gave a HEALTH nudge (`agents nudge <child> snooze 45`) holds every nag about the child, the
@@ -5460,6 +5476,7 @@ fn n923_a_runtime_snooze_holds_the_next_step_until_it_runs_out() {
     let e = rt_tick(&h, &child, &mut st, n + 46 * MIN, 2);
     assert_eq!(rt_fired("advise"), 1);
     let path = e.dir().join(defaults::raw("agent_nudge.paths").str_field("answers"));
+    grant_progress(&mut st, "abc");
     sinks::append(&path, &json!({"ts": e.now_ms, "child": "abc", "answer": "snooze", "text": "waiting on CI", "min": 60})).unwrap();
     rt_tick(&h, &child, &mut st, n + 47 * MIN, 3);
     rt_tick(&h, &child, &mut st, n + 92 * MIN, 4); // the order step's own threshold (90 min) is inside the snooze (until ~107 min)
@@ -7245,4 +7262,137 @@ fn n972r3_a_failed_blocker_update_does_not_confirm_the_hold() {
     ticks(&h, &mut st, &[n + max + 6 * MIN, n + max + 32 * MIN]);
     assert!(!agent(&st, SID).hold_confirmed.contains_key("81"), "an errored update confirms nothing");
     assert_eq!(n972_hold_rows(&h).len(), 2, "still unanswered: reminded again after the cooldown");
+}
+
+// ---- #862: no free snoozes on runtime nudges ------------------------------------------------------------------
+
+/// Append a `snooze` answer row for child `abc` with a stated reason.
+fn answer_snooze_reason(e: &Env, min: u64, reason: &str) {
+    let path = e.dir().join(defaults::raw("agent_nudge.paths").str_field("answers"));
+    sinks::append(&path, &json!({"ts": e.now_ms, "child": "abc", "answer": "snooze", "text": reason, "min": min})).unwrap();
+}
+
+/// The block rows the loop published for the coordinator's Stop check.
+fn rt_escalation_rows(e: &Env) -> Vec<Value> {
+    let p = e.dir().join(defaults::raw("agent_nudge.runtime_escalation").str_field("file"));
+    let v: Value = serde_json::from_str(&std::fs::read_to_string(p).unwrap_or_else(|_| "{\"rows\":[]}".into())).unwrap();
+    v["rows"].as_array().cloned().unwrap_or_default()
+}
+
+/// A runtime nudge open on `abc` (step 1, 46 min after its last outcome); returns (home, base time, child file, state).
+fn rt_open_nudge(tag: &str) -> (PathBuf, u64, PathBuf, State) {
+    let (h, n, child) = nudge_home(tag);
+    drained();
+    let mut st = State::default();
+    let (commit, _) = spend_cycle(&child, 0, n);
+    append(&child, &commit);
+    rt_tick(&h, &child, &mut st, n + MIN, 1);
+    rt_tick(&h, &child, &mut st, n + 46 * MIN, 2);
+    assert!(st.nudges.contains_key("abc"), "step 1 opened");
+    (h, n, child, st)
+}
+
+/// #862 item 1: a snooze with no outcome and no commit since the nudge was raised is refused (nothing held), and the coordinator is told
+/// to narrow, re-dispatch fresh or stop; one new commit makes the next snooze stand.
+#[test]
+fn n862_a_snooze_without_progress_is_refused_with_a_commit_it_stands() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let (h, n, child, mut st) = rt_open_nudge("n862-progress");
+    let e = rt_tick(&h, &child, &mut st, n + 47 * MIN, 3);
+    answer_snooze_reason(&e, 30, "still working on it");
+    rt_tick(&h, &child, &mut st, n + 48 * MIN, 4);
+    let nd = st.nudges.get("abc").expect("still open");
+    assert_eq!((nd.snoozes, nd.snooze_until), (0, 0), "no progress since the nudge: the snooze is refused");
+    assert!(st.nudge_snooze.is_empty(), "nothing kept per child and trigger");
+    let said = rt_texts(&h).join("\n") + &queue(&h, "parent").iter().filter_map(|r| r["text"].as_str()).collect::<Vec<_>>().join("\n");
+    assert!(said.contains("narrow") && said.contains("re-dispatch"), "the coordinator is told what to do: {said}");
+    // a commit after the nudge: progress; the next snooze stands
+    let (commit, _) = spend_cycle(&child, 1, n + 49 * MIN);
+    append(&child, &commit);
+    rt_tick(&h, &child, &mut st, n + 50 * MIN, 5);
+    let e = rt_tick(&h, &child, &mut st, n + 51 * MIN, 6);
+    answer_snooze_reason(&e, 30, "second attempt after a commit");
+    rt_tick(&h, &child, &mut st, n + 52 * MIN, 7);
+    let nd = st.nudges.get("abc").expect("still open");
+    assert_eq!(nd.snoozes, 1, "progress since the nudge: the snooze stands");
+    assert!(nd.snooze_until > n + 52 * MIN);
+}
+
+/// #862 item 2: at most `snooze_max` snoozes per agent; past the cap the nudge is a coordinator Stop block naming the agent, and a
+/// further snooze answer neither holds it nor releases the block.
+#[test]
+fn n862_past_the_snooze_cap_the_nudge_blocks_the_stop() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let (h, n, child, mut st) = rt_open_nudge("n862-cap");
+    let cap = defaults::raw("agent_nudge.budget").get("snooze_max").and_then(V::as_integer).expect("snooze_max configured") as u64;
+    assert_eq!(cap, 2);
+    let mut t = n + 46 * MIN;
+    let mut e = rt_tick(&h, &child, &mut st, t, 10);
+    for i in 0..cap {
+        let (commit, _) = spend_cycle(&child, 1 + i, t + MIN);
+        append(&child, &commit);
+        t += 2 * MIN;
+        rt_tick(&h, &child, &mut st, t, 11 + i * 3);
+        e = rt_tick(&h, &child, &mut st, t + MIN, 12 + i * 3);
+        answer_snooze_reason(&e, 10, "progress made, continuing");
+        t += 2 * MIN;
+        rt_tick(&h, &child, &mut st, t, 13 + i * 3);
+        assert_eq!(st.nudges.get("abc").map(|x| x.snoozes), Some(i + 1), "snooze {} stands", i + 1);
+        t += 11 * MIN; // the 10 minute hold runs out
+    }
+    assert!(rt_escalation_rows(&e).iter().all(|r| r["block"] != true), "within the cap nothing blocks");
+    // a third attempt, even after another commit, is past the cap
+    let (commit, _) = spend_cycle(&child, 9, t);
+    append(&child, &commit);
+    t += MIN;
+    rt_tick(&h, &child, &mut st, t, 40);
+    e = rt_tick(&h, &child, &mut st, t + MIN, 41);
+    answer_snooze_reason(&e, 10, "one more please");
+    rt_tick(&h, &child, &mut st, t + 2 * MIN, 42);
+    assert_eq!(st.nudges.get("abc").map(|x| x.snoozes), Some(cap), "the third snooze is refused");
+    let rows = rt_escalation_rows(&e);
+    assert!(rows.iter().any(|r| r["child"] == "abc" && r["block"] == true && r["hard"] == true), "a hard block row names the agent: {rows:?}");
+    assert!(rt_stop(&h).contains("\"decision\":\"block\""), "the coordinator's Stop is blocked");
+}
+
+/// #862 item 3: past the hard token threshold (cache reads weighted as everywhere) the agent is a coordinator Stop block even though it
+/// keeps producing outcomes; under the soft threshold nothing fires for a productive agent.
+#[test]
+fn n862_past_the_hard_token_budget_the_nudge_blocks_the_stop() {
+    let _g = NUDGE_COUNTS.lock().unwrap_or_else(|e| e.into_inner());
+    let (h, n, child) = nudge_home("n862-tokens");
+    drained();
+    let mut st = State::default();
+    let b = defaults::raw("agent_nudge.budget");
+    let (soft, hard) = (b.get("token_soft").and_then(V::as_integer).unwrap() as u64, b.get("token_hard").and_then(V::as_integer).unwrap() as u64);
+    assert!(soft < hard);
+    // a commit every few minutes (always fresh progress) while the spend climbs past soft, then hard
+    let mut t = n;
+    let mut k = 0;
+    let mut spent = 0u64;
+    rt_tick(&h, &child, &mut st, t + MIN, 0);
+    while spent < soft - 700_000 {
+        let (commit, spend) = spend_cycle(&child, k, t);
+        append(&child, &commit);
+        append(&child, &spend);
+        spent += 700_000;
+        k += 1;
+        t += 4 * MIN;
+        rt_tick(&h, &child, &mut st, t, 100 + k);
+    }
+    assert!(!st.nudges.contains_key("abc"), "under soft nothing fires for a productive agent");
+    while spent < hard {
+        let (commit, spend) = spend_cycle(&child, k, t);
+        append(&child, &commit);
+        append(&child, &spend);
+        spent += 700_000;
+        k += 1;
+        t += 4 * MIN;
+        rt_tick(&h, &child, &mut st, t, 100 + k);
+    }
+    t += 4 * MIN;
+    let e = rt_tick(&h, &child, &mut st, t, 300);
+    assert!(st.nudges.contains_key("abc"), "soft was passed: the advisory fired");
+    let rows = rt_escalation_rows(&e);
+    assert!(rows.iter().any(|r| r["child"] == "abc" && r["block"] == true && r["hard"] == true), "hard budget: block row: {rows:?}");
 }

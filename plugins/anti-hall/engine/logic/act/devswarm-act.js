@@ -154,7 +154,7 @@ function dsPokeOrEscalate(p) {
   var out = { eligible: false, blockers: b };
   if (b.length) return out;
   if (f.status === 'stale' && canPoke) {
-    out.eligible = true; out.kind = 'poke'; out.key = 'poke:' + id + ':' + (attempts + 1); out.argv = f.nudgeArgv; out.verb = 'poke';
+    out.eligible = true; out.kind = 'poke'; out.key = 'poke:' + id + ':' + (attempts + 1); out.argv = f.nudgeArgv; out.verb = 'poke'; out.cwd = f.parentCwd || null; // message-child names the sender by the working directory
     out.attempt = attempts + 1;
   } else if (f.status === 'stale') {
     out.eligible = true; out.kind = 'escalate'; out.key = 'escalate:' + id;

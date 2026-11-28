@@ -102,10 +102,18 @@ pub fn run(inv: &Inv, a: &Args) -> R<Answer> {
     let st = common::open_store(inv, &repo_key)?;
     let rows = ident::rows_of(&st.reader().roster().map_err(|e| store_err("registry", e))?);
     // the caller's registry id: the key its broadcast reads run under (none for a caller the registry does not hold)
-    let from = ident::caller_identity_for(&inv.env, &cwd, &inv.home).ok().map(|c| c.identity);
+    // GH #862: a declared sender (`--as admin` / the sender variable; refused for an agent caller) is the member, as `mesh send` honours it
+    let declared = match crate::meshw::senders::cli_declared(&inv.env, a) {
+        Ok(d) => d,
+        Err(msg) => return Ok(refuse(op, &msg, None)),
+    };
+    let from = match declared {
+        Some(d) => Some(d.id.to_string()),
+        None => ident::caller_identity_for(&inv.env, &cwd, &inv.home).ok().map(|c| c.identity),
+    };
     // (the same key `mesh read` acks under: the registry row the identity resolves to, else the identity when the registry holds it)
     let me: Option<String> = match &from {
-        Some(f) if rows.iter().any(|r| &r.id == f) => Some(f.clone()),
+        Some(f) if declared.is_some() || rows.iter().any(|r| &r.id == f) => Some(f.clone()),
         Some(f) => resolve_mesh_target(inv, Some(st.reader()), &rows, Some(f)).ok().flatten().map(|r| r.id),
         None => None,
     };

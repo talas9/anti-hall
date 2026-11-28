@@ -1262,8 +1262,7 @@ fn nothing_created(
     cause: &str,
     check: OVal,
     timings: OVal,
-    fallback: Option<&Fallback>,
-    source_placeholder: Option<&str>,
+    (fallback, source_placeholder): (Option<&Fallback>, Option<&str>),
 ) -> Answer {
     let mut words = vec![t("devswarm_cli.sp_retry_prefix").to_string(), shell_word(branch)];
     words.extend(rest.iter().map(|a| shell_word(a)));
@@ -1351,8 +1350,7 @@ pub fn create_with(inv: &Inv, rest: &[&str], branch: &str, runner: &dyn Runner) 
             &f.message,
             check,
             Obj::default().done(),
-            Some(f),
-            Some(t("devswarm_cli.sp_retry_source_placeholder")),
+            (Some(f), Some(t("devswarm_cli.sp_retry_source_placeholder"))),
         ));
     }
     let injected: Vec<&str> = match configured.as_deref() {
@@ -1369,7 +1367,7 @@ pub fn create_with(inv: &Inv, rest: &[&str], branch: &str, runner: &dyn Runner) 
     let action = s(defaults::text("devswarm_cli.action_spawn"));
     if let Some(error) = sc.refused {
         let timings = timings_obj(&[("sourceCheckMs", source_ms), ("totalMs", clock(inv) - wall_start)]);
-        return Ok(nothing_created(action, branch, rest, &error, sc.obj, timings, fallback.as_ref(), None));
+        return Ok(nothing_created(action, branch, rest, &error, sc.obj, timings, (fallback.as_ref(), None)));
     }
     let strip = t("devswarm_cli.sp_from_local_flag");
     let mut args: Vec<&str> = defaults::list("devswarm_act.argv_create");
@@ -1402,7 +1400,7 @@ pub fn create_with(inv: &Inv, rest: &[&str], branch: &str, runner: &dyn Runner) 
             }
             return Ok(answer(2, o.done()));
         }
-        return Ok(nothing_created(action, branch, rest, &error, sc.obj, timings, fallback.as_ref(), None));
+        return Ok(nothing_created(action, branch, rest, &error, sc.obj, timings, (fallback.as_ref(), None)));
     }
     let raw = res.call.raw.clone();
     let parsed = parse_failures(&raw, &res.stderr, &inv.cwd);
