@@ -500,6 +500,10 @@ fn a_room_message_wakes_and_shows_only_its_members() {
     assert!(crate::meshw::read::unread_broadcasts(st.reader(), &f.inv, &f.primary).unwrap().rows.is_empty());
     let primary_read = crate::meshw::read::run(&primary, &argv(&["read", "--peek"]), false).unwrap().stdout;
     assert!(!primary_read.contains("standup in 5"), "a non-member's mesh read lists a room message: {primary_read}");
+    let merged = crate::meshw::readprimary::run_peek(&primary, &argv(&["inbox", "peek-primary", &f.primary, "--with-broadcasts"])).unwrap().stdout;
+    assert!(!merged.contains("standup in 5"), "a non-member's peek --with-broadcasts lists a room message: {merged}");
+    let member = crate::meshw::readprimary::run_messages(&c2, &argv(&["inbox", "messages", "child-2", "--with-broadcasts"])).unwrap().stdout;
+    assert!(member.contains("standup in 5"), "a member's merged listing lost the room message: {member}");
 
     // a member that leaves is not woken by the next message; the list shows who is left
     assert!(room(&c2, &["room", "leave", "lab"]).stdout.contains("\"changed\":true"));
